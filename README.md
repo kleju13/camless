@@ -41,7 +41,9 @@ Or in PowerShell, which checks the download's SHA-256 and installs silently:
 irm https://raw.githubusercontent.com/kleju13/camless/main/scripts/install.ps1 | iex
 ```
 
-To update, do either again. The setup closes the app, stops the service, replaces both exes and opens the app, which starts the service again. Uninstalling asks whether to delete your settings and profiles in `%APPDATA%\camless`; by default they stay.
+The app asks GitHub for the latest release once each time it starts. When there is a newer one, *Update available* shows under the service in the sidebar, and *Settings → About* has *Update*. That downloads the setup, checks its SHA-256 and runs it. The setup closes the app, stops the service, replaces both exes and opens the app, which starts the service again. Running the setup or the install command again does the same.
+
+Uninstalling asks whether to delete your settings and profiles in `%APPDATA%\camless`; by default they stay.
 
 ## Getting started
 
@@ -210,9 +212,7 @@ The protocol details are in [docs/protocol.md](docs/protocol.md).
 
 ## Not done yet
 
-- Starting the service at logon without a UAC prompt. *Start with Windows* starts the app, which asks for administrator rights each time.
-- Updates from inside the app. Until then, run the setup or the install command again.
-- Drivers for other NZXT devices.
+- Starting the service at logon without a UAC prompt. *Start with Windows* starts the app, which asks for administrator rights each time.- Drivers for other NZXT devices.
 
 ## License
 

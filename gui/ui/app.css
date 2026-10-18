@@ -91,6 +91,16 @@ body.light { background: #fff; }
 @keyframes cam-svc-pulse { to { opacity: .3; } }
 .cam-svc .act { width: 28px; height: 28px; flex: none; }
 .cam-svc .act svg { width: 16px; height: 16px; }
+.cam-upd { all: unset; display: flex; align-items: center; gap: 10px; margin: 2px 8px 0; padding: 4px 6px 4px 6px; border-radius: var(--radius); color: var(--accent); cursor: pointer; }
+.cam-upd[hidden] { display: none; }
+.cam-upd:hover { background: var(--accent-soft); }
+.cam-upd:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cam-upd svg { flex: none; width: 16px; height: 16px; }
+.cam-upd .lbl { min-width: 0; }
+.cam-upd b { display: block; font-size: 12px; font-weight: 600; }
+.cam-upd small { display: block; font-size: 11px; color: var(--t4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cam-upd[data-tone=bad] { color: var(--alert); }
+.cam-upd[data-tone=busy] svg { animation: cam-svc-pulse 1s ease-in-out infinite alternate; }
 .cam-logo { display: flex; align-items: center; gap: 9px; height: 56px; padding: 0 18px; flex: none; color: var(--t1); font-weight: 700; font-size: 13px; letter-spacing: .04em; white-space: nowrap; user-select: none; }
 .cam-logo svg { width: 20px; height: 20px; flex: none; }
 
@@ -417,6 +427,8 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
   .cam-svc { flex-direction: column; margin: 10px 8px 0; padding: 8px 0 0; }
   .cam-svc .st { justify-content: center; padding: 8px 0; width: 100%; }
   .cam-svc .st .lbl { display: none; }
+  .cam-upd { justify-content: center; padding: 8px 0; }
+  .cam-upd .lbl { display: none; }
 }
 
 /* Denser panels when the window is narrow or short. */
@@ -496,7 +508,7 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 /* Phone width: the bar becomes a strip of names along the top. */
 @container app (max-width: 599px) {
   .cam-logo { display: none; }
-  .cam-svc { display: none; }
+  .cam-svc, .cam-upd { display: none; }
   .cam-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .cam-body.nonav { grid-template-rows: minmax(0, 1fr); }
   .cam-nav { flex-direction: row; gap: 0; padding: 0 6px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; border-bottom: 1px solid var(--sep); }

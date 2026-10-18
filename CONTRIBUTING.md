@@ -14,7 +14,7 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 | `src/daemon.rs` | the service loop: curves, duties, reloads, failsafes |
 | `src/web.rs`, `src/cdp.rs` | web pages on an LCD: a headless browser driven over the DevTools protocol |
 | `core/` | config and profiles, curve engine, CAM import, status types; no hardware code |
-| `gui/` | the app: tray icon, WebView2 window, and the JSON API its page uses |
+| `gui/` | the app: tray icon, WebView2 window, the JSON API its page uses, and updates from GitHub releases |
 | `gui/ui/` | the app's page: HTML, CSS and plain JavaScript, built into `camless-gui.exe` |
 | `installer/camless.iss` | the Inno Setup script for `camless-setup.exe`, which installs, updates and uninstalls both exes |
 | `scripts/` | `package.ps1` builds the setup; `install.ps1` installs the latest release |

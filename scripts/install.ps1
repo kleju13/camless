@@ -24,7 +24,10 @@ if ($have -ne $want) { Remove-Item $setup; throw "download does not match its ch
 Unblock-File $setup
 
 Write-Host 'Installing...'
-$p = Start-Process $setup '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
+# Not -Wait: that also waits for the app, which setup opens at the end and which keeps running.
+$p = Start-Process $setup '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -PassThru
+$null = $p.Handle  # without it, Windows PowerShell loses the exit code
+$p.WaitForExit()
 if ($p.ExitCode -ne 0) { throw "setup failed with exit code $($p.ExitCode)" }
 Remove-Item $dir -Recurse -ErrorAction SilentlyContinue
 

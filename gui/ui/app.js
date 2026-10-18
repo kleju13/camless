@@ -162,6 +162,7 @@
     nav.innerHTML = `<div class="cam-logo">${K.LOGO}<span>camless</span></div>` + NAV.map((n) => (n.spacer ? '<div class="spacer"></div>'
       : `<a href="#${n.id}" data-id="${n.id}" title="${esc(n.label)}">${I[n.icon]}<span class="lbl">${esc(n.label)}</span></a>`)).join('');
     nav.appendChild(serviceBadge());
+    nav.appendChild(updateBadge());
     K.on('prefs', (k) => {
       if (k !== 'theme') return;
       root.dataset.theme = K.prefs.theme;
@@ -206,6 +207,29 @@
     };
     S.on('state', upd);
     S.on('config', upd);
+    upd();
+    return el;
+  }
+
+  // Under the service, only while there is a newer camless: the check at launch found it.
+  function updateBadge() {
+    const el = h(`<button type="button" class="cam-upd" hidden>${I.download}<span class="lbl"><b></b><small></small></span></button>`);
+    const b = el.querySelector('b'), small = el.querySelector('small');
+    el.addEventListener('click', () => { if (!S.server.update.busy) updateNow(); });
+    const upd = () => {
+      const u = S.server && S.server.update;
+      el.hidden = !u || !(u.available || u.busy === 'downloading' || u.busy === 'installing');
+      if (el.hidden) return;
+      const [text, tip] = u.busy ? [`${cap(u.busy)}…`, `${cap(u.busy)} camless ${u.latest}.`]
+        : u.error ? ['Update failed', `${u.error} Click to try again.`]
+        : ['Update available', `camless ${u.latest} is out; this is ${S.server.app_version}. Click to update.`];
+      b.textContent = text;
+      small.textContent = `camless ${u.latest}`;
+      el.dataset.tone = u.busy ? 'busy' : u.error ? 'bad' : '';
+      el.title = tip;
+      el.setAttribute('aria-label', `${text}: camless ${u.latest}`);
+    };
+    S.on('state', upd);
     upd();
     return el;
   }
@@ -1728,7 +1752,45 @@
 
     panel('About', [
       row('camless', `Window ${esc(sv.app_version)}${S.status ? `, service ${esc(S.status.version)}` : ''}.`, null),
+      updateRow(),
     ]);
+  }
+
+  // The latest release on GitHub: what the check found, Check now, and Update when it is newer.
+  function updateRow() {
+    const r = row('Updates', '', null), ctl = r.lastElementChild;
+    const upd = () => {
+      const sv = S.server, u = sv.update;
+      let hint;
+      if (u.busy === 'checking') hint = 'Checking GitHub for a newer camless…';
+      else if (u.busy) hint = `${cap(u.busy)} camless ${esc(u.latest)}…`;
+      else if (u.available) hint = `camless ${esc(u.latest)} is out. Updating installs the app and the service together, then opens camless again.`;
+      else if (u.latest) hint = u.latest === sv.app_version ? 'This is the latest version.' : `The latest release is ${esc(u.latest)}.`;
+      else hint = '';
+      if (!u.busy) hint += `${hint ? ' ' : ''}camless checks GitHub once each time it starts.`;
+      if (u.error && !u.busy) hint += `<span class="cam-err">${esc(u.error)}</span>`;
+      r.hint(hint);
+      const key = JSON.stringify([u.busy || null, !!u.available]);
+      if (ctl.dataset.key === key) return;
+      ctl.dataset.key = key;
+      ctl.replaceChildren();
+      if (u.busy) return;
+      if (u.available) ctl.append(button('Release notes', { small: true, onClick: () => act('update/notes', {}) }), button('Update', { small: true, primary: true, onClick: updateNow }));
+      else ctl.append(button('Check now', { small: true, onClick: () => act('update/check', {}) }));
+    };
+    track(S.on('state', upd));
+    upd();
+    return r;
+  }
+
+  async function updateNow() {
+    const sv = S.server, v = esc(sv.update.latest);
+    const ok = await confirmBox({
+      title: `Update to camless ${sv.update.latest}`,
+      text: `camless downloads ${v}, closes, installs the app and the service together, and opens again. Windows then asks for administrator rights for the service, as at every start. For those few seconds, fans that camless sets run at the failsafe speed; curves stored on a cooler keep running.`,
+      ok: 'Update',
+    });
+    if (ok) act('update/install', {});
   }
 
   // The service's state, with Start, Restart and Stop; the app runs them in the background.

@@ -45,6 +45,8 @@ pub enum UserEvent {
     Saved,
     /// The page did not answer in time.
     SaveTimeout(u64),
+    /// An update is ready: close as Exit does, and the setup starts after.
+    Quit,
 }
 
 struct Open {
@@ -83,6 +85,11 @@ pub fn run(launches: Launches, show: bool, ui_dir: Option<PathBuf>) -> Result<()
     });
     // Launching camless starts the service too, so there is one thing to run.
     crate::service::start_if_stopped();
+    let p = proxy.clone();
+    crate::update::on_quit(move || {
+        let _ = p.send_event(UserEvent::Quit);
+    });
+    let _ = crate::update::check();
     // WebView2 keeps its profile here rather than next to the program.
     let data = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("camless").join("WebView2"));
     let mut app = App {
@@ -96,6 +103,8 @@ pub fn run(launches: Launches, show: bool, ui_dir: Option<PathBuf>) -> Result<()
         context: WebContext::new(data),
     };
     event_loop.run_app(&mut app)?;
+    // The page has saved and the icon is gone, so the setup closes nothing of ours.
+    crate::update::run_ready();
     Ok(())
 }
 
@@ -223,6 +232,7 @@ impl ApplicationHandler<UserEvent> for App {
                 None => {}
             },
             UserEvent::Launch => self.show(el),
+            UserEvent::Quit => self.close(el, true),
             UserEvent::Saved => {
                 if self.open.as_ref().is_some_and(|o| o.closing.is_some()) {
                     self.closed(el);
