@@ -53,20 +53,27 @@ impl Readings {
 pub struct Sensors {
     pub cpu_name: String,
     pub gpu_name: Option<String>,
+    /// Why CPU temperature and power are off, when they are.
+    pub cpu_error: Option<String>,
     nvml: Option<Nvml>,
     cpu: Option<AmdCpu>,
     times: Option<(u64, u64)>,
 }
 
 impl Sensors {
-    /// `pawnio_module` is the signed `AMDFamily17.bin`; without it, or without admin
-    /// rights, CPU temperature and power are simply absent.
-    pub fn open(pawnio_module: Option<&[u8]>) -> Sensors {
+    /// `pawnio_module` is the signed `AMDFamily17.bin`, or why it could not be read;
+    /// without it, or without admin rights, CPU temperature and power are absent.
+    pub fn open(pawnio_module: std::result::Result<Vec<u8>, String>) -> Sensors {
         let nvml = Nvml::open().map_err(|e| eprintln!("gpu sensors off: {e:#}")).ok();
-        let cpu = pawnio_module
-            .and_then(|m| AmdCpu::open(m).map_err(|e| eprintln!("cpu temperature off: {e:#}")).ok());
+        let (cpu, cpu_error) = match pawnio_module.and_then(|m| AmdCpu::open(&m).map_err(|e| format!("{e:#}"))) {
+            Ok(cpu) => (Some(cpu), None),
+            Err(e) => {
+                eprintln!("cpu temperature off: {e}");
+                (None, Some(e))
+            }
+        };
         let gpu_name = nvml.as_ref().and_then(|n| n.name().ok());
-        Sensors { cpu_name: cpu_name().unwrap_or_else(|| "CPU".into()), gpu_name, nvml, cpu, times: None }
+        Sensors { cpu_name: cpu_name().unwrap_or_else(|| "CPU".into()), gpu_name, cpu_error, nvml, cpu, times: None }
     }
 
     pub fn has_cpu_temp(&self) -> bool {

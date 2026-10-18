@@ -5,6 +5,8 @@ A light replacement for NZXT CAM: fan and pump curves, lighting and the Kraken L
 - **`camless.exe`** is the service. It finds NZXT devices, runs the curves, sets lighting and drives the LCD. About 1.8 MB.
 - **`camless-gui.exe`** is the app. It has a dashboard, a curve editor, lighting and LCD settings, and profiles. It edits `camless.toml`, and the service applies every change within a second. It lives in the tray: closing its window keeps it there, and *Exit* in the tray menu quits it. Closing the app never stops fan control.
 
+camless-gui.exe is the one thing to launch: it starts the service if it is not running, asking Windows for administrator rights (UAC) so CPU temperature works. If the answer is no, the service runs without them and the app says so. The bottom of the sidebar always shows the service's state with a start or restart button, and *Settings → Service* starts, restarts and stops it.
+
 Curves work as in FanControl, with an interface closer to CAM:
 - curves are named objects: a graph on any sensor, a fixed duty, a mix of other curves (max, min, average, sum), or a trigger with separate load and idle thresholds;
 - each graph has hysteresis and separate rise and fall times;
@@ -27,7 +29,7 @@ Other NZXT devices show up in the app as "no driver yet". A driver is one file; 
 
 1. Quit NZXT CAM and stop its CAM Service. It holds the devices exclusively.
 2. Optionally bring over what CAM is set to: *Profiles → Import from NZXT CAM* in the app, or `camless import-cam -o %APPDATA%\camless\camless.toml`.
-3. Start `camless run`, or open `camless-gui.exe` and press *Start camless*.
+3. Open `camless-gui.exe` and answer Yes when Windows asks for administrator rights. It starts the service; `camless run` does the same from a terminal.
 
 To try the app without hardware, run `camless run --demo`. It uses a simulated cooler and hub and touches no USB device.
 
@@ -163,6 +165,7 @@ A browser is the heavy part of camless: KrakenDial with a video background takes
 |---|---|
 | `GET /v1/status` | devices, channels, sensors, curves and duties, as `camless_core::status::Status`; the app reads this |
 | `GET /v1/monitoring` | CAM's Web Integration monitoring object (`cpus`, `gpus`, `kraken`, `ram`); pages in web mode get the same through `window.nzxt.v1` |
+| `POST /v1/stop` | stops the service the way Ctrl+C does: host-driven fans to the failsafe duty, the LCD back to its own screen; `Content-Type: application/json` only, so web pages cannot send it |
 | `POST /v1/lcd/frame` | one frame for the LCD in `frames` mode at its size (640×640 on the Kraken Elite), raw RGBA or RGB565 big-endian, `Content-Type: application/octet-stream`; 202, 409 without such an LCD, 429 when two frames are already waiting |
 
 It listens on `127.0.0.1:30641` by default and binds to loopback only. It rejects foreign `Host` headers, so web pages cannot reach it through DNS rebinding.
@@ -185,5 +188,5 @@ The protocol details are in [docs/protocol.md](docs/protocol.md).
 
 ## Not done yet
 
-- Starting the service at logon with administrator rights (a scheduled task).
+- Starting the service at logon without a UAC prompt. *Start with Windows* starts the app, which asks for administrator rights each time.
 - Drivers for other NZXT devices.

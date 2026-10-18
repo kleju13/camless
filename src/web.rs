@@ -376,6 +376,8 @@ impl Drop for Browser {
     }
 }
 
+pub use win::is_elevated;
+
 /// Starting the browser: as the signed-in user, inside a kill-on-close job.
 mod win {
     use anyhow::{bail, Result};
@@ -470,7 +472,7 @@ mod win {
         out
     }
 
-    fn is_elevated() -> bool {
+    pub fn is_elevated() -> bool {
         unsafe {
             let mut token = null_mut();
             if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {

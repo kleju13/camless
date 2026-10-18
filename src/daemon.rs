@@ -14,7 +14,7 @@ use crate::web;
 use camless_core::config::{self, Config, Lcd, LcdMode};
 use camless_core::curve::{DeviceCurve, Duty, Engine};
 use camless_core::lighting::Light;
-use camless_core::status::{CurveValue, Device, FanValue, Sensor, Status, Unit, Unsupported, WebState};
+use camless_core::status::{CurveValue, Device, FanValue, Sensor, ServiceInfo, Status, Unit, Unsupported, WebState};
 use hidapi::HidApi;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -118,6 +118,8 @@ pub struct Daemon {
     engine: Engine,
     api: HidApi,
     sensors: Sensors,
+    /// Runs with administrator rights; read once, it cannot change.
+    elevated: bool,
     slots: Vec<Slot>,
     unsupported: Vec<Unsupported>,
     next_scan: Instant,
@@ -161,6 +163,7 @@ impl Daemon {
             cfg_error,
             api: HidApi::new()?,
             sensors,
+            elevated: web::is_elevated(),
             slots: Vec::new(),
             unsupported: Vec::new(),
             next_scan: Instant::now(),
@@ -655,6 +658,11 @@ impl Daemon {
             sensors,
             curves,
             fans,
+            service: Some(ServiceInfo {
+                pid: std::process::id(),
+                elevated: self.elevated,
+                cpu_sensor_error: self.sensors.cpu_error.clone(),
+            }),
         };
         let frame_target = self.cfg.lcds.iter().filter(|c| c.mode == LcdMode::Frames).find_map(|c| {
             let s = self.slots.iter().find(|s| s.found.id == c.device && s.dev.is_some())?;

@@ -120,19 +120,13 @@ fn beside_exe(name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
-fn pawnio_module(configured: Option<&PathBuf>) -> Option<Vec<u8>> {
+fn pawnio_module(configured: Option<&PathBuf>) -> std::result::Result<Vec<u8>, String> {
     let path = configured.cloned().unwrap_or_else(|| beside_exe("AMDFamily17.bin"));
-    match std::fs::read(&path) {
-        Ok(m) => Some(m),
-        Err(e) => {
-            eprintln!("cpu temperature off: {}: {e}", path.display());
-            None
-        }
-    }
+    std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn sensors() -> Result<()> {
-    let mut s = sensors::Sensors::open(pawnio_module(None).as_deref());
+    let mut s = sensors::Sensors::open(pawnio_module(None));
     s.read();
     std::thread::sleep(Duration::from_secs(1));
     let r = s.read();
@@ -320,7 +314,7 @@ fn status() -> Result<()> {
     for u in &unsupported {
         println!("{:04x}:{:04x} {}: no driver yet (see CONTRIBUTING.md)", u.vid, u.pid, u.product);
     }
-    let mut s = sensors::Sensors::open(pawnio_module(None).as_deref());
+    let mut s = sensors::Sensors::open(pawnio_module(None));
     s.read();
     std::thread::sleep(Duration::from_millis(500));
     for x in s.read().list(s.gpu_name.is_some()) {
@@ -371,10 +365,10 @@ fn run(path: PathBuf, verbose: bool, demo: bool, limit: Option<Duration>) -> Res
     // Two frames in flight at most; the API answers 429 beyond that.
     let (tx, rx) = mpsc::sync_channel(2);
     if cfg.api.enabled {
-        api::spawn(&cfg.api.listen, shared.clone(), tx.clone()).context("starting the local API")?;
+        api::spawn(&cfg.api.listen, shared.clone(), tx.clone(), &STOP).context("starting the local API")?;
         eprintln!("camless: api on http://{}", cfg.api.listen);
     }
-    let sensors = sensors::Sensors::open(pawnio_module(cfg.pawnio_module.as_ref()).as_deref());
+    let sensors = sensors::Sensors::open(pawnio_module(cfg.pawnio_module.as_ref()));
     if demo {
         eprintln!("camless: demo mode, simulated devices only");
     }
@@ -391,7 +385,7 @@ fn lcd_page(url: &str, out: &Path, duration: Duration) -> Result<()> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         bail!("{url} is not an http or https URL");
     }
-    let mut sensors = sensors::Sensors::open(None);
+    let mut sensors = sensors::Sensors::open(Err("not read for a page preview".into()));
     let snapshot = daemon::Snapshot {
         readings: sensors.read(),
         cpu_name: sensors.cpu_name.clone(),

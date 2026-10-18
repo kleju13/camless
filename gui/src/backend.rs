@@ -6,6 +6,7 @@
 //! The page keeps the draft and sends the whole config to save; the daemon applies
 //! each saved change by itself, so closing the app never stops fan control.
 
+use crate::service::{self, Action};
 use crate::{assets, client, tray};
 use anyhow::{anyhow, Context, Result};
 use camless_core::cam_import;
@@ -14,7 +15,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 pub struct Reply {
     pub status: u16,
@@ -70,7 +70,6 @@ struct Inner {
     path: PathBuf,
     follow_service: bool,
     link: Option<Arc<Mutex<client::Link>>>,
-    started: Option<Instant>,
     /// Start with Windows, in a sandbox.
     autostart: bool,
 }
@@ -80,7 +79,7 @@ impl Backend {
         let follow_service = o.config.is_none();
         let path = o.config.unwrap_or_else(config::default_path);
         Backend {
-            inner: Mutex::new(Inner { path, follow_service, link: None, started: None, autostart: false }),
+            inner: Mutex::new(Inner { path, follow_service, link: None, autostart: false }),
             ui_dir: o.ui_dir,
             sandbox: o.sandbox,
             on_closed,
@@ -122,7 +121,9 @@ impl Backend {
             ("POST", "profiles/delete") => self.delete_profile(body),
             ("POST", "import/cam") => self.import_cam(),
             ("POST", "import/file") => self.import_file(body),
-            ("POST", "service/start") => self.start_service(),
+            ("POST", "service/start") => self.service(Action::Start),
+            ("POST", "service/stop") => self.service(Action::Stop),
+            ("POST", "service/restart") => self.service(Action::Restart),
             ("PUT", "autostart") => self.set_autostart(body),
             ("POST", "open-folder") => self.open_folder(),
             ("POST", "window/closed") => {
@@ -165,7 +166,7 @@ impl Backend {
             Some(link) => link.lock().unwrap_or_else(|e| e.into_inner()).addr = addr,
             None => inner.link = Some(client::spawn(addr)),
         }
-        let starting = inner.started.is_some_and(|t| t.elapsed() < Duration::from_secs(8)) && status.is_none();
+        let sv = if self.sandbox { service::State::default() } else { service::state() };
         let autostart = if self.sandbox { inner.autostart } else { tray::autostart::enabled() };
         drop(inner);
 
@@ -185,7 +186,9 @@ impl Backend {
             "status": status,
             "link_error": link_error,
             "can_start": !self.sandbox && client::daemon_exe().is_some(),
-            "starting": starting,
+            "starting": matches!(sv.busy, Some("starting" | "restarting")),
+            "service_busy": sv.busy,
+            "service_note": sv.note,
             "autostart": autostart,
             "sandbox": self.sandbox,
         })
@@ -324,12 +327,12 @@ impl Backend {
         Ok(json!({ "name": name }))
     }
 
-    fn start_service(&self) -> Answer {
+    fn service(&self, action: Action) -> Answer {
         if self.sandbox {
-            bail_refused("the sandbox does not start the service")?;
+            bail_refused("the sandbox does not start or stop the service")?;
         }
-        client::start_daemon()?;
-        self.lock().started = Some(Instant::now());
+        // The file the service runs from, so a restart does not switch it to another.
+        service::spawn(action, self.path())?;
         Ok(json!({}))
     }
 
@@ -530,7 +533,10 @@ mod tests {
     #[test]
     fn the_sandbox_touches_nothing_outside_the_config() {
         let (b, _) = fixture("camless-gui-sandbox");
-        assert_eq!(call(&b, "POST", "/api/service/start", json!({})).0, 409);
+        for action in ["start", "stop", "restart"] {
+            assert_eq!(call(&b, "POST", &format!("/api/service/{action}"), json!({})).0, 409);
+        }
+        assert_eq!(call(&b, "GET", "/api/state", Value::Null).1["service_busy"], Value::Null);
         assert_eq!(call(&b, "POST", "/api/open-folder", json!({})).0, 409);
         assert_eq!(call(&b, "PUT", "/api/autostart", json!({ "on": true })).1["autostart"], true);
         assert_eq!(call(&b, "GET", "/api/state", Value::Null).1["autostart"], true);

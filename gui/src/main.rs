@@ -12,6 +12,7 @@ mod assets;
 mod backend;
 mod client;
 mod serve;
+mod service;
 mod tray;
 
 use anyhow::Context;

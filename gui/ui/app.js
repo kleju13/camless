@@ -161,6 +161,7 @@
     content = root.querySelector('.cam-content');
     nav.innerHTML = `<div class="cam-logo">${K.LOGO}<span>camless</span></div>` + NAV.map((n) => (n.spacer ? '<div class="spacer"></div>'
       : `<a href="#${n.id}" data-id="${n.id}" title="${esc(n.label)}">${I[n.icon]}<span class="lbl">${esc(n.label)}</span></a>`)).join('');
+    nav.appendChild(serviceBadge());
     K.on('prefs', (k) => {
       if (k !== 'theme') return;
       root.dataset.theme = K.prefs.theme;
@@ -171,6 +172,42 @@
     S.on('config', maybe);
     addEventListener('hashchange', go);
     go();
+  }
+
+  // The service at the bottom of the bar, always in view: whether it runs, with
+  // administrator rights or not, and a button to start or restart it.
+  function serviceBadge() {
+    const el = h(`<div class="cam-svc"><button type="button" class="st"><i class="dot"></i><span class="lbl"><b>Service</b><small></small></span></button><button type="button" class="act cam-iconbtn"></button></div>`);
+    const st = el.firstElementChild, act_ = el.lastElementChild, small = st.querySelector('small');
+    st.addEventListener('click', () => { location.hash = 'settings'; });
+    act_.addEventListener('click', () => act(act_.dataset.path, {}));
+    const upd = () => {
+      const sv = S.server;
+      if (!sv) return;
+      const s = S.status, info = s && s.service, busy = sv.service_busy;
+      const apiOff = !s && S.config && S.config.api && S.config.api.enabled === false;
+      const [text, tone, tip] = busy ? [`${cap(busy)}…`, 'busy', `The camless service is ${busy}.`]
+        : apiOff ? ['Not visible', 'off', 'Local API is off, so this window cannot see the service.']
+        : !s ? ['Not running', 'bad', 'The camless service is not running. Curves that camless sets are not applied.']
+        : info && !info.elevated ? ['Not as admin', 'warn', 'Running without administrator rights, so CPU temperature and power are off. Restart it and answer Yes when Windows asks.']
+        : info && info.cpu_sensor_error ? ['CPU temp off', 'warn', `Running, but CPU temperature is off: ${info.cpu_sensor_error}`]
+        : ['Running', 'ok', info ? 'Running as administrator, with CPU temperature and power.' : 'Running.'];
+      small.textContent = text;
+      el.dataset.tone = tone;
+      st.title = tip + ' Open Settings for more.';
+      const path = busy || apiOff || !sv.can_start ? null : s ? 'service/restart' : 'service/start';
+      act_.hidden = !path;
+      if (path && act_.dataset.path !== path) {
+        act_.dataset.path = path;
+        act_.innerHTML = s ? I.rotate : I.play;
+        act_.title = s ? (info && !info.elevated ? 'Restart as administrator' : 'Restart the service') : 'Start the service';
+        act_.setAttribute('aria-label', act_.title);
+      }
+    };
+    S.on('state', upd);
+    S.on('config', upd);
+    upd();
+    return el;
   }
 
   function go() {
@@ -205,16 +242,24 @@
     const status = S.status;
     if (!status) {
       const apiOff = S.config && S.config.api && S.config.api.enabled === false;
-      if (sv.starting) out.push({ kind: 'info', html: '<b>Starting the camless service…</b>' });
+      if (sv.service_busy) out.push({ kind: 'info', html: `<b>${cap(sv.service_busy)} the camless service…</b> If Windows asks for administrator rights, answer Yes for CPU temperature.` });
       else if (apiOff) out.push({ kind: 'warn', html: '<b>Local API is off, so this window cannot see the camless service.</b> Changes are still saved, and the service applies them. Turn Local API on in Settings; it takes effect when the service restarts.' });
       else {
         out.push({
           kind: 'warn',
-          html: '<b>The camless service is not running.</b> Curves that camless sets are not applied until it starts; curves stored on a cooler keep running. Changes here are saved.',
+          html: '<b>The camless service is not running.</b> Curves that camless sets are not applied until it starts; curves stored on a cooler keep running. Changes here are saved.' + (sv.service_note ? `<span class="cam-err">${esc(sv.service_note)}</span>` : ''),
           button: sv.can_start ? { label: 'Start camless', onClick: () => act('service/start', {}) } : null,
         });
       }
       return out;
+    }
+    if (sv.service_busy) out.push({ kind: 'info', html: `<b>${cap(sv.service_busy)} the camless service…</b>` });
+    else if (status.service && !status.service.elevated) {
+      out.push({
+        kind: 'warn',
+        html: '<b>The service runs without administrator rights, so CPU temperature and power are off.</b> Curves on CPU temperature hold the failsafe speed. Restart it and answer Yes when Windows asks.',
+        button: sv.can_start ? { label: 'Restart as administrator', onClick: () => act('service/restart', {}) } : null,
+      });
     }
     if (status.config_error) out.push({ kind: 'error', html: `<b>The service could not apply the saved settings, so it keeps running the previous ones.</b><span class="cam-err">${esc(status.config_error)}</span>` });
     const hot = status.sensors.filter((s) => S.isLiquid(s.id) && s.value != null && s.value >= 55);
@@ -1613,10 +1658,12 @@
     const editCfg = (fn, o) => S.edit(fn, Object.assign({ what: 'settings' }, o));
 
     // The switch shows what Windows has, read again every second.
-    const autoRow = row('Start with Windows', sv.sandbox ? 'In this test copy the switch changes nothing in Windows.' : 'camless starts in the tray when you sign in.', null);
+    const autoRow = row('Start with Windows', sv.sandbox ? 'In this test copy the switch changes nothing in Windows.' : 'camless starts in the tray when you sign in, and starts the service, asking Windows for administrator rights.', null);
     const autoT = toggle({ checked: sv.autostart, label: 'Start with Windows', onChange: (v) => setAutostart(v, autoT) });
     autoRow.lastElementChild.appendChild(autoT);
     track(S.on('state', () => { if (!autoT.dataset.busy) autoT.set(S.server.autostart); }));
+
+    panel('Service', [serviceRow()]);
 
     panel('General', [
       row('Temperature display', null, choice({ options: [{ value: 'c', label: 'Celsius' }, { value: 'f', label: 'Fahrenheit' }], value: K.prefs.unit, label: 'Temperature display', onChange: (v) => K.setPref('unit', v) })),
@@ -1670,6 +1717,37 @@
     panel('About', [
       row('camless', `Window ${esc(sv.app_version)}${S.status ? `, service ${esc(S.status.version)}` : ''}.`, null),
     ]);
+  }
+
+  // The service's state, with Start, Restart and Stop; the app runs them in the background.
+  function serviceRow() {
+    const r = row('camless service', '', null), ctl = r.lastElementChild;
+    const stopIt = async () => {
+      const ok = await confirmBox({ title: 'Stop the service', text: 'Fans that camless sets go to the failsafe speed and the LCD shows its own screen until the service starts again. Curves stored on a cooler keep running.', ok: 'Stop' });
+      if (ok) act('service/stop', {});
+    };
+    const upd = () => {
+      const sv = S.server, st = S.status, info = st && st.service, busy = sv.service_busy;
+      let hint;
+      if (busy) hint = `${cap(busy)}…`;
+      else if (!st) hint = 'Not running, so curves that camless sets are not applied. Curves stored on a cooler keep running.';
+      else if (!info) hint = 'Running. This service is older than the app, so it does not say whether it has administrator rights.';
+      else if (!info.elevated) hint = 'Running without administrator rights, so CPU temperature and power are off. Restart asks Windows for them.';
+      else if (info.cpu_sensor_error) hint = `Running as administrator, but CPU temperature is off: ${esc(info.cpu_sensor_error)}`;
+      else hint = 'Running as administrator, with CPU temperature and power.';
+      if (info) hint += ` Process ${info.pid}.`;
+      r.hint(hint);
+      const key = JSON.stringify([!!st, busy || null, !!sv.can_start]);
+      if (ctl.dataset.key === key) return;
+      ctl.dataset.key = key;
+      ctl.replaceChildren();
+      if (!sv.can_start || busy) return;
+      if (!st) ctl.append(button('Start', { small: true, primary: true, onClick: () => act('service/start', {}) }));
+      else ctl.append(button('Restart', { small: true, onClick: () => act('service/restart', {}) }), button('Stop', { small: true, onClick: stopIt }));
+    };
+    track(S.on('state', upd));
+    upd();
+    return r;
   }
 
   async function setAutostart(on, t) {

@@ -14,6 +14,18 @@ pub struct Status {
     pub sensors: Vec<Sensor>,
     pub curves: Vec<CurveValue>,
     pub fans: Vec<FanValue>,
+    /// How the service itself runs; services before 0.3 leave it out.
+    #[serde(default)]
+    pub service: Option<ServiceInfo>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ServiceInfo {
+    pub pid: u32,
+    /// Has administrator rights, which CPU temperature and power need.
+    pub elevated: bool,
+    /// Why there is no CPU temperature, when there is none.
+    pub cpu_sensor_error: Option<String>,
 }
 
 /// One device and what it can do. Drivers fill in everything but the readings.

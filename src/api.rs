@@ -5,6 +5,7 @@
 //! pages through `window.nzxt.v1.onMonitoringDataUpdate`, so a KrakenDial-style page
 //! keeps working. `POST /v1/lcd/frame` takes one frame for the LCD in frames mode, raw
 //! RGBA or RGB565 big-endian at the screen's size (640×640 on a Kraken Elite).
+//! `POST /v1/stop` ends the service the way Ctrl+C does; the app uses it to restart it.
 
 use crate::daemon::{Event, Snapshot};
 use crate::q565;
@@ -12,11 +13,12 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::io::Read;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Method, Request, Response, Server};
 
-pub fn spawn(listen: &str, shared: Arc<Mutex<Snapshot>>, frames: SyncSender<Event>) -> Result<()> {
+pub fn spawn(listen: &str, shared: Arc<Mutex<Snapshot>>, frames: SyncSender<Event>, stop: &'static AtomicBool) -> Result<()> {
     let addr: SocketAddr = listen.parse().with_context(|| format!("api listen {listen:?} is not ip:port"))?;
     if !addr.ip().is_loopback() {
         bail!("api listen must be a loopback address; {listen} would expose the devices to the network");
@@ -25,7 +27,7 @@ pub fn spawn(listen: &str, shared: Arc<Mutex<Snapshot>>, frames: SyncSender<Even
     let hosts = [format!("127.0.0.1:{}", addr.port()), format!("localhost:{}", addr.port()), format!("[::1]:{}", addr.port())];
     std::thread::Builder::new().name("api".into()).spawn(move || {
         for req in server.incoming_requests() {
-            if let Err(e) = handle(req, &hosts, &shared, &frames) {
+            if let Err(e) = handle(req, &hosts, &shared, &frames, stop) {
                 eprintln!("api: {e:#}");
             }
         }
@@ -37,7 +39,7 @@ fn header<'a>(req: &'a Request, name: &'static str) -> Option<&'a str> {
     req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str())
 }
 
-fn handle(mut req: Request, hosts: &[String], shared: &Mutex<Snapshot>, frames: &SyncSender<Event>) -> Result<()> {
+fn handle(mut req: Request, hosts: &[String], shared: &Mutex<Snapshot>, frames: &SyncSender<Event>, stop: &AtomicBool) -> Result<()> {
     // A Host check stops DNS rebinding: a web page cannot reach this server under its
     // own domain name.
     if !header(&req, "Host").is_some_and(|h| hosts.iter().any(|ok| ok.eq_ignore_ascii_case(h))) {
@@ -47,6 +49,15 @@ fn handle(mut req: Request, hosts: &[String], shared: &Mutex<Snapshot>, frames: 
     match (req.method(), req.url()) {
         (Method::Get, "/v1/monitoring") => respond_json(req, &monitoring(&snapshot())),
         (Method::Get, "/v1/status") => respond_json(req, &serde_json::to_value(&snapshot().status)?),
+        (Method::Post, "/v1/stop") => {
+            // A web page cannot send JSON here without a preflight, which this server
+            // never approves, so only programs on this PC can stop the service.
+            if header(&req, "Content-Type").and_then(|c| c.split(';').next()).map(str::trim) != Some("application/json") {
+                return Ok(req.respond(Response::from_string("Content-Type must be application/json").with_status_code(415))?);
+            }
+            stop.store(true, Ordering::SeqCst);
+            Ok(req.respond(Response::empty(202))?)
+        }
         (Method::Post, "/v1/lcd/frame") => {
             // Browsers cannot send this content type cross-site without a preflight,
             // which this server never approves.

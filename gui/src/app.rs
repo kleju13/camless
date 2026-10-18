@@ -74,6 +74,8 @@ pub fn run(launches: Launches, show: bool, ui_dir: Option<PathBuf>) -> Result<()
     tray::watch(launches, move || {
         let _ = p.send_event(UserEvent::Launch);
     });
+    // Launching camless starts the service too, so there is one thing to run.
+    crate::service::start_if_stopped();
     // WebView2 keeps its profile here rather than next to the program.
     let data = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("camless").join("WebView2"));
     let mut app = App {
