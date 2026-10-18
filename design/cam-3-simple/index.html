@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<title>camless: one page</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/cam-kit.css">
+<style>
+  .cam-content { max-width: 940px; }
+  .list { display: grid; }
+  .crow, .lrow { display: grid; align-items: center; gap: 10px 14px; padding: 12px 16px 12px 18px; border-top: 1px solid var(--panel-line); min-width: 0; }
+  .crow:first-child, .lrow:first-child { border-top: 0; }
+  .crow { grid-template-columns: minmax(0, 1fr) 142px 112px 168px auto; }
+  .lrow { grid-template-columns: 40px minmax(0, 1fr) 190px 150px auto; }
+  .nm { min-width: 0; display: grid; }
+  .nm b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nm span { font-size: 12px; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .crow .cam-select, .lrow .cam-select { width: 100%; }
+  .lv { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; font-variant-numeric: tabular-nums; }
+  .lv .bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+  .lv .bar i { display: block; height: 100%; width: 0; background: var(--orchid); border-radius: 2px; transition: width .4s ease-out; }
+  .lv .pct { font-size: 15px; font-weight: 600; }
+  .lv .rpm { font-size: 12px; color: var(--t3); text-align: right; }
+  .lv.miss .pct { color: var(--amber); }
+  .strip { width: 40px; height: 40px; display: block; }
+  .lrow .cam-swatches { gap: 6px; }
+  .lrow .cam-swatch { width: 24px; height: 24px; }
+  .lrow .none { font-size: 12px; color: var(--t4); }
+  .all { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--t3); }
+  .mixed-note { font-size: 12px; color: var(--t4); }
+  .cam-ch.bare { border: 0; background: transparent; padding: 0; }
+  .cam-ch.bare .cam-ch-name { display: none; }
+  .foot { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 32px; }
+  @container area (max-width: 819px) {
+    .crow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+    .crow .nm { grid-column: 1 / -1; }
+    .crow .lv { grid-column: 1 / 3; grid-row: 3; }
+    .crow .edit { grid-row: 3; grid-column: 3; }
+    .lrow { grid-template-columns: 40px minmax(0, 1fr) auto; }
+    .lrow .fx { grid-column: 1 / 3; }
+    .lrow .cols { grid-column: 3; display: flex; justify-content: flex-end; }
+    .lrow .more { grid-row: 1; grid-column: 3; }
+  }
+  @container area (max-width: 519px) { .crow, .lrow { padding: 12px 14px; } }
+</style>
+</head>
+<body>
+<script src="../shared/camless-sim.js"></script>
+<script src="../shared/kraken-draw.js"></script>
+<script src="../shared/curve-editor.js"></script>
+<script src="../shared/cam-kit.js"></script>
+<script>
+/* CAM's look without the navigation: one page with every fan and light as a row,
+   curves and the full lighting editor one click away. */
+(function () {
+  'use strict';
+  const C = window.Camless, X = window.CamKit, h = X.h;
+
+  function coolingList(host) {
+    const all = X.choice({
+      options: X.PRESET_OPTS.filter((o) => o.value !== 'fixed'),
+      value: X.allPreset(),
+      label: 'Preset for all fans',
+      onChange: (p) => X.setAllPresets(p),
+    });
+    const mixed = h('<span class="mixed-note">Mixed</span>');
+    const s = X.section(host, 'Cooling', h('<span class="all">All fans</span>'));
+    s.querySelector('.all').append(all, mixed);
+    const list = h('<div class="cam-panel list"></div>');
+    s.appendChild(list);
+    const rows = C.channels().map((ch0) => {
+      const id = ch0.id;
+      const get = () => X.channel(id);
+      const r = h(`<div class="crow"><div class="nm"><b></b><span></span></div><div class="pre"></div><div class="src"></div><div class="lv"><span class="pct num"></span><span class="rpm"></span><span class="bar"><i></i></span></div><button type="button" class="cam-btn sm edit">${X.I.curve}<span>Curve</span></button></div>`);
+      r.querySelector('b').textContent = X.chName(ch0);
+      r.querySelector('.nm span').textContent = X.chSub(ch0, true);
+      const pre = X.select({ options: X.PRESET_OPTS, value: X.model(ch0).preset, label: `${X.chTile(ch0)} preset`, onChange: (p) => X.setPreset(get(), p) });
+      const src = X.select({ options: X.SOURCE_OPTS, value: X.model(ch0).source, label: `${X.chTile(ch0)} temperature source`, onChange: (v) => X.setSource(get(), v) });
+      r.querySelector('.pre').appendChild(pre);
+      r.querySelector('.src').appendChild(src);
+      r.querySelector('.edit').setAttribute('aria-label', `Edit ${X.chTile(ch0)} curve`);
+      r.querySelector('.edit').addEventListener('click', () => {
+        X.modal({ title: X.chTile(get()), wide: true, render(body) { const card = X.coolingCard(id); card.classList.add('bare'); body.appendChild(card); } });
+      });
+      list.appendChild(r);
+      const lv = r.querySelector('.lv');
+      return {
+        refresh() { const m = X.model(get()); pre.set(m.preset); src.set(m.source); src.setDisabled(m.preset === 'fixed'); },
+        live() {
+          const st = C.live(id), ch = get();
+          if (!st || !ch) return;
+          lv.querySelector('.pct').textContent = Math.round(st.shown) + '%';
+          lv.querySelector('.rpm').textContent = X.rpm(st.rpm) + ' RPM';
+          lv.querySelector('.bar i').style.width = st.shown + '%';
+          const miss = ch.cfg.source !== 'fixed' && st.temp == null;
+          lv.classList.toggle('miss', miss);
+          lv.title = miss ? `Temperature source is unavailable. Holding ${C.config.failsafe_duty}%.` : C.why(id);
+        },
+      };
+    });
+    const refresh = () => {
+      const p = X.allPreset();
+      all.set(p);
+      all.classList.toggle('mixed', !p);
+      mixed.hidden = !!p;
+      for (const r of rows) r.refresh();
+    };
+    X.track(C.on('config', refresh));
+    X.track(C.on('tick', () => rows.forEach((r) => r.live())));
+    refresh();
+    rows.forEach((r) => r.live());
+  }
+
+  function lightingList(host) {
+    const s = X.section(host, 'Lighting');
+    const list = h('<div class="cam-panel list"></div>');
+    s.appendChild(list);
+    const targets = [
+      ...X.lightTargets('kraken').map((t) => Object.assign(t, { dev: C.devices.kraken.name })),
+      ...X.lightTargets('hub').map((t) => Object.assign(t, { dev: C.devices.hub.name })),
+    ];
+    const strips = [];
+    const rows = targets.map((t) => {
+      const r = h(`<div class="lrow"><canvas class="strip" aria-hidden="true"></canvas><div class="nm"><b></b><span></span></div><div class="fx"></div><div class="cols"></div><button type="button" class="cam-btn sm more">More</button></div>`);
+      r.querySelector('b').textContent = t.key === 'ring' ? 'Ring' : t.label;
+      const sub = r.querySelector('.nm span');
+      const fx = X.select({ options: X.EFFECT_ORDER.map((k) => ({ value: k, label: X.EFFECT_NAME[k] })), value: t.get().mode, label: `${t.dev} ${t.label} effect`, onChange: (m) => X.editLight(t, (x) => { x.mode = m; X.fitColors(x); }) });
+      r.querySelector('.fx').appendChild(fx);
+      const sw = X.colorSwatches(t, { short: true });
+      const none = h('<span class="none">Colors: Automatic</span>');
+      r.querySelector('.cols').append(sw, none);
+      r.querySelector('.more').setAttribute('aria-label', `More ${t.dev} ${t.label} lighting settings`);
+      r.querySelector('.more').addEventListener('click', () => {
+        X.modal({ title: `${t.dev}: ${t.key === 'ring' ? 'Ring' : t.label}`, wide: true, render(body) { X.lightEditor(body, t); }, onClose: () => refresh(true) });
+      });
+      list.appendChild(r);
+      strips.push([r.querySelector('canvas'), t]);
+      let lastMode = t.get().mode;
+      const refresh = (force) => {
+        const x = t.get();
+        if (!force && x.mode === lastMode) return;
+        lastMode = x.mode;
+        // Fans without LEDs keep their row, with nothing to set.
+        const plain = t.kind === 'fans' && X.fanSpec(t.fan).model === 'plain';
+        sub.textContent = t.kind !== 'fans' ? `${t.dev}, ${X.midSentence(t.sub)}` : t.fan === 'radiator' ? `${t.dev}, ${X.fanText(t, false)}` : `${t.dev}, ${X.midSentence(t.sub)}, ${X.fanText(t, false)}`;
+        fx.set(x.mode);
+        fx.setDisabled(plain);
+        const auto = C.light.EFFECTS[x.mode].colors[1] === 0;
+        sw.hidden = auto || plain;
+        none.hidden = !auto && !plain;
+        none.textContent = plain ? 'No LEDs' : x.mode === 'off' ? '' : 'Colors: Automatic';
+        sw.paint();
+      };
+      refresh(true);
+      return refresh;
+    });
+    X.track(C.on('config', (what) => rows.forEach((f) => f(what !== 'lighting'))));
+    X.track(X.on('prefs', (k) => { if (k === 'fans') rows.forEach((f) => f(true)); }));
+    // Each row's ring or fan, lit with its effect, so it shows without opening anything.
+    let time = 0;
+    X.track(C.on('frame', (dt) => {
+      time += dt;
+      for (const [cv, t] of strips) X.lightThumb(cv, t, time);
+    }));
+  }
+
+  function page(host) {
+    X.pageHead(host, 'My PC', X.button('Settings', { icon: 'settings', onClick: () => X.modal({ title: 'Settings', wide: true, render(b) { X.settings(b); } }) }));
+    X.tiles(host, ['liquid', 'cpu', 'gpu', 'noise']);
+    coolingList(host);
+    lightingList(host);
+    const s = X.section(host, 'LCD Display');
+    X.lcdEditor(s);
+    const foot = h('<div class="foot"></div>');
+    foot.append(
+      X.button('Launch Mini Mode', { icon: 'mini', onClick: () => X.miniMode(true) }),
+      X.button('Import from NZXT CAM', { onClick: X.importCamDialog }),
+    );
+    host.appendChild(foot);
+  }
+
+  X.shell({ nav: null, initial: 'home', pages: { home: page } });
+})();
+</script>
+<script src="../shared/demo-bar.js" data-position="bottom-right"></script>
+</body>
+</html>

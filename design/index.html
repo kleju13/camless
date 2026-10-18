@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<title>camless: CAM-style app</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wdth,wght@85..100,400..700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #ececef;
+    --ink: #19191e;
+    --ink-2: #5d5d68;
+    --ink-3: #8a8a95;
+    --line: rgba(25, 25, 30, .12);
+    --accent: #3a3ae0;
+    --font: "Instrument Sans", system-ui, sans-serif;
+    --indent: 36px;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); color: var(--ink); font: 400 16px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+  body { margin: 0; }
+  a { color: inherit; }
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 0 40px; }
+
+  header.top { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 48px; align-items: center; padding: 72px 0 56px; border-bottom: 1px solid var(--line); }
+  .brand { font-weight: 700; font-size: 18px; letter-spacing: -.01em; margin: 0 0 28px; }
+  h1 { margin: 0; font-size: clamp(40px, 5.4vw, 72px); line-height: 1; font-weight: 650; font-stretch: 88%; letter-spacing: -.025em; max-width: 13ch; text-wrap: balance; }
+  .lede { margin: 24px 0 0; max-width: 60ch; font-size: 18px; line-height: 1.55; color: var(--ink-2); }
+  .lede + .lede { margin-top: 12px; font-size: 16px; }
+  kbd { font: inherit; font-size: .88em; padding: 1px 6px; border-radius: 5px; background: rgba(25, 25, 30, .07); box-shadow: inset 0 -1px 0 rgba(25, 25, 30, .12); }
+
+  .live { display: grid; justify-items: center; gap: 14px; width: 240px; }
+  .live canvas { width: 220px; height: 220px; display: block; }
+  .live p { margin: 0; font-size: 13px; line-height: 1.4; color: var(--ink-3); text-align: center; max-width: 24ch; }
+  .live b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .group { padding-top: 64px; }
+  .group + .group { margin-top: 40px; border-top: 1px solid var(--line); }
+  .group > h2 { font-size: 34px; line-height: 1.1; font-weight: 650; font-stretch: 88%; letter-spacing: -.02em; }
+  .group > p { margin: 12px 0 0; max-width: 62ch; color: var(--ink-2); }
+  .grid { list-style: none; margin: 0; padding: 40px 0 24px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 64px 40px; }
+  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 56px 32px; }
+  .grid.three { --indent: 0px; }
+  .grid.three .num { display: none; }
+  .grid.three .h2 { font-size: 23px; }
+  .concept a.card { display: block; text-decoration: none; border-radius: 12px; }
+  .concept a.card:focus-visible { outline: 3px solid var(--accent); outline-offset: 6px; }
+  .shot { display: block; aspect-ratio: 16 / 10; border-radius: 10px; overflow: hidden; background: #d8d8dd; box-shadow: 0 0 0 1px var(--line), 0 14px 40px -24px rgba(25, 25, 30, .45); transition: box-shadow .2s ease; }
+  .shot img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+  .concept a.card:hover .shot { box-shadow: 0 0 0 2px var(--accent), 0 14px 40px -24px rgba(25, 25, 30, .45); }
+  .head { display: flex; align-items: baseline; gap: 12px; margin: 20px 0 6px; }
+  .num { font-size: 15px; font-weight: 500; color: var(--ink-3); font-variant-numeric: tabular-nums; width: calc(var(--indent) - 12px); flex: none; }
+  h2, .h2 { margin: 0; font-size: 26px; line-height: 1.15; font-weight: 650; font-stretch: 90%; letter-spacing: -.02em; }
+  .concept a.card:hover .h2 { color: var(--accent); }
+  .role { margin-left: auto; font-size: 13px; color: var(--ink-3); white-space: nowrap; }
+  .idea { margin: 0 0 0 var(--indent); max-width: 58ch; color: var(--ink); }
+  .who, .try { margin: 8px 0 0 var(--indent); max-width: 58ch; font-size: 14.5px; color: var(--ink-2); }
+  .try b, .who b { font-weight: 600; color: var(--ink); }
+
+  footer { margin-top: 48px; padding: 32px 0 64px; border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 40px; color: var(--ink-2); font-size: 14.5px; }
+  footer h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; color: var(--ink); }
+  footer p { margin: 0; max-width: 58ch; }
+
+  @media (max-width: 900px) {
+    .wrap { padding: 0 20px; }
+    header.top { grid-template-columns: 1fr; padding: 40px 0 36px; gap: 28px; }
+    .live { width: auto; grid-template-columns: auto 1fr; justify-items: start; align-items: center; }
+    .live canvas { width: 112px; height: 112px; }
+    .live p { text-align: left; }
+    .group { padding-top: 44px; }
+    .group > h2 { font-size: 28px; }
+    .grid, .grid.three { grid-template-columns: 1fr; gap: 48px; padding-top: 28px; }
+    footer { grid-template-columns: 1fr; gap: 24px; }
+  }
+  @media (max-width: 520px) {
+    .role { display: none; }
+    .idea, .who, .try { margin-left: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .shot { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <p class="brand">camless</p>
+      <h1>Run your cooler without NZXT CAM</h1>
+      <p class="lede">Clickable mockups of camless for one PC: a Kraken Elite V2 with 3 radiator fans and a Control Hub with 4 more. All three look and work like CAM, so moving over takes no relearning. Nothing is sent to hardware, but every page reacts to load, heat and your changes as the real thing would.</p>
+      <p class="lede">camless opens as a small window, as the app will. A bar at the bottom drives the demo: window size, load (idle, game, render), a missing CPU sensor or hot liquid. <kbd>‹</kbd> and <kbd>›</kbd> move to the next layout. On a phone it starts folded: tap <kbd>◐</kbd>.</p>
+    </div>
+    <div class="live" aria-hidden="true">
+      <canvas id="head" width="220" height="220"></canvas>
+      <p>The simulated cooler behind every layout. Liquid at <b id="liq">28.7 °C</b>, pump at <b id="pump">61 %</b>.</p>
+    </div>
+  </header>
+
+  <section class="group" aria-labelledby="g-cam">
+    <h2 id="g-cam">Looks like CAM</h2>
+    <p>CAM 4's dark window, left bar, purple accents and names for everything: AIO Pump, Fan Connector, Temperatures source, Fixed, Silent, Performance and Custom. The three differ only in how the pages are arranged.</p>
+    <ol class="grid three" id="cam"></ol>
+  </section>
+
+  <footer>
+    <div>
+      <h3>Your fans, as they look</h3>
+      <p>Every fan channel shows the NZXT fans plugged into it: F RGB Core, F RGB Duo, F RGB or a fan without RGB, in black or white. Click the fan on a cooling card, or Fans under Lighting, to change it.</p>
+    </div>
+    <div>
+      <h3>What the numbers follow</h3>
+      <p>The simulation uses camless's real rules: liquid curves are stored on the cooler, CPU and GPU curves are set by camless every second, the safety floor ramps from 45 to 55 °C liquid, and lost sensors fall back to 70 %.</p>
+    </div>
+  </footer>
+</div>
+
+<script src="shared/camless-sim.js"></script>
+<script src="shared/kraken-draw.js"></script>
+<script>
+(function () {
+  'use strict';
+  const CAM = [
+    { id: 'cam-1-classic', num: '', name: 'CAM layout', role: '',
+      idea: 'CAM 4 as you know it: Monitoring, Cooling, Lighting and Settings in the left bar. Every fan is a card with a preset, a temperature source and a curve. The pump screen sits under Lighting, as in CAM.',
+      who: 'anyone who wants to switch without relearning anything',
+      try: 'On Cooling, click the fan next to Fan Connector 1 and pick RGB Core in white. Drag a curve point: the preset turns Custom. Drag the window corner to make it smaller.' },
+    { id: 'cam-2-devices', num: '', name: 'By device', role: '',
+      idea: 'The same look, sorted by hardware. Kraken Elite V2 and Control Hub each get a page with Cooling, Lighting and LCD Display tabs.',
+      who: 'people who think "the Kraken" before "cooling"',
+      try: 'Open Kraken Elite V2, then LCD Display, and rotate the screen.' },
+    { id: 'cam-3-simple', num: '', name: 'One page', role: '',
+      idea: 'No navigation. Every fan and light is one row with its preset and source; the curve and the full lighting editor are one click away.',
+      who: 'people who set things once and want it all in view',
+      try: 'Press Silent next to All fans. Open a fan\'s Curve. Press Launch Mini Mode.' },
+  ];
+  const card = (c, i) => `
+    <li class="concept">
+      <a class="card" href="${c.id}/index.html">
+        <span class="shot"><img src="shots/${c.id}.jpg" width="1440" height="900" ${c.num === '' && i < 3 ? '' : 'loading="lazy" '}alt="Screenshot of the ${c.name} layout"></span>
+        <span class="head"><span class="num">${c.num ?? c.id.slice(0, 2)}</span><h3 class="h2">${c.name}</h3>${c.role ? `<span class="role">${c.role}</span>` : ''}</span>
+      </a>
+      <p class="idea">${c.idea}</p>
+      <p class="who">For ${c.who}.</p>
+      <p class="try"><b>Try:</b> ${c.try}</p>
+    </li>`;
+  document.getElementById('cam').innerHTML = CAM.map(card).join('');
+
+  const C = window.Camless, K = window.KrakenDraw;
+  if (!C || !K) return;
+  const cv = document.getElementById('head');
+  const liq = document.getElementById('liq'), pump = document.getElementById('pump');
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let t = 0;
+  function draw() {
+    const { ctx, w, h } = K.fit(cv);
+    ctx.clearRect(0, 0, w, h);
+    K.head(ctx, w / 2, h / 2, w / 2 - 14, { leds: C.light.render(C.config.ring, still ? 0 : t, 24), liquid: C.state.liquid, lcd: C.config.lcd, snapshot: C.snapshot(), font: '"Instrument Sans", system-ui, sans-serif', shadowColor: 'rgba(58,58,224,.28)' });
+  }
+  C.on('frame', (dt) => { t += dt; draw(); });
+  C.on('tick', () => {
+    liq.textContent = C.state.liquid.toFixed(1) + ' °C';
+    pump.textContent = Math.round(C.live('pump').duty) + ' %';
+  });
+  draw();
+})();
+</script>
+</body>
+</html>

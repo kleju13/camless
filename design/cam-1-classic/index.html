@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<title>camless: CAM layout</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/cam-kit.css">
+</head>
+<body>
+<script src="../shared/camless-sim.js"></script>
+<script src="../shared/kraken-draw.js"></script>
+<script src="../shared/curve-editor.js"></script>
+<script src="../shared/cam-kit.js"></script>
+<script>
+/* CAM's own structure: Monitoring, Cooling, Lighting (with the LCD inside it) and
+   Settings in the left bar, every cooling channel on one page. */
+(function () {
+  'use strict';
+  const C = window.Camless, X = window.CamKit;
+  X.shell({
+    nav: [
+      { id: 'monitoring', label: 'Monitoring', icon: 'monitoring' },
+      { id: 'cooling', label: 'Cooling', icon: 'cooling' },
+      { id: 'lighting', label: 'Lighting', icon: 'lighting' },
+      { spacer: true },
+      { id: 'settings', label: 'Settings', icon: 'settings' },
+    ],
+    initial: 'monitoring',
+    pages: {
+      monitoring(host) {
+        X.pageHead(host, 'PC Monitoring');
+        X.monitoring(host);
+      },
+      cooling(host) {
+        X.pageHead(host, 'Cooling');
+        X.tiles(host, ['liquid', 'noise', ...C.channels().map((c) => c.id)]);
+        for (const d of ['kraken', 'hub']) {
+          const s = X.section(host, C.devices[d].name, X.h('<span class="cam-status">Ready</span>'));
+          X.deviceChannels(s, d, { collapse: true });
+        }
+      },
+      lighting(host) {
+        X.pageHead(host, 'Lighting');
+        X.lightingPage(host);
+      },
+      settings(host) {
+        X.pageHead(host, 'Settings');
+        X.settings(host);
+      },
+    },
+  });
+})();
+</script>
+<script src="../shared/demo-bar.js" data-position="bottom-right"></script>
+</body>
+</html>
