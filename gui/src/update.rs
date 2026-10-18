@@ -164,10 +164,27 @@ fn message(text: &str) {
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("camless").as_ptr(), MB_OK | MB_ICONERROR) };
 }
 
-/// Whether version `a` is newer than `b`, comparing `x.y.z` as numbers.
+/// Whether version `a` is newer than `b`: `x.y.z` as numbers, then a release after
+/// its own pre-releases (`0.3.0` after `0.3.0-rc1`), and pre-releases by name.
 fn newer(a: &str, b: &str) -> bool {
-    let parts = |v: &str| v.split(['.', '-', '+']).take(3).map(|p| p.parse().unwrap_or(0)).collect::<Vec<u64>>();
-    parts(a) > parts(b)
+    fn parse(v: &str) -> ([u64; 3], Option<&str>) {
+        let v = v.split('+').next().unwrap_or_default();
+        let (core, pre) = v.split_once('-').map_or((v, None), |(c, p)| (c, Some(p)));
+        let mut n = [0u64; 3];
+        for (slot, part) in n.iter_mut().zip(core.split('.')) {
+            *slot = part.parse().unwrap_or(0);
+        }
+        (n, pre)
+    }
+    let ((na, pa), (nb, pb)) = (parse(a), parse(b));
+    if na != nb {
+        return na > nb;
+    }
+    match (pa, pb) {
+        (None, Some(_)) => true,
+        (Some(x), Some(y)) => x > y,
+        _ => false,
+    }
 }
 
 fn sha256(data: &[u8]) -> Result<[u8; 32]> {
@@ -196,6 +213,10 @@ mod tests {
         assert!(!newer("0.2.0", "0.2.0"));
         assert!(!newer("0.1.9", "0.2.0"));
         assert!(!newer("0.3.0-rc1", "0.3.0"));
+        assert!(newer("0.3.0", "0.3.0-rc1"));
+        assert!(newer("0.3.0-rc2", "0.3.0-rc1"));
+        assert!(newer("0.3.0-rc1", "0.2.9"));
+        assert!(!newer("0.2.0+build5", "0.2.0"));
     }
 
     #[test]
