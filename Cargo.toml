@@ -1,11 +1,15 @@
+[workspace]
+members = [".", "core", "gui"]
+
 [package]
 name = "camless"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "A small replacement for NZXT CAM: pump, fan, lighting and LCD control for the Kraken Elite V2 and the Control Hub"
+description = "A small replacement for NZXT CAM: pump, fan, lighting and LCD control for NZXT devices"
 publish = false
 
 [dependencies]
+camless-core = { path = "core" }
 hidapi = { version = "2", default-features = false, features = ["windows-native"] }
 nusb = "0.1"
 futures-lite = "2"
@@ -15,13 +19,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 tiny_http = "0.12"
+# Decodes the frames a browser renders for an LCD in web mode.
+png = "0.18"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Console",
+    "Win32_System_JobObjects",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [profile.release]

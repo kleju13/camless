@@ -1,0 +1,30 @@
+[package]
+name = "camless-gui"
+version = "0.2.0"
+edition = "2021"
+description = "Desktop app for camless: monitoring, cooling, lighting and the LCD, from the tray"
+publish = false
+
+[[bin]]
+name = "camless-gui"
+path = "src/main.rs"
+
+[dependencies]
+camless-core = { path = "../core" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `--serve`: the same UI and API over loopback HTTP, for a browser during development.
+tiny_http = "0.12"
+# The tray icon and its menu.
+tray-icon = "0.26"
+# The window. tray-icon and wry both run on its event loop.
+winit = "0.30"
+# The page inside the window, in the WebView2 that ships with Windows.
+wry = { version = "0.57", default-features = false }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }

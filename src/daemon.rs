@@ -1,200 +1,180 @@
-//! `camless run`: applies the configuration, then keeps host-driven fans on their
-//! curves, once per `interval_ms`.
+//! `camless run`: finds NZXT devices, applies the config, and keeps fans on their
+//! curves once per `interval_ms`.
 //!
-//! The Kraken runs liquid-temperature curves on its own, so those are stored once
-//! and need no host at all. CPU- and GPU-driven channels, and every Control Hub fan,
-//! need the host: the hub only takes fixed duties.
+//! A curve a device can run by itself (a fixed duty, or a graph on the device's own
+//! sensor, like a Kraken's liquid temperature) is stored on it and needs no host.
+//! The curve engine drives everything else from host and device sensors.
+//!
+//! The config file is watched: a valid change applies within one interval, an
+//! invalid one is reported in the status and the previous config keeps running.
 
-use crate::config::{Config, Source};
-use crate::curve::{Curve, Smoother};
-use crate::device::{ControlHub, Kraken};
-use crate::protocol::*;
+use crate::drivers::{self, Driver, Found, Reading};
 use crate::sensors::{Readings, Sensors};
+use crate::web;
+use camless_core::config::{self, Config, Lcd, LcdMode};
+use camless_core::curve::{DeviceCurve, Duty, Engine};
+use camless_core::lighting::Light;
+use camless_core::status::{CurveValue, Device, FanValue, Sensor, Status, Unit, Unsupported, WebState};
 use hidapi::HidApi;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-const REOPEN_EVERY: Duration = Duration::from_secs(5);
-/// Duties are sent again now and then, in case the hub reset without a USB event.
+const RESCAN_EVERY: Duration = Duration::from_secs(5);
+/// Duties are sent again now and then, in case a device reset without a USB event.
 const RESEND_EVERY: Duration = Duration::from_secs(60);
-/// The LCD falls back to the liquid screen when frames stop for this long.
+/// An LCD in frames or web mode goes back to its own screen when frames stop for
+/// this long.
 const FRAME_STALE: Duration = Duration::from_secs(5);
 /// How long frames are dropped after the LCD fails.
 const LCD_BACKOFF: Duration = Duration::from_secs(10);
-/// Liquid at or above this sends every fan and the pump to full speed.
+/// Liquid at or above this sends every managed fan and pump to full speed.
 const LIQUID_CRITICAL_C: f32 = 55.0;
-/// Status reads that may fail in a row before the device is reopened.
+/// Polls that may fail in a row before a device is reopened.
 const MAX_FAILURES: u32 = 3;
 
-/// The floor under every table camless stores on the Kraken, by liquid temperature.
-/// If camless stops or hangs, the cooler still speeds up on its own as liquid warms.
-fn safety_floor(liquid_c: u8) -> u8 {
-    match liquid_c {
-        ..=45 => 0,
-        55.. => 100,
-        t => (t - 45) * 10,
-    }
-}
-
-pub fn kraken_table(curve: &Curve) -> [u8; KRAKEN_CURVE_POINTS] {
-    let mut table = curve.kraken_table();
-    for (i, d) in table.iter_mut().enumerate() {
-        *d = (*d).max(safety_floor(KRAKEN_CURVE_FIRST_C + i as u8));
-    }
-    table
-}
-
 pub enum Event {
-    /// One Q565-encoded 640×640 frame for the LCD.
-    Frame(Vec<u8>),
+    /// One Q565-encoded frame for the LCD of `device`, which must be in frames or web
+    /// mode.
+    Frame { device: String, q565: Vec<u8> },
 }
 
-/// What the local API serves.
+/// What the API serves.
 #[derive(Clone, Default)]
 pub struct Snapshot {
+    pub status: Status,
+    pub readings: Readings,
     pub cpu_name: String,
     pub gpu_name: Option<String>,
-    pub readings: Readings,
-    pub kraken: Option<KrakenStatus>,
-    pub hub: Option<HubStatus>,
-    pub duties: Vec<(String, u8)>,
+    /// The connected LCD in frames mode: (device id, width, height).
+    pub frame_target: Option<(String, u16, u16)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Target {
-    Kraken(KrakenChannel),
-    /// Index 0..5 of a Control Hub fan port.
-    Hub(usize),
-}
-
-struct Channel {
-    target: Target,
-    label: String,
-    source: Source,
-    curve: Curve,
-    duty: u8,
-    sent: Option<u8>,
-}
-
-impl Channel {
-    fn want(&self, cpu: Option<f32>, gpu: Option<f32>, liquid: Option<f32>, failsafe: u8) -> u8 {
-        let temp = match self.source {
-            Source::Fixed => Some(0.0),
-            Source::Cpu => cpu,
-            Source::Gpu => gpu,
-            Source::Liquid => liquid,
-        };
-        temp.map_or(failsafe, |t| self.curve.duty_at(t))
-    }
-}
-
-struct Slot<T> {
-    dev: Option<T>,
+struct Slot {
+    found: Found,
+    dev: Option<Box<dyn Driver>>,
+    /// The last `describe()`, with readings filled in.
+    info: Device,
+    sensors: Vec<(&'static str, &'static str, Unit)>,
+    reading: Option<Reading>,
     next_try: Instant,
     last_error: Option<String>,
     failures: u32,
+    applied: bool,
+    /// Fans running a curve stored on the device.
+    on_device: HashSet<String>,
+    /// What the device was last given, so a config change only resends what it
+    /// changes: resent lighting restarts effects and takes 150 ms per packet.
+    lights_sent: HashMap<String, Light>,
+    lcd_sent: Option<Lcd>,
+    curves_sent: HashMap<String, DeviceCurve>,
+    sent: HashMap<String, (u8, Instant)>,
+    last_frame: Option<Instant>,
+    lcd_error_at: Option<Instant>,
 }
 
-impl<T> Slot<T> {
-    fn new() -> Slot<T> {
-        Slot { dev: None, next_try: Instant::now(), last_error: None, failures: 0 }
+impl Slot {
+    fn new(found: Found) -> Slot {
+        let info = Device { id: found.id.clone(), name: found.model.name.into(), ..Default::default() };
+        Slot {
+            found,
+            dev: None,
+            info,
+            sensors: Vec::new(),
+            reading: None,
+            next_try: Instant::now(),
+            last_error: None,
+            failures: 0,
+            applied: false,
+            on_device: HashSet::new(),
+            lights_sent: HashMap::new(),
+            lcd_sent: None,
+            curves_sent: HashMap::new(),
+            sent: HashMap::new(),
+            last_frame: None,
+            lcd_error_at: None,
+        }
     }
+
+    fn id(&self) -> &str {
+        &self.found.id
+    }
+}
+
+/// The channel part of `<device>/<channel>` if it is on device `id`. A free function,
+/// so it borrows only the id while the driver is borrowed mutably.
+fn local<'a>(id: &str, channel: &'a str) -> Option<&'a str> {
+    channel.split_once('/').filter(|(d, _)| *d == id).map(|(_, c)| c)
 }
 
 pub struct Daemon {
     cfg: Config,
+    cfg_path: PathBuf,
+    cfg_stamp: Vec<Option<SystemTime>>,
+    cfg_error: Option<String>,
+    engine: Engine,
     api: HidApi,
     sensors: Sensors,
-    kraken: Slot<Kraken>,
-    hub: Slot<ControlHub>,
-    wants_kraken: bool,
-    wants_hub: bool,
-    channels: Vec<Channel>,
-    cpu_smooth: Smoother,
-    gpu_smooth: Smoother,
-    hub_sent: Option<([Option<u8>; HUB_FAN_CHANNELS], Instant)>,
-    lcd_api: bool,
-    last_frame: Option<Instant>,
-    lcd_error_at: Option<Instant>,
+    slots: Vec<Slot>,
+    unsupported: Vec<Unsupported>,
+    next_scan: Instant,
+    last_tick: Option<Instant>,
     shared: Arc<Mutex<Snapshot>>,
     start: Instant,
     verbose: bool,
+    /// Simulated devices instead of USB.
+    demo: bool,
+    /// Curves already reported as missing their sensor, so a reload does not repeat it.
+    warned: HashSet<String>,
+    /// Where renderers send their frames: the same queue as the API's.
+    frames: SyncSender<Event>,
+    /// Web pages being rendered, by device.
+    pages: HashMap<String, Rendering>,
+}
+
+struct Rendering {
+    renderer: web::Renderer,
+    logged: Option<String>,
+    shown: bool,
 }
 
 impl Daemon {
-    pub fn new(cfg: Config, sensors: Sensors, shared: Arc<Mutex<Snapshot>>, verbose: bool) -> anyhow::Result<Daemon> {
-        let mut channels = Vec::new();
-        for (cooling, channel, label) in [
-            (&cfg.pump, KrakenChannel::Pump, "pump"),
-            (&cfg.radiator, KrakenChannel::Fan, "radiator"),
-        ] {
-            // Liquid and fixed curves are stored on the cooler and need no host.
-            if let Some(c) = cooling.as_ref().filter(|c| matches!(c.source, Source::Cpu | Source::Gpu)) {
-                channels.push(Channel {
-                    target: Target::Kraken(channel),
-                    label: label.into(),
-                    source: c.source,
-                    curve: c.curve(),
-                    duty: cfg.failsafe_duty,
-                    sent: None,
-                });
-            }
-        }
-        for f in &cfg.hub_fans {
-            let label = if f.name.is_empty() { format!("hub fan {}", f.port) } else { format!("hub fan {} ({})", f.port, f.name) };
-            channels.push(Channel {
-                target: Target::Hub(f.port - 1),
-                label,
-                source: f.cooling.source,
-                curve: f.cooling.curve(),
-                duty: cfg.failsafe_duty,
-                sent: None,
-            });
-        }
-        let wants_kraken = cfg.pump.is_some()
-            || cfg.radiator.is_some()
-            || cfg.ring.is_some()
-            || cfg.external.is_some()
-            || cfg.lcd.is_some()
-            || channels.iter().any(|c| c.source == Source::Liquid);
-        let wants_hub = !cfg.hub_fans.is_empty() || !cfg.hub_leds.is_empty();
-        let dt = Duration::from_millis(cfg.interval_ms).as_secs_f32();
-        // Per-second rates: rise within a few seconds, settle over half a minute.
-        let rate = |per_s: f32| 1.0 - (1.0 - per_s).powf(dt);
+    /// `cfg_error` says why the file at `cfg_path` is not what `cfg` came from.
+    pub fn new(
+        cfg_path: PathBuf,
+        cfg: Config,
+        cfg_error: Option<String>,
+        sensors: Sensors,
+        shared: Arc<Mutex<Snapshot>>,
+        frames: SyncSender<Event>,
+        verbose: bool,
+        demo: bool,
+    ) -> anyhow::Result<Daemon> {
         let daemon = Daemon {
-            lcd_api: cfg.lcd.as_ref().is_some_and(|l| l.mode == "api"),
+            engine: Engine::new(&cfg),
+            cfg_stamp: config::stamp(&cfg_path, cfg.profile.as_deref()),
+            cfg_path,
+            cfg,
+            cfg_error,
             api: HidApi::new()?,
-            kraken: Slot::new(),
-            hub: Slot::new(),
-            wants_kraken,
-            wants_hub,
-            channels,
-            cpu_smooth: Smoother::new(rate(0.35), rate(0.08)),
-            gpu_smooth: Smoother::new(rate(0.35), rate(0.08)),
-            hub_sent: None,
-            last_frame: None,
-            lcd_error_at: None,
+            sensors,
+            slots: Vec::new(),
+            unsupported: Vec::new(),
+            next_scan: Instant::now(),
+            last_tick: None,
             shared,
             start: Instant::now(),
             verbose,
-            sensors,
-            cfg,
+            demo,
+            warned: HashSet::new(),
+            frames,
+            pages: HashMap::new(),
         };
-        for c in &daemon.channels {
-            let missing = match c.source {
-                Source::Cpu => !daemon.sensors.has_cpu_temp(),
-                Source::Gpu => daemon.sensors.gpu_name.is_none(),
-                _ => false,
-            };
-            if missing {
-                daemon.log(&format!(
-                    "{}: no {:?} temperature, holding {} %",
-                    c.label, c.source, daemon.cfg.failsafe_duty
-                ));
-            }
-        }
+        let mut daemon = daemon;
+        daemon.warn_missing_sensors();
         Ok(daemon)
     }
 
@@ -202,23 +182,44 @@ impl Daemon {
         eprintln!("[{:>6}s] {msg}", self.start.elapsed().as_secs());
     }
 
+    fn warn_missing_sensors(&mut self) {
+        let host = self.sensors_now(&Readings::default());
+        let mut warned = HashSet::new();
+        for c in &self.cfg.curves {
+            let Some(sensor) = c.sensor() else { continue };
+            let is_host = host.iter().any(|s| s.id == sensor);
+            let why = if sensor == "cpu.temp" && !self.sensors.has_cpu_temp() {
+                "no CPU temperature (needs PawnIO and administrator rights)"
+            } else if sensor.starts_with("gpu.") && !is_host {
+                "no NVIDIA GPU sensors"
+            } else {
+                continue;
+            };
+            let key = format!("{} on {sensor}", c.name());
+            if !self.warned.contains(&key) {
+                self.log(&format!("curve {:?}: {why}; its fans hold {} %", c.name(), self.cfg.failsafe_duty));
+            }
+            warned.insert(key);
+        }
+        self.warned = warned;
+    }
+
     pub fn run(&mut self, events: &Receiver<Event>, stop: &AtomicBool) {
-        let interval = Duration::from_millis(self.cfg.interval_ms.max(250));
         let mut next = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             let now = Instant::now();
             if now >= next {
                 self.tick();
-                next = now + interval;
+                next = now + Duration::from_millis(self.cfg.interval_ms.max(250));
                 continue;
             }
             match events.recv_timeout((next - now).min(Duration::from_millis(250))) {
-                Ok(Event::Frame(mut frame)) => {
+                Ok(Event::Frame { mut device, mut q565 }) => {
                     // Only the newest frame matters.
-                    while let Ok(Event::Frame(newer)) = events.try_recv() {
-                        frame = newer;
+                    while let Ok(Event::Frame { device: d, q565: q }) = events.try_recv() {
+                        (device, q565) = (d, q);
                     }
-                    self.frame(&frame);
+                    self.frame(&device, &q565);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => std::thread::sleep(Duration::from_millis(250)),
@@ -228,284 +229,490 @@ impl Daemon {
     }
 
     fn tick(&mut self) {
-        self.ensure_kraken();
-        self.ensure_hub();
-        let readings = self.sensors.read();
-        let kraken = self.kraken_status();
-        let hub = self.hub_status();
-        let cpu = readings.cpu_temp_c.map(|t| self.cpu_smooth.update(t));
-        let gpu = readings.gpu_temp_c.map(|t| self.gpu_smooth.update(t));
-        let liquid = kraken.as_ref().map(|s| s.liquid_c);
-        let critical = liquid.is_some_and(|l| l >= LIQUID_CRITICAL_C);
-        let failsafe = self.cfg.failsafe_duty;
-        for c in &mut self.channels {
-            c.duty = if critical { 100 } else { c.want(cpu, gpu, liquid, failsafe) };
+        let now = Instant::now();
+        let interval = Duration::from_millis(self.cfg.interval_ms).as_secs_f32();
+        let dt = self.last_tick.map_or(interval, |t| now.duration_since(t).as_secs_f32()).min(5.0);
+        self.last_tick = Some(now);
+        self.reload();
+        self.scan();
+        self.open_devices();
+        for i in 0..self.slots.len() {
+            self.poll(i);
+            if self.slots[i].dev.is_some() && !self.slots[i].applied {
+                self.apply(i);
+            }
         }
-        self.drive_kraken();
-        self.drive_hub(false);
+        let readings = self.sensors.read();
+        let sensors = self.sensors_now(&readings);
+        let values: HashMap<&str, f32> = sensors.iter().filter_map(|s| Some((s.id.as_str(), s.value?))).collect();
+        let critical = self.slots.iter().any(|s| {
+            s.reading.as_ref().is_some_and(|r| r.sensors.iter().any(|&(id, v)| id == "liquid" && v >= LIQUID_CRITICAL_C))
+        });
+        self.engine.step(&|id| values.get(id).copied(), dt, critical);
+        self.drive(false);
+        self.render_pages();
         self.lcd_watchdog();
         if self.verbose {
-            let duties: Vec<String> = self.channels.iter().map(|c| format!("{} {} %", c.label, c.duty)).collect();
-            self.log(&format!(
-                "cpu {} gpu {} liquid {} | {}",
-                fmt_temp(cpu),
-                fmt_temp(gpu),
-                fmt_temp(liquid),
-                duties.join(", ")
-            ));
+            let shown: Vec<String> = sensors.iter().filter_map(|s| Some(format!("{} {:.1}", s.id, s.value?))).collect();
+            let duties: Vec<String> =
+                self.engine.duties().iter().filter_map(|(c, d)| Some(format!("{c} {} %", d.value()?))).collect();
+            self.log(&format!("{} | {}", shown.join(", "), duties.join(", ")));
         }
-        let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        s.cpu_name = self.sensors.cpu_name.clone();
-        s.gpu_name = self.sensors.gpu_name.clone();
-        s.readings = readings;
-        s.kraken = kraken;
-        s.hub = hub;
-        s.duties = self.channels.iter().map(|c| (c.label.clone(), c.duty)).collect();
+        self.publish(readings, sensors);
     }
 
-    fn ensure_kraken(&mut self) {
-        if !self.wants_kraken || self.kraken.dev.is_some() || Instant::now() < self.kraken.next_try {
+    fn reload(&mut self) {
+        let now = config::stamp(&self.cfg_path, self.cfg.profile.as_deref());
+        if now == self.cfg_stamp {
             return;
         }
-        self.kraken.next_try = Instant::now() + REOPEN_EVERY;
-        let _ = self.api.refresh_devices();
-        match self.open_kraken() {
-            Ok(k) => {
-                self.log(&format!("kraken: ready, firmware {}", fmt_version(k.firmware)));
-                self.kraken = Slot { dev: Some(k), ..Slot::new() };
-                for c in self.channels.iter_mut().filter(|c| matches!(c.target, Target::Kraken(_))) {
-                    c.sent = None;
+        self.cfg_stamp = now;
+        match Config::load(&self.cfg_path) {
+            Ok(cfg) if cfg == self.cfg => self.cfg_error = None,
+            Ok(cfg) => {
+                match &cfg.profile {
+                    Some(p) if cfg.profile != self.cfg.profile => {
+                        self.log(&format!("profile {p:?}, applying it"));
+                        // From now on the new profile's file is the one to watch.
+                        self.cfg_stamp = config::stamp(&self.cfg_path, Some(p));
+                    }
+                    _ => self.log("config changed, applying it"),
                 }
+                self.engine = Engine::new(&cfg);
+                self.cfg = cfg;
+                self.cfg_error = None;
+                for s in &mut self.slots {
+                    s.applied = false;
+                }
+                self.warn_missing_sensors();
             }
-            Err(e) => self.report_open_error(true, e),
+            Err(e) => {
+                let msg = format!("{e:#}");
+                if self.cfg_error.as_ref() != Some(&msg) {
+                    self.log(&format!("config not applied, the previous one keeps running: {msg}"));
+                }
+                self.cfg_error = Some(msg);
+            }
         }
     }
 
-    fn open_kraken(&self) -> anyhow::Result<Kraken> {
-        let mut k = Kraken::open(&self.api)?;
-        k.initialize()?;
-        for (cooling, channel) in [(&self.cfg.pump, KrakenChannel::Pump), (&self.cfg.radiator, KrakenChannel::Fan)] {
-            if let Some(c) = cooling.as_ref().filter(|c| matches!(c.source, Source::Liquid | Source::Fixed)) {
-                k.set_curve(channel, &kraken_table(&c.curve()))?;
-            }
-        }
-        if let Some(l) = &self.cfg.ring {
-            k.set_ring(&l.to_lighting()?)?;
-        }
-        if let Some(l) = &self.cfg.external {
-            k.set_external(&l.to_lighting()?)?;
-        }
-        if let Some(lcd) = &self.cfg.lcd {
-            // A screen that refuses a mode is not worth losing fan control over.
-            let shown = k.lcd_settings(lcd.brightness, (lcd.orientation / 90) as u8).and_then(|_| k.lcd_liquid());
-            if let Err(e) = shown {
-                self.log(&format!("kraken: lcd: {e:#}"));
-            }
-        }
-        Ok(k)
-    }
-
-    fn ensure_hub(&mut self) {
-        if !self.wants_hub || self.hub.dev.is_some() || Instant::now() < self.hub.next_try {
+    fn scan(&mut self) {
+        if Instant::now() < self.next_scan {
             return;
         }
-        self.hub.next_try = Instant::now() + REOPEN_EVERY;
-        let _ = self.api.refresh_devices();
-        let opened = (|| -> anyhow::Result<ControlHub> {
-            let mut h = ControlHub::open(&self.api)?;
-            h.initialize()?;
-            for l in &self.cfg.hub_leds {
-                h.set_lighting(l.port, &l.light.to_lighting()?)?;
-            }
-            Ok(h)
-        })();
-        match opened {
-            Ok(h) => {
-                self.log(&format!("hub: ready, firmware {}", fmt_version(h.firmware)));
-                self.hub = Slot { dev: Some(h), ..Slot::new() };
-                self.hub_sent = None;
-            }
-            Err(e) => self.report_open_error(false, e),
-        }
-    }
-
-    fn report_open_error(&mut self, kraken: bool, e: anyhow::Error) {
-        let msg = format!("{e:#}");
-        let (name, last) = if kraken {
-            ("kraken", &mut self.kraken.last_error)
+        self.next_scan = Instant::now() + RESCAN_EVERY;
+        let (found, unsupported) = if self.demo {
+            (drivers::demo::found(), Vec::new())
         } else {
-            ("hub", &mut self.hub.last_error)
+            let _ = self.api.refresh_devices();
+            drivers::scan(&self.api)
         };
-        // A device held by CAM fails the same way every few seconds; say it once.
-        if last.as_ref() != Some(&msg) {
-            *last = Some(msg.clone());
-            self.log(&format!("{name}: {msg}; retrying every {} s", REOPEN_EVERY.as_secs()));
-        }
-    }
-
-    fn kraken_status(&mut self) -> Option<KrakenStatus> {
-        let result = self.kraken.dev.as_ref()?.status();
-        match result {
-            Ok(s) => {
-                self.kraken.failures = 0;
-                Some(s)
-            }
-            Err(e) => {
-                self.kraken.failures += 1;
-                if self.kraken.failures >= MAX_FAILURES {
-                    self.log(&format!("kraken: lost ({e:#}), reopening"));
-                    self.kraken.dev = None;
+        for f in found {
+            match self.slots.iter_mut().find(|s| s.found.id == f.id) {
+                Some(s) if s.dev.is_none() => s.found = f,
+                Some(_) => {}
+                None => {
+                    self.log(&format!("{}: found {}", f.id, f.model.name));
+                    self.slots.push(Slot::new(f));
                 }
-                None
             }
         }
-    }
-
-    fn hub_status(&mut self) -> Option<HubStatus> {
-        let result = self.hub.dev.as_mut()?.status();
-        match result {
-            Ok(s) => {
-                self.hub.failures = 0;
-                Some(s)
-            }
-            Err(e) => {
-                self.hub.failures += 1;
-                if self.hub.failures >= MAX_FAILURES {
-                    self.log(&format!("hub: lost ({e:#}), reopening"));
-                    self.hub.dev = None;
-                }
-                None
+        for u in &unsupported {
+            if !self.unsupported.iter().any(|o| o.pid == u.pid) {
+                self.log(&format!("{:04x}:{:04x} {}: no driver yet", u.vid, u.pid, u.product));
             }
         }
+        self.unsupported = unsupported;
     }
 
-    fn drive_kraken(&mut self) {
-        let Some(k) = &self.kraken.dev else { return };
-        let mut failed = None;
-        for c in &mut self.channels {
-            let Target::Kraken(channel) = c.target else { continue };
-            if c.sent == Some(c.duty) {
+    fn open_devices(&mut self) {
+        let now = Instant::now();
+        for i in 0..self.slots.len() {
+            let s = &mut self.slots[i];
+            if s.dev.is_some() || now < s.next_try {
                 continue;
             }
-            match k.set_curve(channel, &kraken_table(&Curve::flat(c.duty))) {
-                Ok(()) => c.sent = Some(c.duty),
+            s.next_try = now + RESCAN_EVERY;
+            match s.found.open(&self.api) {
+                Ok(dev) => {
+                    let mut info = dev.describe();
+                    info.id = s.found.id.clone();
+                    s.sensors = dev.sensors();
+                    s.info = info;
+                    s.dev = Some(dev);
+                    s.applied = false;
+                    s.failures = 0;
+                    s.last_error = None;
+                    s.sent.clear();
+                    s.lights_sent.clear();
+                    s.lcd_sent = None;
+                    s.curves_sent.clear();
+                    let fw = s.info.firmware.clone().unwrap_or_else(|| "?".into());
+                    let id = s.found.id.clone();
+                    self.log(&format!("{id}: ready, firmware {fw}"));
+                }
                 Err(e) => {
-                    failed = Some(e);
-                    break;
+                    let msg = format!("{e:#}");
+                    // A device held by CAM fails the same way every few seconds; say it once.
+                    if s.last_error.as_ref() != Some(&msg) {
+                        s.last_error = Some(msg.clone());
+                        let id = s.found.id.clone();
+                        self.log(&format!("{id}: {msg}; retrying every {} s", RESCAN_EVERY.as_secs()));
+                    }
                 }
             }
         }
-        if let Some(e) = failed {
-            self.log(&format!("kraken: write failed ({e:#}), reopening"));
-            self.kraken.dev = None;
-        }
     }
 
-    fn drive_hub(&mut self, force: bool) {
-        let Some(h) = &self.hub.dev else { return };
-        let mut duties = [None; HUB_FAN_CHANNELS];
-        for c in &self.channels {
-            if let Target::Hub(i) = c.target {
-                duties[i] = Some(c.duty);
+    fn poll(&mut self, i: usize) {
+        let s = &mut self.slots[i];
+        let Some(dev) = s.dev.as_mut() else { return };
+        match dev.poll() {
+            Ok(r) => {
+                s.failures = 0;
+                for f in &mut s.info.fans {
+                    let got = r.fans.iter().find(|(id, _)| *id == f.id).map(|(_, x)| *x).unwrap_or_default();
+                    (f.rpm, f.duty, f.connected) = (got.rpm, got.duty, got.connected);
+                }
+                s.reading = Some(r);
             }
-        }
-        if duties.iter().all(Option::is_none) {
-            return;
-        }
-        let fresh = matches!(self.hub_sent, Some((d, at)) if d == duties && at.elapsed() < RESEND_EVERY);
-        if fresh && !force {
-            return;
-        }
-        match h.set_duties(&duties) {
-            Ok(()) => self.hub_sent = Some((duties, Instant::now())),
             Err(e) => {
-                self.log(&format!("hub: write failed ({e:#}), reopening"));
-                self.hub.dev = None;
+                s.failures += 1;
+                if s.failures >= MAX_FAILURES {
+                    s.dev = None;
+                    s.reading = None;
+                    s.last_error = Some(format!("{e:#}"));
+                    let id = s.found.id.clone();
+                    self.log(&format!("{id}: lost ({e:#}), reopening"));
+                }
             }
         }
     }
 
-    fn frame(&mut self, q565: &[u8]) {
-        if !self.lcd_api {
+    /// Lighting, the LCD and stored curves for one device, as far as they differ from
+    /// what it was last given. Config mistakes are logged and skipped; I/O errors
+    /// show up in the next poll.
+    fn apply(&mut self, i: usize) {
+        let mut notes = Vec::new();
+        let s = &mut self.slots[i];
+        let id = s.found.id.clone();
+        let Some(dev) = s.dev.as_mut() else { return };
+        for l in &self.cfg.lights {
+            let Some(light) = local(&s.found.id, &l.channel) else { continue };
+            if s.lights_sent.get(light) == Some(l) {
+                continue;
+            }
+            if !s.info.lights.iter().any(|x| x.id == light) {
+                notes.push(format!("light {}: this device has no {light:?}", l.channel));
+                continue;
+            }
+            match l.to_lighting().and_then(|lighting| dev.set_lighting(light, &lighting)) {
+                Ok(()) => {
+                    s.lights_sent.insert(light.to_string(), l.clone());
+                }
+                Err(e) => notes.push(format!("light {}: {e:#}", l.channel)),
+            }
+        }
+        let lcd_config = self.cfg.lcds.iter().find(|c| c.device == id);
+        if let Some(c) = lcd_config.filter(|c| s.lcd_sent.as_ref() != Some(*c)) {
+            match dev.lcd() {
+                None => notes.push(format!("lcd {id}: this device has no screen")),
+                Some(lcd) => {
+                    let shown = lcd.settings(c.brightness, (c.orientation / 90) as u8).and_then(|_| match c.mode {
+                        LcdMode::Liquid => lcd.show_builtin(),
+                        // The stream takes over when the first frame arrives.
+                        LcdMode::Frames | LcdMode::Web => Ok(()),
+                    });
+                    match shown {
+                        Ok(()) => s.lcd_sent = Some(c.clone()),
+                        // A screen that refuses a mode is not worth losing fan control over.
+                        Err(e) => notes.push(format!("lcd {id}: {e:#}")),
+                    }
+                }
+            }
+        }
+        if lcd_config.is_none() {
+            s.lcd_sent = None;
+            // Without an entry the watchdog no longer looks at this screen, so a stream
+            // that stopped would leave its last frame up for good.
+            if let Some(lcd) = dev.lcd().filter(|l| l.is_streaming()) {
+                if let Err(e) = lcd.show_builtin() {
+                    notes.push(format!("lcd {id}: {e:#}"));
+                }
+            }
+        }
+        let before = std::mem::take(&mut s.on_device);
+        let mut stored = HashMap::new();
+        for f in &self.cfg.fans {
+            let Some(fan) = local(&s.found.id, &f.channel) else { continue };
+            if !s.info.fans.iter().any(|x| x.id == fan) {
+                notes.push(format!("fan {}: this device has no {fan:?}", f.channel));
+                continue;
+            }
+            let Some(curve) = self.engine.device_curve(&f.channel) else { continue };
+            // The device can only use its own sensors.
+            let local = match &curve.sensor {
+                None => Some(None),
+                Some(sensor) => sensor.strip_prefix(&format!("{id}.")).map(Some),
+            };
+            let Some(local) = local else { continue };
+            if s.curves_sent.get(fan) == Some(&curve) && before.contains(fan) {
+                s.on_device.insert(fan.to_string());
+                stored.insert(fan.to_string(), curve);
+                continue;
+            }
+            match dev.store_curve(fan, local, &|v| curve.duty_at(v)) {
+                Ok(true) => {
+                    s.on_device.insert(fan.to_string());
+                    stored.insert(fan.to_string(), curve);
+                }
+                Ok(false) => {}
+                Err(e) => notes.push(format!("fan {}: storing its curve: {e:#}", f.channel)),
+            }
+        }
+        s.curves_sent = stored;
+        // Fans that left the device are driven from the host from now on.
+        s.sent.clear();
+        s.applied = true;
+        if s.on_device != before {
+            let mut on_device: Vec<String> = s.on_device.iter().map(|f| format!("{id}/{f}")).collect();
+            on_device.sort();
+            if on_device.is_empty() {
+                notes.push(format!("{id}: no curves run on the device"));
+            } else {
+                notes.push(format!("running on the device: {}", on_device.join(", ")));
+            }
+        }
+        for n in notes {
+            self.log(&n);
+        }
+    }
+
+    fn drive(&mut self, force: bool) {
+        let duties = self.engine.duties();
+        for i in 0..self.slots.len() {
+            let s = &mut self.slots[i];
+            let Some(dev) = s.dev.as_mut() else { continue };
+            let mut batch: Vec<(String, u8)> = Vec::new();
+            for (channel, duty) in &duties {
+                let Some(fan) = local(&s.found.id, channel) else { continue };
+                let Some(d) = duty.value() else { continue };
+                if s.on_device.contains(fan) || !s.info.fans.iter().any(|x| x.id == fan) {
+                    continue;
+                }
+                let fresh = s.sent.get(fan).is_some_and(|(sent, at)| *sent == d && at.elapsed() < RESEND_EVERY);
+                if force || !fresh {
+                    batch.push((fan.to_string(), d));
+                }
+            }
+            if batch.is_empty() {
+                continue;
+            }
+            let refs: Vec<(&str, u8)> = batch.iter().map(|(f, d)| (f.as_str(), *d)).collect();
+            match dev.set_duties(&refs) {
+                Ok(()) => {
+                    for (f, d) in batch {
+                        s.sent.insert(f, (d, Instant::now()));
+                    }
+                }
+                Err(e) => {
+                    s.dev = None;
+                    s.last_error = Some(format!("{e:#}"));
+                    let id = s.found.id.clone();
+                    self.log(&format!("{id}: write failed ({e:#}), reopening"));
+                }
+            }
+        }
+    }
+
+    fn frame(&mut self, device: &str, q565: &[u8]) {
+        if !self.cfg.lcds.iter().any(|c| c.device == device && matches!(c.mode, LcdMode::Frames | LcdMode::Web)) {
             return;
         }
-        self.last_frame = Some(Instant::now());
-        // Frames share this thread with the fans, so a cooler that stops answering LCD
-        // commands gets a rest instead of a timeout on every frame.
-        if self.lcd_error_at.is_some_and(|t| t.elapsed() < LCD_BACKOFF) {
+        let Some(s) = self.slots.iter_mut().find(|s| s.found.id == device) else { return };
+        s.last_frame = Some(Instant::now());
+        // Frames share this thread with the fans, so a device that stops answering
+        // LCD commands gets a rest instead of a timeout on every frame.
+        if s.lcd_error_at.is_some_and(|t| t.elapsed() < LCD_BACKOFF) {
             return;
         }
-        let Some(k) = self.kraken.dev.as_mut() else { return };
-        if let Err(e) = k.lcd_frame(q565) {
-            self.lcd_error_at = Some(Instant::now());
-            self.log(&format!("kraken: lcd frame: {e:#}; dropping frames for {} s", LCD_BACKOFF.as_secs()));
+        let Some(lcd) = s.dev.as_mut().and_then(|d| d.lcd()) else { return };
+        if let Err(e) = lcd.frame(q565) {
+            s.lcd_error_at = Some(Instant::now());
+            let id = s.found.id.clone();
+            self.log(&format!("{id}: lcd frame: {e:#}; dropping frames for {} s", LCD_BACKOFF.as_secs()));
         }
     }
 
     fn lcd_watchdog(&mut self) {
-        let stale = self.last_frame.is_none_or(|t| t.elapsed() > FRAME_STALE);
-        let Some(k) = self.kraken.dev.as_mut() else { return };
-        if self.lcd_api && stale && k.is_streaming() {
-            if let Err(e) = k.lcd_liquid() {
-                self.log(&format!("kraken: lcd: {e:#}"));
+        let mut errors = Vec::new();
+        for c in self.cfg.lcds.iter().filter(|c| matches!(c.mode, LcdMode::Frames | LcdMode::Web)) {
+            let Some(s) = self.slots.iter_mut().find(|s| s.found.id == c.device) else { continue };
+            let stale = s.last_frame.is_none_or(|t| t.elapsed() > FRAME_STALE);
+            let Some(lcd) = s.dev.as_mut().and_then(|d| d.lcd()) else { continue };
+            if stale && lcd.is_streaming() {
+                if let Err(e) = lcd.show_builtin() {
+                    errors.push(format!("{}: lcd: {e:#}", c.device));
+                }
             }
+        }
+        for e in errors {
+            self.log(&e);
         }
     }
 
-    /// Leaves the devices in a state that is safe without camless running.
-    fn shutdown(&mut self) {
-        let failsafe = self.cfg.failsafe_duty;
-        for c in &mut self.channels {
-            if c.source != Source::Fixed {
-                c.duty = failsafe;
+    /// A renderer for every connected LCD in web mode, restarted when its page changes.
+    fn render_pages(&mut self) {
+        let mut want = HashMap::new();
+        for c in self.cfg.lcds.iter().filter(|c| c.mode == LcdMode::Web) {
+            let Some(s) = self.slots.iter().find(|s| s.found.id == c.device && s.dev.is_some()) else { continue };
+            let Some(lcd) = &s.info.lcd else { continue };
+            let page = web::Page { url: c.url.clone(), fps: c.fps, width: lcd.width, height: lcd.height, round: lcd.round };
+            want.insert(c.device.clone(), page);
+        }
+        self.pages.retain(|device, r| want.get(device) == Some(&r.renderer.page));
+        let mut notes = Vec::new();
+        for (device, page) in want {
+            if !self.pages.contains_key(&device) {
+                notes.push(format!("{device}: opening {} for the LCD", page.url));
+                let renderer = web::Renderer::start(&device, page, self.shared.clone(), self.frames.clone());
+                self.pages.insert(device, Rendering { renderer, logged: None, shown: false });
             }
         }
-        self.drive_kraken();
-        self.drive_hub(true);
-        if let Some(k) = self.kraken.dev.as_mut() {
-            if k.is_streaming() {
-                let _ = k.lcd_liquid();
+        for (device, r) in &mut self.pages {
+            let state = r.renderer.state();
+            if state.error != r.logged {
+                if let Some(e) = &state.error {
+                    notes.push(format!("{device}: web page: {e}; trying again every 10 s"));
+                }
+                r.logged = state.error.clone();
+            }
+            if state.fps > 0.0 && !r.shown {
+                r.shown = true;
+                let browser = state.browser.unwrap_or_default();
+                notes.push(format!("{device}: showing {} ({browser}, up to {} fps)", r.renderer.page.url, r.renderer.page.fps));
             }
         }
-        self.log(&format!(
-            "stopped; host-driven fans left at {failsafe} %, the Kraken still speeds up from 45 °C liquid"
-        ));
-    }
-}
-
-fn fmt_temp(t: Option<f32>) -> String {
-    t.map_or("-".into(), |t| format!("{t:.1} °C"))
-}
-
-fn fmt_version(v: Option<(u8, u8, u8)>) -> String {
-    v.map_or("?".into(), |(a, b, c)| format!("{a}.{b}.{c}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn safety_floor_ramps_between_45_and_55() {
-        assert_eq!(safety_floor(20), 0);
-        assert_eq!(safety_floor(45), 0);
-        assert_eq!(safety_floor(50), 50);
-        assert_eq!(safety_floor(55), 100);
-        let t = kraken_table(&Curve::flat(30));
-        assert_eq!((t[0], t[29], t[30], t[34], t[39]), (30, 40, 50, 90, 100));
+        for n in notes {
+            self.log(&n);
+        }
     }
 
-    #[test]
-    fn missing_temperature_uses_failsafe() {
-        let c = Channel {
-            target: Target::Hub(0),
-            label: String::new(),
-            source: Source::Cpu,
-            curve: Curve::new(&[(40.0, 20), (80.0, 100)]),
-            duty: 0,
-            sent: None,
+    /// Host sensors, then every device sensor as `<device>.<sensor>`.
+    fn sensors_now(&self, readings: &Readings) -> Vec<Sensor> {
+        let mut out = readings.list(self.sensors.gpu_name.is_some());
+        for s in &self.slots {
+            for &(id, name, unit) in &s.sensors {
+                let value = s.reading.as_ref().and_then(|r| r.sensors.iter().find(|(x, _)| *x == id).map(|(_, v)| *v));
+                out.push(Sensor { id: format!("{}.{id}", s.id()), name: format!("{name} ({})", s.info.name), unit, value });
+            }
+        }
+        out
+    }
+
+    fn publish(&self, readings: Readings, sensors: Vec<Sensor>) {
+        let devices = self
+            .slots
+            .iter()
+            .map(|s| {
+                let mut d = s.info.clone();
+                d.connected = s.dev.is_some();
+                d.error = if s.dev.is_some() { None } else { s.last_error.clone() };
+                d.web = self.pages.get(s.id()).map(|r| {
+                    let state = r.renderer.state();
+                    WebState { url: r.renderer.page.url.clone(), browser: state.browser, fps: state.fps, error: state.error }
+                });
+                d
+            })
+            .collect();
+        let fans = self
+            .engine
+            .duties()
+            .into_iter()
+            .map(|(channel, duty)| FanValue {
+                on_device: self.slots.iter().any(|s| local(&s.found.id, channel).is_some_and(|f| s.on_device.contains(f))),
+                failsafe: matches!(duty, Duty::Failsafe(_)),
+                duty: duty.value(),
+                channel: channel.to_string(),
+            })
+            .collect();
+        let curves = self
+            .cfg
+            .curves
+            .iter()
+            .map(|c| CurveValue {
+                name: c.name().to_string(),
+                input: self.engine.curve_input(c.name()),
+                duty: self.engine.curve_value(c.name()),
+            })
+            .collect();
+        let status = Status {
+            version: env!("CARGO_PKG_VERSION").into(),
+            config_path: self.cfg_path.display().to_string(),
+            config_error: self.cfg_error.clone(),
+            devices,
+            unsupported: self.unsupported.clone(),
+            sensors,
+            curves,
+            fans,
         };
-        assert_eq!(c.want(None, Some(90.0), Some(30.0), 70), 70);
-        assert_eq!(c.want(Some(60.0), None, None, 70), 60);
+        let frame_target = self.cfg.lcds.iter().filter(|c| c.mode == LcdMode::Frames).find_map(|c| {
+            let s = self.slots.iter().find(|s| s.found.id == c.device && s.dev.is_some())?;
+            let lcd = s.info.lcd.as_ref()?;
+            Some((c.device.clone(), lcd.width, lcd.height))
+        });
+        let mut snap = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        *snap = Snapshot {
+            status,
+            readings,
+            cpu_name: self.sensors.cpu_name.clone(),
+            gpu_name: self.sensors.gpu_name.clone(),
+            frame_target,
+        };
+    }
+
+    /// Leaves the devices in a state that is safe without camless running: host-driven
+    /// fans at the failsafe duty (fixed ones at theirs), LCDs on their own screen.
+    fn shutdown(&mut self) {
+        // Browsers close first, so no frame comes after the LCD's own screen.
+        self.pages.clear();
+        let failsafe = self.cfg.failsafe_duty;
+        let fixed: HashMap<String, u8> = self
+            .engine
+            .duties()
+            .iter()
+            .filter_map(|(c, d)| {
+                let curve = self.engine.device_curve(c)?;
+                Some((c.to_string(), curve.sensor.is_none().then_some(d.value()?)?))
+            })
+            .collect();
+        let duties: Vec<(String, Duty)> = self
+            .engine
+            .duties()
+            .into_iter()
+            .map(|(c, d)| (c.to_string(), if d == Duty::Unmanaged { d } else { Duty::Set(*fixed.get(c).unwrap_or(&failsafe)) }))
+            .collect();
+        let mut set = 0;
+        for s in &mut self.slots {
+            let Some(dev) = s.dev.as_mut() else { continue };
+            let batch: Vec<(&str, u8)> = duties
+                .iter()
+                .filter_map(|(c, d)| Some((local(&s.found.id, c)?, d.value()?)))
+                .filter(|(f, _)| !s.on_device.contains(*f) && s.info.fans.iter().any(|x| x.id == *f))
+                .collect();
+            if !batch.is_empty() && dev.set_duties(&batch).is_ok() {
+                set += batch.len();
+            }
+            if let Some(lcd) = dev.lcd() {
+                if lcd.is_streaming() {
+                    let _ = lcd.show_builtin();
+                }
+            }
+        }
+        if set > 0 {
+            self.log(&format!("stopped; {set} host-driven fans left at {failsafe} % or their fixed duty"));
+        } else {
+            self.log("stopped");
+        }
     }
 }

@@ -1,0 +1,1689 @@
+/* camless's window: Monitoring, Cooling, Lighting and Settings in NZXT CAM's layout,
+   built on the data in store.js and the controls in kit.js. */
+(function () {
+  'use strict';
+  const S = window.S, K = window.K, D = window.KrakenDraw;
+  const { h, esc, I, track, row, select, choice, slider, toggle, button, modal, toast } = K;
+  const { clamp, clone } = S.util;
+  const TAU = Math.PI * 2;
+  const FONT = K.FONT;
+
+  /* --------------------------------------------------------------- helpers */
+
+  const n1 = (v) => String(Math.round(v * 10) / 10);
+  const listText = (xs) => (xs.length < 2 ? xs[0] || '' : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+  const failsafe = () => (S.config ? S.config.failsafe_duty : 70);
+  const devName = (id) => { const d = S.device(id); return d ? d.name : id; };
+  const hasSetup = (c) => !!c && ['curve', 'fan', 'light', 'lcd'].some((k) => (c[k] || []).length);
+  const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+
+  // A sensor value with its unit, temperatures in the unit picked in Settings.
+  function reading(id, v, dp = 0) {
+    if (v == null) return 'N/A';
+    const u = S.unitOf(id);
+    if (u === 'celsius') return K.temp(v, dp);
+    if (u === 'percent') return `${Math.round(v)}%`;
+    return `${Math.round(v)} W`;
+  }
+  function axisText(id, t) {
+    const u = S.unitOf(id);
+    if (u === 'celsius') return `${Math.round(K.toUnit(t))}°`;
+    if (u === 'percent') return `${Math.round(t)}%`;
+    return `${Math.round(t)} W`;
+  }
+  // A fan's name, with its device's when there is more than one device.
+  function fanLabel(id) {
+    const many = new Set(S.fans().map((f) => f.dev)).size > 1;
+    return many ? `${S.fanName(id)} (${devName(S.devOf(id))})` : S.fanName(id);
+  }
+
+  // Runs an app action; a refusal shows as a toast.
+  async function act(path, body) {
+    try { return await S.action(path, body); } catch (e) { toast(e.message); return null; }
+  }
+
+  function input(o) {
+    const el = h(`<input class="cam-input" type="${o.type || 'text'}" spellcheck="false" autocomplete="off">`);
+    if (o.value != null) el.value = o.value;
+    if (o.placeholder) el.placeholder = o.placeholder;
+    if (o.label) el.setAttribute('aria-label', o.label);
+    for (const k of ['min', 'max', 'step']) if (o[k] != null) el.setAttribute(k, o[k]);
+    if (o.width) el.style.width = o.width;
+    if (o.onChange) el.addEventListener('change', () => o.onChange(el.value, el));
+    el.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (o.onEnter) o.onEnter(el.value); else el.blur();
+    });
+    return el;
+  }
+
+  // A number with its unit; o.get() and o.set(v). Values outside min..max are clamped.
+  function numField(o) {
+    const wrap = h('<span class="cam-num"></span>');
+    const inp = input({
+      type: 'number', value: n1(o.get()), label: o.label, min: o.min, max: o.max, step: o.step || 'any',
+      onChange: (v, el) => {
+        const x = parseFloat(v);
+        if (!Number.isFinite(x)) { el.value = n1(o.get()); return; }
+        const y = Math.round(clamp(x, o.min ?? -Infinity, o.max ?? Infinity) * 10) / 10;
+        el.value = n1(y);
+        o.set(y);
+      },
+    });
+    wrap.appendChild(inp);
+    if (o.unit) { const u = h('<span class="cam-small"></span>'); u.textContent = o.unit; wrap.appendChild(u); }
+    wrap.input = inp;
+    wrap.set = (v) => { if (document.activeElement !== inp) inp.value = n1(v); };
+    return wrap;
+  }
+
+  // Asks for a name. Resolves to it, trimmed, or null.
+  function ask(o) {
+    return new Promise((resolve) => {
+      let done = false, inp = null, err = null;
+      const submit = (api) => {
+        const v = inp.value.trim();
+        const e = o.validate ? o.validate(v) : v ? '' : 'Enter a name.';
+        if (e) { err.textContent = e; inp.focus(); return false; }
+        done = true;
+        resolve(v);
+        if (api) api.close();
+        return true;
+      };
+      modal({
+        title: o.title,
+        render(body, api) {
+          if (o.text) body.appendChild(h(`<p class="cam-hint cam-lead">${o.text}</p>`));
+          const lab = h('<label class="cam-field"><span></span></label>');
+          lab.firstElementChild.textContent = o.label;
+          inp = input({ value: o.value || '', onEnter: () => submit(api) });
+          inp.addEventListener('input', () => { err.textContent = ''; });
+          lab.appendChild(inp);
+          err = h('<p class="cam-field-err" role="alert"></p>');
+          body.append(lab, err);
+          if (o.extra) o.extra(body);
+        },
+        actions: [{ label: 'Cancel' }, { label: o.ok || 'Save', primary: true, onClick: () => submit(null) }],
+        onClose: () => { if (!done) resolve(null); },
+        ready: () => inp.select(),
+      });
+    });
+  }
+
+  function confirmBox(o) {
+    return new Promise((resolve) => {
+      let done = false;
+      modal({
+        title: o.title,
+        render(body) { body.appendChild(h(`<p class="cam-hint cam-lead">${o.text}</p>`)); },
+        actions: [{ label: 'Cancel' }, { label: o.ok, primary: true, onClick: () => { done = true; resolve(true); } }],
+        onClose: () => { if (!done) resolve(false); },
+      });
+    });
+  }
+
+  /* ----------------------------------------------------------------- shell */
+
+  const NAV = [
+    { id: 'monitoring', label: 'Monitoring', icon: 'monitoring' },
+    { id: 'cooling', label: 'Cooling', icon: 'cooling' },
+    { id: 'lighting', label: 'Lighting', icon: 'lighting' },
+    { spacer: true },
+    { id: 'settings', label: 'Settings', icon: 'settings' },
+  ];
+  const PAGES = { monitoring, cooling, lighting, settings };
+  let root = null, main = null, content = null, dispose = null, page = null, built = null;
+
+  /* What the pages are built from. When it changes, say after a profile switch or
+     once the service answers, the page is built again. */
+  function layoutKey() {
+    if (!S.server) return 'loading';
+    return JSON.stringify([
+      !!S.config,
+      S.devices().map((d) => [d.id, d.connected, !!d.lcd]),
+      S.fans().map((f) => f.id + (f.hw && f.hw.connected === false && !S.fanCfg(f.id) ? '-' : '')),
+      S.lights().map((l) => l.id),
+      S.screens().map((s) => s.id),
+    ]);
+  }
+  // Not while something is dragged or a dialog or menu is open.
+  const busy = () => !!document.querySelector('.ce-dragging, .cam-backdrop, .cam-menu');
+
+  function boot() {
+    const light = K.prefs.theme === 'light';
+    document.body.classList.toggle('light', light);
+    root = h(`<div class="cam" data-theme="${light ? 'light' : 'dark'}"><div class="cam-body"><nav class="cam-nav" aria-label="Main"></nav><main class="cam-main"><div class="cam-content"></div></main></div></div>`);
+    document.body.prepend(root);
+    K.setRoot(root);
+    const nav = root.querySelector('.cam-nav');
+    main = root.querySelector('.cam-main');
+    content = root.querySelector('.cam-content');
+    nav.innerHTML = `<div class="cam-logo">${K.LOGO}<span>camless</span></div>` + NAV.map((n) => (n.spacer ? '<div class="spacer"></div>'
+      : `<a href="#${n.id}" data-id="${n.id}" title="${esc(n.label)}">${I[n.icon]}<span class="lbl">${esc(n.label)}</span></a>`)).join('');
+    K.on('prefs', (k) => {
+      if (k !== 'theme') return;
+      root.dataset.theme = K.prefs.theme;
+      document.body.classList.toggle('light', K.prefs.theme === 'light');
+    });
+    const maybe = () => { if (layoutKey() !== built && !busy()) go(); };
+    S.on('state', maybe);
+    S.on('config', maybe);
+    addEventListener('hashchange', go);
+    go();
+  }
+
+  function go() {
+    built = layoutKey();
+    let id = decodeURIComponent(location.hash.slice(1)) || K.prefs.page || 'cooling';
+    if (!PAGES[id]) id = 'cooling';
+    if (K.prefs.page !== id) K.setPref('page', id);
+    const top = main.scrollTop;
+    if (dispose) dispose();
+    K.closeOverlays();
+    content.textContent = '';
+    dispose = K.withScope(() => {
+      alerts(content);
+      if (S.server) PAGES[id](content);
+      else K.pageHead(content, NAV.find((n) => n.id === id).label);
+    });
+    root.querySelectorAll('.cam-nav a').forEach((a) => { if (a.dataset.id === id) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+    main.scrollTop = id === page ? top : 0;
+    page = id;
+  }
+
+  /* -------------------------------------------------------------- alerts */
+
+  // What needs attention, above every page.
+  function currentAlerts() {
+    const sv = S.server, out = [];
+    if (!sv) return out;
+    if (sv.load_error) {
+      out.push({ kind: 'error', html: `<b>The config file has a mistake, so camless does not change it.</b> Fix it and this window picks it up.<span class="cam-err">${esc(sv.load_error)}</span>` });
+    }
+    if (S.st.saveError) out.push({ kind: 'error', html: `<b>The last change was not saved.</b><span class="cam-err">${esc(S.st.saveError)}</span>` });
+    const status = S.status;
+    if (!status) {
+      const apiOff = S.config && S.config.api && S.config.api.enabled === false;
+      if (sv.starting) out.push({ kind: 'info', html: '<b>Starting the camless service…</b>' });
+      else if (apiOff) out.push({ kind: 'warn', html: '<b>Local API is off, so this window cannot see the camless service.</b> Changes are still saved, and the service applies them. Turn Local API on in Settings; it takes effect when the service restarts.' });
+      else {
+        out.push({
+          kind: 'warn',
+          html: '<b>The camless service is not running.</b> Curves that camless sets are not applied until it starts; curves stored on a cooler keep running. Changes here are saved.',
+          button: sv.can_start ? { label: 'Start camless', onClick: () => act('service/start', {}) } : null,
+        });
+      }
+      return out;
+    }
+    if (status.config_error) out.push({ kind: 'error', html: `<b>The service could not apply the saved settings, so it keeps running the previous ones.</b><span class="cam-err">${esc(status.config_error)}</span>` });
+    const hot = status.sensors.filter((s) => S.isLiquid(s.id) && s.value != null && s.value >= 55);
+    if (hot.length) {
+      const max = Math.max(...hot.map((s) => s.value));
+      out.push({ kind: 'error', html: `<b>Liquid is at ${K.temp(max)}.</b> Every fan camless controls runs at 100% until it cools below ${K.temp(55, 0)}.` });
+    }
+    for (const d of status.devices) if (d.error) out.push({ kind: 'warn', html: `<b>${esc(d.name)} is not available.</b> ${esc(cap(d.error))}` });
+    const fs = status.fans.filter((f) => f.failsafe);
+    if (fs.length) {
+      const names = listText(fs.map((f) => fanLabel(f.channel)));
+      out.push({ kind: 'warn', html: `<b>${esc(names)} ${fs.length > 1 ? 'run' : 'runs'} at the failsafe ${failsafe()}%.</b> ${fs.length > 1 ? 'Their curves have' : 'Its curve has'} no sensor reading.` });
+    }
+    return out;
+  }
+
+  function alerts(host) {
+    const box = h('<div class="cam-alerts"></div>');
+    host.appendChild(box);
+    let last = '';
+    const upd = () => {
+      const list = currentAlerts();
+      const key = JSON.stringify(list.map((a) => [a.kind, a.html, !!a.button]));
+      if (key === last) return;
+      last = key;
+      box.textContent = '';
+      for (const a of list) {
+        const el = h(`<div class="cam-alert${a.kind === 'warn' ? ' warn' : a.kind === 'info' ? ' info' : ''}" role="${a.kind === 'error' ? 'alert' : 'status'}">${a.kind === 'info' ? I.info : I.warn}<div class="txt">${a.html}</div></div>`);
+        if (a.button) el.appendChild(button(a.button.label, { small: true, onClick: a.button.onClick }));
+        box.appendChild(el);
+      }
+    };
+    track(S.on('state', upd));
+    track(S.on('saved', upd));
+    track(S.on('config', upd));
+    track(K.on('prefs', upd));
+    upd();
+  }
+
+  function emptyState(host, html) {
+    host.appendChild(h(`<div class="cam-panel cam-empty">${html}</div>`));
+  }
+
+  /* -------------------------------------------------------------- profiles */
+
+  function unusedName(base) {
+    const taken = (S.server.profiles || []).map((p) => p.name.toLowerCase());
+    if (!taken.includes(base.toLowerCase())) return base;
+    for (let i = 2; ; i++) if (!taken.includes(`${base} ${i}`.toLowerCase())) return `${base} ${i}`;
+  }
+
+  // The rules camless's config has for a profile name, which is also a file name.
+  function profileNameError(v, except) {
+    if (!v) return 'Enter a name.';
+    if (/[<>:"/\\|?*\u0000-\u001f]/.test(v)) return 'A profile name cannot contain < > : " / \\ | ? *';
+    if (v.endsWith('.')) return 'A profile name cannot end with a dot.';
+    if (v.length > 60) return 'Use at most 60 characters.';
+    if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(v.split('.')[0].trim())) return 'Windows keeps this name for itself.';
+    if ((S.server.profiles || []).some((p) => p.name.toLowerCase() === v.toLowerCase() && p.name !== except)) return 'There is already a profile with this name.';
+    return '';
+  }
+
+  async function switchTo(name) {
+    // The setup running now would be lost, so it becomes a profile first.
+    if (S.config && !S.config.profile && hasSetup(S.config)) return saveCurrent(name);
+    if (!(await act('profiles/switch', { name }))) return false;
+    toast(`Switched to ${name}.`);
+    return true;
+  }
+
+  async function saveCurrent(next) {
+    const name = await ask({
+      title: next ? 'Keep the current setup' : 'Save as profile',
+      text: next ? `The setup running now is in no profile. Save it as one before switching to <b>${esc(next)}</b>, so it is kept.` : 'The setup running now becomes a profile and keeps running.',
+      label: 'Profile name', value: unusedName('My setup'), ok: next ? 'Save and switch' : 'Save', validate: (v) => profileNameError(v),
+    });
+    if (!name || !(await act('profiles/save-current', { name }))) return false;
+    if (next) return switchTo(next);
+    toast(`Saved as profile ${name}.`);
+    return true;
+  }
+
+  async function newProfile() {
+    let copy = true;
+    const name = await ask({
+      title: 'New profile', label: 'Name', value: unusedName('Profile'), ok: 'Create', validate: (v) => profileNameError(v),
+      extra: (body) => {
+        const box = h('<div class="cam-rows cam-box"></div>');
+        box.appendChild(row('Start from', null, choice({ options: [{ value: true, label: 'Current setup' }, { value: false, label: 'Nothing' }], value: true, label: 'Start from', onChange: (v) => { copy = v; } })));
+        body.appendChild(box);
+      },
+    });
+    if (name && (await act('profiles/create', { name, copy }))) toast(`Created profile ${name}. Switch to it to use it.`);
+  }
+
+  async function renameProfile(from) {
+    const to = await ask({ title: 'Rename profile', label: 'Name', value: from, ok: 'Rename', validate: (v) => profileNameError(v, from) });
+    if (to && to !== from && (await act('profiles/rename', { from, to }))) toast(`Renamed to ${to}.`);
+  }
+
+  async function deleteProfile(name) {
+    const ok = await confirmBox({ title: 'Delete profile', text: `Delete <b>${esc(name)}</b>? Its curves, fans, lighting and LCD settings are removed from this PC.`, ok: 'Delete' });
+    if (ok && (await act('profiles/delete', { name }))) toast(`Deleted ${name}.`);
+  }
+
+  async function importCam() {
+    const ok = await confirmBox({
+      title: 'Import from NZXT CAM',
+      text: "camless reads CAM's active profile from its own files and makes a camless profile of it: cooling curves, fan names, lighting and the LCD mode. CAM is not changed, and what runs now stays until you switch.",
+      ok: 'Import',
+    });
+    if (!ok) return;
+    const r = await act('import/cam', {});
+    if (r) imported(r.name, r.notes);
+  }
+
+  function importFile() {
+    document.querySelectorAll('input[type=file].cam-pick').forEach((x) => x.remove());
+    const inp = h('<input type="file" class="cam-pick" accept=".toml" hidden>');
+    inp.addEventListener('change', async () => {
+      const f = inp.files[0];
+      inp.remove();
+      if (!f) return;
+      if (f.size > 1 << 20) { toast(`${f.name} is too large for a camless.toml.`); return; }
+      const r = await act('import/file', { name: f.name, text: await f.text() });
+      if (r) imported(r.name, []);
+    });
+    document.body.appendChild(inp);
+    inp.click();
+  }
+
+  function imported(name, notes) {
+    modal({
+      title: 'Imported',
+      render(body) {
+        body.appendChild(h(`<p class="cam-hint cam-lead">It is the new profile <b>${esc(name)}</b>. Switch to it to apply it.</p>`));
+        if (notes && notes.length) {
+          const ul = h('<ul class="cam-notes"></ul>');
+          for (const n of notes) { const li = h('<li></li>'); li.textContent = n; ul.appendChild(li); }
+          body.append(h('<p class="cam-hint">Notes from the import:</p>'), ul);
+        }
+      },
+      actions: [{ label: 'Not now' }, { label: 'Switch to it', primary: true, onClick: () => { switchTo(name); } }],
+    });
+  }
+
+  function profilesDialog() {
+    modal({
+      title: 'Profiles',
+      render(body) {
+        body.appendChild(h('<p class="cam-hint cam-lead">A profile is a whole setup: curves, fans, lighting and the LCD. Switching applies it at once.</p>'));
+        const list = h('<div class="cam-rows cam-box"></div>');
+        body.appendChild(list);
+        const draw = K.region(list);
+        let key = null;
+        const upd = () => {
+          const sv = S.server;
+          const k = JSON.stringify([sv.profiles, S.config && S.config.profile, hasSetup(S.config)]);
+          if (k === key) return;
+          key = k;
+          draw((host) => {
+            const cur = S.config && S.config.profile;
+            if (S.config && !cur) {
+              host.appendChild(hasSetup(S.config)
+                ? row('Current setup', 'In no profile yet. Save it as one to keep it when you switch.', button('Save as profile', { small: true, onClick: () => saveCurrent() }))
+                : row('Current setup', 'Empty, and in no profile.', null));
+            }
+            for (const p of sv.profiles || []) {
+              const running = p.name === cur;
+              const r = row(p.name, p.error ? `<span class="cam-bad">${esc(p.error)}</span>` : esc(p.summary), null);
+              const ctl = r.lastElementChild;
+              if (running) ctl.appendChild(h('<span class="cam-status">Running</span>'));
+              else {
+                const sw = button('Switch', { small: true, primary: true, onClick: () => switchTo(p.name) });
+                sw.disabled = !!p.error;
+                ctl.appendChild(sw);
+              }
+              ctl.appendChild(button('Rename', { small: true, onClick: () => renameProfile(p.name) }));
+              const del = button('Delete', { small: true, onClick: () => deleteProfile(p.name) });
+              del.disabled = running;
+              if (running) del.title = 'Switch to another profile before deleting this one.';
+              ctl.appendChild(del);
+              host.appendChild(r);
+            }
+          });
+        };
+        track(S.on('state', upd));
+        upd();
+      },
+      actions: [
+        { label: 'New profile', onClick: () => { newProfile(); return false; } },
+        { label: 'Import from NZXT CAM', onClick: () => { importCam(); return false; } },
+        { label: 'Import file', onClick: () => { importFile(); return false; } },
+        { label: 'Done', primary: true },
+      ],
+    });
+  }
+
+  // The profile picker in the Cooling and Lighting page heads.
+  function profileControls() {
+    const NONE = '\u0000';
+    const wrap = h('<div class="cam-profile"><span class="cam-small">Profile</span></div>');
+    const opts = () => {
+      const o = (S.server.profiles || []).map((p) => ({ value: p.name, label: p.name, desc: p.error ? 'has a mistake' : '' }));
+      if (S.config && !S.config.profile) o.unshift({ value: NONE, label: 'None' });
+      return o;
+    };
+    const value = () => (S.config && S.config.profile) || NONE;
+    const sel = select({ options: opts(), value: value(), label: 'Profile', onChange: async (v) => { if (v === NONE || !(await switchTo(v))) sel.set(value()); } });
+    wrap.append(sel, button('Manage', { small: true, onClick: profilesDialog }));
+    let key = '';
+    track(S.on('state', () => { const k = JSON.stringify([opts(), value()]); if (k !== key) { key = k; sel.setOptions(opts(), value()); } }));
+    return wrap;
+  }
+
+  /* -------------------------------------------------------------- fan looks */
+
+  /* Which NZXT fans are on each lighting channel, for the pictures and effects. CAM
+     asks for this; camless guesses from what the device reports and keeps any
+     correction with this PC's window settings. */
+  const FAN_MODELS = [
+    { value: 'core', label: 'RGB Core', hint: 'LEDs in the hub', leds: 8 },
+    { value: 'duo', label: 'RGB Duo', hint: 'LED rings on both sides', leds: 20 },
+    { value: 'rgb', label: 'RGB', hint: 'LED ring on the front', leds: 12 },
+    { value: 'plain', label: 'without RGB', hint: 'No LEDs', leds: 0 },
+  ];
+  const FAN_FINISH = {
+    black: { frame: '#1c1d21', pad: '#2a2c32', well: '#0a0b0d', blade: '#4b4e58', hub: '#26282d' },
+    white: { frame: '#dfe0e4', pad: '#f2f3f5', well: '#1d1f24', blade: '#e9ebef', hub: '#cfd1d6' },
+  };
+
+  // F360 RGB Core is three F120 RGB Core, F280 RGB two F140 RGB, and so on.
+  function guessFan(lightId) {
+    const l = S.lights().find((x) => x.id === lightId);
+    let model = null, size = 120, count = 0;
+    for (const a of (l && l.hw && l.hw.accessories) || []) {
+      const m = /^F(\d{3})\s+RGB(?:\s+(Core|Duo))?$/i.exec(a.trim());
+      if (!m) continue;
+      const mm = +m[1];
+      size = mm % 140 === 0 ? 140 : 120;
+      count += Math.max(1, Math.round(mm / size));
+      model = m[2] ? m[2].toLowerCase() : 'rgb';
+    }
+    return model ? { model, size, count: clamp(count, 1, 3) } : null;
+  }
+  const fanSpec = (lightId) => Object.assign({ model: 'rgb', size: 120, color: 'black', count: 1 }, guessFan(lightId), (K.prefs.fans || {})[lightId]);
+  const fanModel = (f) => FAN_MODELS.find((m) => m.value === f.model) || FAN_MODELS[2];
+  const fanModelName = (f) => (f.model === 'plain' ? `${f.size} mm fan without RGB` : `F${f.size} ${fanModel(f).label}`);
+  const fanText = (lightId, withColor = true) => { const f = fanSpec(lightId); return `${f.count > 1 ? f.count + ' × ' : ''}${fanModelName(f)}${withColor ? ', ' + f.color : ''}`; };
+
+  // The light channel a fan's LEDs are on: led2 for fan2, the RGB header for a cooler's fans.
+  function lightForFan(fanId) {
+    const f = S.fan(fanId);
+    if (!f || !f.device || f.pump) return null;
+    const lights = f.device.lights.filter((l) => l.id !== 'ring');
+    const num = (s) => (/(\d+)$/.exec(s) || [])[1];
+    const n = num(fanId.split('/')[1]);
+    if (n) { const l = lights.find((x) => num(x.id) === n); if (l) return `${f.dev}/${l.id}`; }
+    return lights.length === 1 ? `${f.dev}/${lights[0].id}` : null;
+  }
+
+  const dim = (leds, k) => leds.map((c) => [c[0] * k, c[1] * k, c[2] * k]);
+  function mean(leds) {
+    const s = [0, 0, 0];
+    for (const c of leds) { s[0] += c[0]; s[1] += c[1]; s[2] += c[2]; }
+    return s.map((v) => v / Math.max(1, leds.length));
+  }
+
+  // One fan from the front, in its model and color; leds are its share of the channel.
+  function drawFan(ctx, cx, cy, r, angle, leds, f, blur = 0) {
+    const P = FAN_FINISH[f.color] || FAN_FINISH.black;
+    const s = r * 1.08;
+    ctx.save();
+    ctx.fillStyle = P.frame;
+    D.roundRect(ctx, cx - s, cy - s, s * 2, s * 2, r * 0.16);
+    ctx.fill();
+    ctx.fillStyle = P.pad;
+    for (const dx of [-1, 1]) for (const dy of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + dx * s * 0.8, cy + dy * s * 0.8, r * 0.075, 0, TAU); ctx.fill(); }
+    ctx.fillStyle = P.well;
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.97, 0, TAU); ctx.fill();
+    const lit = leds.length > 0;
+    if (f.model === 'duo' && lit) {
+      // The front ring, with the back one showing through behind the blades.
+      const half = Math.ceil(leds.length / 2);
+      D.ledRing(ctx, cx, cy, r * 0.83, dim(leds.slice(half), 0.5), r * 0.04, 0.35);
+      D.ledRing(ctx, cx, cy, r * 0.925, leds.slice(0, half), r * 0.08, 0.9);
+    } else if (f.model === 'rgb' && lit) {
+      D.ledRing(ctx, cx, cy, r * 0.925, leds, r * 0.05, 0.7);
+    }
+    ctx.translate(cx, cy);
+    ctx.save();
+    ctx.rotate(angle);
+    const b = clamp(blur, 0, 1);
+    ctx.fillStyle = P.blade;
+    for (let k = 0; k < 7; k++) {
+      ctx.save();
+      ctx.rotate((k * TAU) / 7);
+      ctx.globalAlpha = 1 - b * 0.55;
+      ctx.beginPath();
+      ctx.moveTo(r * 0.24, -r * 0.05);
+      ctx.bezierCurveTo(r * 0.45, -r * 0.32, r * 0.78, -r * 0.3, r * 0.82, -r * 0.08);
+      ctx.bezierCurveTo(r * 0.7, r * 0.06, r * 0.45, r * 0.12, r * 0.24, r * 0.1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    if (b > 0.05) {
+      ctx.globalAlpha = b * 0.3;
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.8, 0, TAU); ctx.arc(0, 0, r * 0.24, 0, TAU, true); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+    if (f.model === 'core' && lit) {
+      // The LEDs sit in the hub and light the blades from the middle.
+      const c = mean(leds);
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(0, 0, r * 0.2, 0, 0, r * 0.82);
+      g.addColorStop(0, S.color.css(c, 0.5));
+      g.addColorStop(1, S.color.css(c, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.82, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = P.hub;
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.28, 0, TAU); ctx.fill();
+      D.ledRing(ctx, 0, 0, r * 0.19, leds, r * 0.09, 0.9);
+      ctx.fillStyle = P.hub;
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.11, 0, TAU); ctx.fill();
+    } else {
+      ctx.fillStyle = P.hub;
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.25, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // The LEDs of every fan on a channel as one chain, so effects run across them.
+  function fanLeds(lightId, f, time) {
+    const L = fanModel(f).leds;
+    if (!L || !lightId) return () => [];
+    const all = S.renderLight(S.lightOf(lightId), time, L * f.count);
+    return (i) => all.slice(i * L, (i + 1) * L);
+  }
+
+  const rpmOf = (fanId) => { const f = S.fan(fanId); return (f && f.hw && f.hw.rpm) || 0; };
+  const ringOf = (dev, time) => (S.lights().some((l) => l.id === `${dev}/ring`) ? S.renderLight(S.lightOf(`${dev}/ring`), time, 24) : null);
+  function headOpts(dev, time, o = {}) {
+    const liquid = S.value(`${dev}.liquid`);
+    return Object.assign({
+      leds: ringOf(dev, time), liquid,
+      lcd: S.device(dev) && S.device(dev).lcd ? S.lcdOf(dev) : { mode: 'liquid', brightness: 100 },
+      sensors: { cpu: S.value('cpu.temp'), gpu: S.value('gpu.temp'), liquid },
+      font: FONT, rotation: 0,
+    }, o);
+  }
+
+  /* -------------------------------------------------------------- cooling */
+
+  const PRESET_OPTS = [{ value: 'fixed', label: 'Fixed' }, { value: 'silent', label: 'Silent' }, { value: 'performance', label: 'Performance' }, { value: 'custom', label: 'Custom' }];
+  const KIND = { graph: 'Graph', fixed: 'Fixed', mix: 'Mix', trigger: 'Trigger' };
+  const MIX = { max: 'Highest', min: 'Lowest', average: 'Average', sum: 'Sum' };
+  // The curve a point is being dragged on, so cards that share it follow.
+  let dragging = null;
+
+  function editCurve(name, patch, final) {
+    dragging = final ? null : name;
+    S.edit((c) => {
+      const x = (c.curve || []).find((k) => k.name === name);
+      if (!x) return;
+      if (patch.points) x.points = patch.points;
+      if (patch.duty != null) x.duty = patch.duty;
+    }, { live: !final, what: final ? 'curve' : 'drag' });
+  }
+
+  function describeCurve(c) {
+    if (c.kind === 'graph') return `${S.sourceLabel(c.sensor)}, ${c.points.length} point${c.points.length === 1 ? '' : 's'}`;
+    if (c.kind === 'fixed') return `Fixed at ${c.duty}%`;
+    if (c.kind === 'mix') return `${MIX[c.function] || c.function} of ${listText(c.curves)}`;
+    return `${S.sourceLabel(c.sensor)}: ${c.load_duty}% from ${reading(c.sensor, c.load_at)}, back to ${c.idle_duty}% at ${reading(c.sensor, c.idle_at)}`;
+  }
+
+  // Liquid first, then CPU and GPU, then everything else the daemon reads.
+  function sourceOptions(current) {
+    const rank = (s) => (S.isLiquid(s.id) ? 0 : s.id === 'cpu.temp' ? 1 : s.id === 'gpu.temp' ? 2 : s.unit === 'celsius' ? 3 : s.unit === 'percent' ? 4 : 5);
+    const opts = S.sensors().slice().sort((a, b) => rank(a) - rank(b)).map((s) => ({ value: s.id, label: S.sourceLabel(s.id), desc: s.value == null ? 'no reading' : reading(s.id, s.value) }));
+    if (current && !opts.some((o) => o.value === current)) opts.push({ value: current, label: current, desc: 'not found' });
+    return opts;
+  }
+
+  function curveOpts(nameOf, fanId) {
+    const cur = () => S.curve(nameOf());
+    return {
+      model: () => {
+        const c = cur(), f = fanId ? S.fan(fanId) : null;
+        const minDuty = f ? f.minDuty : 0;
+        if (c && c.kind === 'fixed') return { kind: 'fixed', duty: c.duty, range: [20, 100], minDuty };
+        if (!c || c.kind !== 'graph') return { kind: 'fixed', duty: 0, range: [20, 100], disabled: true };
+        // The cooler's own floor applies to what it stores, by its liquid temperature.
+        const floor = !!f && f.onDeviceCurves && c.sensor === `${f.dev}.liquid`;
+        return { kind: 'graph', points: c.points, range: S.range(c.sensor, c.points), minDuty, floor };
+      },
+      set: (patch, final) => editCurve(nameOf(), patch, final),
+      live: () => { const v = S.curveValue(nameOf()); return v && v.duty != null ? { x: v.input, y: v.duty } : null; },
+      // A fixed curve has no sensor, so its axis has no values.
+      xLabel: (t) => { const c = cur(); return c && c.sensor ? axisText(c.sensor, t) : ''; },
+      liveLabel: (x, y) => (x == null || !cur() ? `${Math.round(y)}%` : `${S.sourceLabel(cur().sensor)}: ${reading(cur().sensor, x)}`),
+      onFrame: (fn) => S.on('frame', fn),
+    };
+  }
+
+  // A channel the way CAM draws it: name, live speed, presets, source, curve.
+  function coolingCard(id) {
+    const f0 = S.fan(id);
+    const lightId = lightForFan(id);
+    const el = h(`<section class="cam-panel cam-ch">
+      <div class="cam-ch-head">${lightId ? '<button type="button" class="cam-ch-pic"><canvas aria-hidden="true"></canvas></button>' : '<span class="cam-ch-pic"><canvas aria-hidden="true"></canvas></span>'}
+        <div class="names"><h3 class="cam-ch-name"></h3><p class="cam-ch-sub"></p></div>
+        <div class="cam-ch-live"><span class="rpm"><b class="num">--</b> RPM</span><span class="duty num"><b>--</b><small>%</small></span></div>
+        <button type="button" class="cam-iconbtn" data-a="more">${I.more}</button></div>
+      <div class="presets"></div>
+      <div class="cam-ch-src"><span>Source:</span></div>
+      <p class="cam-ch-note" hidden>${I.warn}<span></span></p>
+      <p class="cam-ch-share" hidden></p>
+      <div class="cam-ch-curve"></div>
+      <p class="cam-ch-off" hidden></p>
+      <div class="cam-ch-foot"><button type="button" class="cam-link" data-a="apply">Apply this curve to other channels</button><span class="grow"></span><span class="cam-where" tabindex="0"></span></div>
+    </section>`);
+    const $ = (s) => el.querySelector(s);
+    const name = $('.cam-ch-name'), sub = $('.cam-ch-sub'), more = $('[data-a=more]');
+    const nameOf = () => { const c = S.fanCfg(id); return c && c.curve; };
+    const cur = () => S.curve(nameOf());
+    const pc = choice({ options: PRESET_OPTS, value: S.preset(id), label: 'Preset', onChange: (p) => S.setPreset(id, p) });
+    $('.presets').appendChild(pc);
+    const src = select({ options: sourceOptions(), value: null, label: 'Source', onChange: (s) => S.setSource(id, s) });
+    $('.cam-ch-src').appendChild(src);
+    const box = $('.cam-ch-curve');
+    const ed = new window.CurveEditor(box, curveOpts(nameOf, id));
+    track(() => ed.destroy());
+    const note = $('.cam-ch-note'), share = $('.cam-ch-share'), off = $('.cam-ch-off'), where = $('.cam-where'), apply = $('[data-a=apply]');
+    const rpmB = $('.rpm b'), dutyB = $('.duty b');
+    more.addEventListener('click', () => fanSettings(id));
+    apply.addEventListener('click', () => applyDialog(id));
+    share.addEventListener('click', (e) => { if (e.target.closest('[data-a=fork]')) { S.fork(id); toast(`${S.fanName(id)} has its own curve now.`); } });
+    off.addEventListener('click', (e) => { if (e.target.closest('[data-a=edit]') && cur()) curveDialog(cur().name); });
+    chPicture($('.cam-ch-pic'), id, lightId);
+
+    function subText(f) {
+      const parts = [];
+      if (lightId) parts.push(fanText(lightId, false));
+      if (f.minDuty) parts.push(`Never below ${f.minDuty}%`);
+      if (f.hw && f.hw.connected === false) parts.push('No fan detected');
+      if (f.missing && S.status) parts.push('Not found now');
+      return parts.join(', ');
+    }
+
+    function refresh(what) {
+      const f = S.fan(id) || f0, c = cur(), p = S.preset(id);
+      name.textContent = S.fanName(id);
+      el.setAttribute('aria-label', fanLabel(id));
+      more.setAttribute('aria-label', `${S.fanName(id)} settings`);
+      more.title = 'Name, curve and limits';
+      sub.textContent = subText(f);
+      sub.hidden = !sub.textContent;
+      sub.title = sub.textContent;
+      pc.set(p);
+      const shown = p !== 'none' && p !== 'advanced';
+      $('.cam-ch-src').hidden = !shown;
+      box.hidden = !shown;
+      off.hidden = shown;
+      apply.hidden = !c;
+      if (p === 'none') off.innerHTML = 'Not managed by camless: the device keeps its last setting. Pick a preset to control it.';
+      else if (p === 'advanced') off.innerHTML = `Follows <b>${esc(c.name)}</b>, a ${c.kind} curve: ${esc(describeCurve(c))}. <button type="button" class="cam-link" data-a="edit">Edit curve</button>`;
+      if (shown) {
+        const sensor = c.kind === 'graph' ? c.sensor : S.defaultSensor(id);
+        src.setOptions(sourceOptions(sensor), sensor);
+        src.setDisabled(c.kind !== 'graph');
+      }
+      const u = c ? S.users(c.name) : { fans: [], mixes: [] };
+      const others = u.fans.filter((x) => x !== id).map(fanLabel);
+      const bits = [];
+      if (others.length) bits.push(`Also drives ${esc(listText(others))}.`);
+      if (u.mixes.length) bits.push(`Part of ${esc(listText(u.mixes))}.`);
+      share.hidden = !bits.length;
+      if (bits.length) share.innerHTML = `${I.info}<span>${bits.join(' ')} </span>${others.length ? '<button type="button" class="cam-link" data-a="fork">Give this fan its own curve</button>' : ''}`;
+      // While a point is dragged, the editor draws itself; cards sharing the curve follow.
+      if (what !== 'drag' || (c && c.name === dragging && !box.classList.contains('ce-dragging'))) ed.render();
+      live();
+    }
+
+    function live() {
+      const f = S.fan(id), v = S.fanValue(id), c = cur();
+      rpmB.textContent = K.rpm(f && f.hw ? f.hw.rpm : null);
+      const duty = v && v.duty != null ? v.duty : f && f.hw ? f.hw.duty : null;
+      dutyB.textContent = duty == null ? '--' : Math.round(duty);
+      const failing = !!(v && v.failsafe);
+      note.hidden = !failing;
+      if (failing) {
+        const what = c && c.kind === 'graph' ? `No reading from ${S.sourceLabel(c.sensor)}.` : 'This curve has no reading.';
+        note.lastElementChild.textContent = `${what} Holding ${failsafe()}% until it comes back.`;
+      }
+      where.hidden = !v || !c;
+      if (v && c) {
+        const w = v.on_device
+          ? { html: `${I.kraken}<span>Stored on the cooler</span>`, title: 'The cooler runs this curve itself, so it keeps working when camless is closed.' }
+          : { html: `${I.chip}<span>Set by camless</span>`, title: `camless sets this speed as the sensor changes. If the service stops, it goes to ${failsafe()}%.` };
+        if (where.dataset.on !== String(v.on_device)) { where.innerHTML = w.html; where.dataset.on = String(v.on_device); }
+        where.title = w.title;
+        where.setAttribute('aria-label', w.title);
+      }
+    }
+
+    track(S.on('config', refresh));
+    track(S.on('state', live));
+    track(K.on('prefs', (k) => { if (k === 'unit') ed.render(); else if (k === 'fans') refresh(); }));
+    refresh();
+    return el;
+  }
+
+  /* The hardware on a card: the pump head, or one of the channel's fans spinning at its
+     speed and lit as on the Lighting page. A fan opens the model picker. */
+  function chPicture(pic, id, lightId) {
+    const cv = pic.firstElementChild;
+    const pump = S.fan(id) && S.fan(id).pump;
+    if (pic.tagName === 'BUTTON') {
+      const paint = () => { pic.title = `Fans on this channel: ${fanText(lightId)}. Change`; pic.setAttribute('aria-label', pic.title); };
+      paint();
+      track(K.on('prefs', (k) => { if (k === 'fans') paint(); }));
+      pic.addEventListener('click', () => fanDialog(lightId));
+    }
+    let time = 0, angle = 0;
+    track(S.on('frame', (dt) => {
+      time += dt;
+      if (!cv.isConnected) return;
+      const { ctx, w, h: hh } = D.fit(cv);
+      ctx.clearRect(0, 0, w, hh);
+      const dev = S.devOf(id);
+      if (pump) { D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 1, headOpts(dev, time, { shadow: false })); return; }
+      const rpm = rpmOf(id);
+      angle += D.spin(rpm) * dt * TAU;
+      const f = lightId ? fanSpec(lightId) : { model: 'plain', size: 120, color: 'black', count: 1 };
+      drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 / 1.1, angle, fanLeds(lightId, f, time)(0), f, rpm / 1500);
+    }));
+  }
+
+  // Makes other channels follow this channel's curve. They share it from then on.
+  function applyDialog(id) {
+    const name = S.fanCfg(id) && S.fanCfg(id).curve;
+    if (!name) return;
+    const others = S.fans().filter((f) => f.id !== id);
+    const picked = new Set();
+    modal({
+      title: 'Apply this curve to other channels',
+      render(body, api) {
+        body.appendChild(h(`<p class="cam-hint cam-lead">The channels you pick follow <b>${esc(name)}</b> (${esc(describeCurve(S.curve(name)))}). It stays one curve: a later change applies to all of them, until one gets its own curve again.</p>`));
+        for (const f of others) {
+          const c = S.fanCfg(f.id);
+          const now = c && c.curve === name ? 'already follows it' : f.minDuty ? `never below ${f.minDuty}%` : c && c.curve ? `follows ${c.curve}` : '';
+          const lab = h(`<label class="cam-check"><input type="checkbox"><span>${esc(fanLabel(f.id))}</span><small>${esc(now)}</small></label>`);
+          const box = lab.querySelector('input');
+          if (c && c.curve === name) { box.checked = true; box.disabled = true; }
+          box.addEventListener('change', () => { if (box.checked) picked.add(f.id); else picked.delete(f.id); api.buttons[1].disabled = !picked.size; });
+          body.appendChild(lab);
+        }
+      },
+      actions: [
+        { label: 'Cancel' },
+        { label: 'Apply', primary: true, onClick: () => { if (!picked.size) return false; S.useCurve([...picked], name); toast(`${picked.size} channel${picked.size > 1 ? 's follow' : ' follows'} ${name}.`); } },
+      ],
+      ready: (api) => { api.buttons[1].disabled = true; },
+    });
+  }
+
+  // A fan's name, curve and limits.
+  function fanSettings(id) {
+    const c0 = S.fanCfg(id) || {};
+    const f = S.fan(id);
+    const d = { name: c0.name || '', curve: c0.curve || '', offset: c0.offset || 0, min: c0.min || 0, max: c0.max ?? 100, step_up: c0.step_up || 0, step_down: c0.step_down || 0 };
+    const pct = (v) => `${v}%`;
+    modal({
+      title: `${S.fanName(id)} settings`,
+      render(body) {
+        const rows = h('<div class="cam-rows cam-box"></div>');
+        const curves = [{ value: '', label: 'Not managed by camless' }].concat(S.curves().map((c) => ({ value: c.name, label: c.name, desc: KIND[c.kind] })));
+        rows.append(
+          row('Name', 'Shown in camless only.', input({ value: d.name, placeholder: (f && f.hw && f.hw.name.trim()) || id, label: 'Name', width: '200px', onChange: (v) => { d.name = v.trim(); } })),
+          row('Curve', 'Channels that pick the same curve share it.', select({ options: curves, value: d.curve, label: 'Curve', onChange: (v) => { d.curve = v; } })),
+          row('Offset', 'Added to the curve’s speed.', slider({ min: Math.min(-30, d.offset), max: Math.max(30, d.offset), value: d.offset, label: 'Offset', format: (v) => (v > 0 ? '+' : '') + v + '%', onInput: (v) => { d.offset = v; } })),
+          row('Minimum', null, slider({ min: 0, max: 100, value: d.min, label: 'Minimum', format: pct, onInput: (v) => { d.min = v; } })),
+          row('Maximum', f && f.minDuty ? `The device does not go below ${f.minDuty}%.` : null, slider({ min: 0, max: 100, value: d.max, label: 'Maximum', format: pct, onInput: (v) => { d.max = v; } })),
+          row('Fastest rise', 'In % per second; 0 is no limit.', numField({ get: () => d.step_up, set: (v) => { d.step_up = v; }, min: 0, max: 100, unit: '% / s', label: 'Fastest rise' })),
+          row('Fastest fall', 'In % per second; 0 is no limit.', numField({ get: () => d.step_down, set: (v) => { d.step_down = v; }, min: 0, max: 100, unit: '% / s', label: 'Fastest fall' })),
+        );
+        body.appendChild(rows);
+      },
+      actions: [{ label: 'Cancel' }, {
+        label: 'Save', primary: true, onClick: () => {
+          if (d.min > d.max) { toast('The minimum must not be above the maximum.'); return false; }
+          S.edit((c) => {
+            const x = S.ensureFan(c, id);
+            Object.assign(x, { name: d.name, offset: d.offset, min: d.min, max: d.max, step_up: d.step_up, step_down: d.step_down });
+            if (d.curve) x.curve = d.curve; else delete x.curve;
+            for (const k of ['name', 'offset', 'min', 'step_up', 'step_down']) if (!x[k]) delete x[k];
+            if (x.max === 100) delete x.max;
+            S.tidyFans(c);
+          }, { what: 'cooling', now: true });
+        },
+      }],
+    });
+  }
+
+  // CAM's summary row: temperatures, then each fan's speed.
+  function tiles(host) {
+    const el = h('<div class="cam-tiles"></div>');
+    const items = [];
+    const add = (k, v, hot) => {
+      const t = h('<div class="cam-panel cam-tile"><div class="k"></div><div class="v"></div></div>');
+      t.firstElementChild.textContent = k;
+      t.title = k;
+      el.appendChild(t);
+      items.push({ t, v, hot });
+    };
+    const tval = (id) => { const v = S.value(id); return v == null ? 'N/A' : `${K.tnum(v)}<small>${K.deg()}</small>`; };
+    for (const s of S.sensors().filter((x) => S.isLiquid(x.id))) add(S.sourceLabel(s.id), () => tval(s.id), () => S.value(s.id) >= 55);
+    add('CPU', () => tval('cpu.temp'));
+    add('GPU', () => tval('gpu.temp'));
+    for (const f of S.fans()) if (!(f.hw && f.hw.connected === false)) add(fanLabel(f.id), () => `${K.rpm(f.hw ? rpmOf(f.id) : null)}<small>RPM</small>`);
+    const upd = () => {
+      for (const { t, v, hot } of items) {
+        const html = v();
+        if (t.lastElementChild.innerHTML !== html) t.lastElementChild.innerHTML = html;
+        t.classList.toggle('hot', !!(hot && hot()));
+        t.classList.toggle('na', html === 'N/A');
+      }
+    };
+    track(S.on('state', upd));
+    track(K.on('prefs', upd));
+    upd();
+    host.appendChild(el);
+  }
+
+  function deviceStatus(id) {
+    const el = h('<span class="cam-status"></span>');
+    const upd = () => {
+      const d = S.device(id);
+      const [text, ok] = !S.status ? ['Service not running', false] : !d ? ['Not found', false] : d.error ? ['Not available', false] : d.connected ? ['Ready', true] : ['Not connected', false];
+      el.textContent = text;
+      el.classList.toggle('off', !ok);
+    };
+    track(S.on('state', upd));
+    upd();
+    return el;
+  }
+
+  function cooling(host) {
+    K.pageHead(host, 'Cooling', S.config ? profileControls() : null);
+    if (!S.config) { emptyState(host, 'Cooling can be changed again once the config file loads.'); return; }
+    tiles(host);
+    const fans = S.fans();
+    if (!fans.length) {
+      emptyState(host, S.status ? 'camless found no cooler or fan controller it supports.' : 'Fans and pumps show up here once the camless service runs.');
+    }
+    const devs = [...new Set(fans.map((f) => f.dev))];
+    for (const dev of devs) {
+      const s = K.section(host, devName(dev), deviceStatus(dev));
+      const grid = h('<div class="cam-grid2 collapse"></div>');
+      const idle = [];
+      for (const f of fans.filter((x) => x.dev === dev)) {
+        if (f.hw && f.hw.connected === false && !S.fanCfg(f.id)) idle.push(f);
+        else grid.appendChild(coolingCard(f.id));
+      }
+      s.appendChild(grid);
+      if (idle.length) {
+        const list = h('<div class="cam-idle"><h3 class="cam-h3">Inactive</h3></div>');
+        for (const f of idle) {
+          const r = h(`<div class="cam-panel cam-inactive">${I.cooling}<b></b><span class="grow"></span><span>No fan detected</span></div>`);
+          r.querySelector('b').textContent = S.fanName(f.id);
+          list.appendChild(r);
+        }
+        s.appendChild(list);
+      }
+    }
+    curvesSection(host);
+  }
+
+  /* ------------------------------------------------------------- curves */
+
+  function mixesIn(a, b, seen = new Set()) {
+    const c = S.curve(a);
+    if (!c || c.kind !== 'mix' || seen.has(a)) return false;
+    seen.add(a);
+    return c.curves.some((n) => n === b || mixesIn(n, b, seen));
+  }
+
+  function usersText(name) {
+    const u = S.users(name);
+    const parts = [];
+    if (u.fans.length) parts.push(`Drives ${listText(u.fans.map(fanLabel))}`);
+    if (u.mixes.length) parts.push(`part of ${listText(u.mixes)}`);
+    return parts.length ? cap(parts.join(', ')) + '.' : 'Not used.';
+  }
+
+  function curvesSection(host) {
+    const s = K.section(host, 'Curves', button('New curve', { small: true, icon: 'plus', onClick: newCurveDialog }));
+    s.appendChild(h('<p class="cam-hint cam-lead">Every managed channel follows a named curve. Channels can share one, and mixes and triggers are made here; a channel picks one in its settings.</p>'));
+    const list = h('<div class="cam-panel cam-rows"></div>');
+    s.appendChild(list);
+    const draw = K.region(list);
+    let key = null;
+    const upd = () => {
+      const k = JSON.stringify([S.curves().map((c) => [c.name, describeCurve(c)]), S.curves().map((c) => usersText(c.name))]);
+      if (k === key) return;
+      key = k;
+      draw((el) => {
+        if (!S.curves().length) { el.appendChild(row('No curves yet', 'Pick a preset on a channel above, or make a curve here.', null)); return; }
+        for (const c of S.curves()) {
+          const u = S.users(c.name), used = u.fans.length + u.mixes.length > 0;
+          const r = row(c.name, `${esc(KIND[c.kind])}: ${esc(describeCurve(c))}. ${esc(usersText(c.name))}`, [
+            button('Edit', { small: true, onClick: () => curveDialog(c.name) }),
+            button('Delete', { small: true, onClick: () => deleteCurve(c.name) }),
+          ]);
+          const del = r.querySelectorAll('.cam-btn')[1];
+          del.disabled = used;
+          if (used) del.title = 'Channels or mixes still use it.';
+          el.appendChild(r);
+        }
+      });
+    };
+    track(S.on('config', upd));
+    track(K.on('prefs', upd));
+    upd();
+  }
+
+  async function deleteCurve(name) {
+    if (await confirmBox({ title: 'Delete curve', text: `Delete <b>${esc(name)}</b>?`, ok: 'Delete' })) S.deleteCurve(name);
+  }
+
+  function newCurveDialog() {
+    let kind = 'graph';
+    const can = { mix: S.curves().length > 0 };
+    const KINDS = [
+      { value: 'graph', label: 'Graph', hint: 'Speed from a sensor through points you drag.' },
+      { value: 'fixed', label: 'Fixed', hint: 'One speed all the time.' },
+      { value: 'mix', label: 'Mix', hint: 'The highest, lowest, average or sum of other curves, say of a CPU and a GPU curve.' },
+      { value: 'trigger', label: 'Trigger', hint: 'Two speeds: up once a sensor passes one value, back down only below another.' },
+    ];
+    modal({
+      title: 'New curve',
+      render(body) {
+        const box = h('<div class="cam-rows cam-box" role="radiogroup" aria-label="Kind of curve"></div>');
+        for (const k of KINDS) {
+          const lab = h(`<label class="cam-check cam-radio"><input type="radio" name="kind" value="${k.value}"><span><b></b><small></small></span></label>`);
+          lab.querySelector('b').textContent = k.label;
+          lab.querySelector('small').textContent = k.value === 'mix' && !can.mix ? 'Make another curve first.' : k.hint;
+          const r = lab.querySelector('input');
+          r.checked = k.value === kind;
+          r.disabled = k.value === 'mix' && !can.mix;
+          r.addEventListener('change', () => { if (r.checked) kind = k.value; });
+          box.appendChild(lab);
+        }
+        body.appendChild(box);
+      },
+      actions: [{ label: 'Cancel' }, { label: 'Create', primary: true, onClick: () => { const name = S.newCurve(kind); setTimeout(() => curveDialog(name)); } }],
+    });
+  }
+
+  // Everything about one curve. Changes apply as they are made.
+  function curveDialog(name0) {
+    let name = name0;
+    const c0 = S.curve(name);
+    if (!c0) return;
+    const change = (fn) => S.edit((c) => { const x = (c.curve || []).find((k) => k.name === name); if (x) fn(x); }, { what: 'curve' });
+    // Response settings at their defaults are left out of the file.
+    const setResp = (x, k, v, def) => { if (v === def) delete x[k]; else x[k] = v; };
+    modal({
+      title: `${KIND[c0.kind]} curve`,
+      wide: c0.kind === 'graph',
+      render(body) {
+        const rows = h('<div class="cam-rows cam-box"></div>');
+        const err = h('<p class="cam-field-err" role="alert"></p>');
+        const nameIn = input({
+          value: name, label: 'Name', width: '220px',
+          onChange: (v, el) => {
+            v = v.trim();
+            if (v === name) return;
+            if (!v || S.curve(v)) { err.textContent = v ? `There is already a curve called ${v}.` : 'A curve needs a name.'; el.value = name; return; }
+            err.textContent = '';
+            S.renameCurve(name, v);
+            name = v;
+          },
+        });
+        rows.appendChild(row('Name', null, nameIn));
+        const c = () => S.curve(name);
+        if (c0.kind === 'graph') {
+          const src = select({
+            options: sourceOptions(c0.sensor), value: c0.sensor, label: 'Source',
+            onChange: (s) => change((x) => {
+              if (S.unitOf(s) !== S.unitOf(x.sensor)) x.points = clone(S.presets(s).custom);
+              x.sensor = s;
+            }),
+          });
+          rows.appendChild(row('Source', null, src));
+          const ed = h('<div class="cam-ch-curve cam-ch-curve-big"></div>');
+          const er = h('<div class="cam-editor-row"></div>');
+          er.appendChild(ed);
+          rows.appendChild(er);
+          const editor = new window.CurveEditor(ed, curveOpts(() => name, null));
+          track(() => editor.destroy());
+          track(S.on('config', (what) => { if (what !== 'drag' || !ed.classList.contains('ce-dragging')) editor.render(); }));
+          rows.appendChild(h('<p class="cam-hint cam-pad-x">Drag a point to move it, double-click to add one, right-click or Delete to remove one.</p>'));
+          const unit = () => (S.unitOf(c().sensor) === 'celsius' ? '°C' : S.UNIT[S.unitOf(c().sensor)]);
+          const hy = numField({ get: () => c().hysteresis || 0, set: (v) => change((x) => setResp(x, 'hysteresis', v, 0)), min: 0, max: 50, unit: unit(), label: 'Hysteresis' });
+          rows.append(
+            row('Hysteresis', 'The sensor must move this far before the speed follows.', hy),
+            row('Rise', 'Seconds to cover about two thirds of a rise; 0 follows at once.', numField({ get: () => c().response_up ?? 2, set: (v) => change((x) => setResp(x, 'response_up', v, 2)), min: 0, max: 600, unit: 's', label: 'Rise' })),
+            row('Fall', 'The same for a fall, slower so a short dip does not make the fans surge and settle.', numField({ get: () => c().response_down ?? 10, set: (v) => change((x) => setResp(x, 'response_down', v, 10)), min: 0, max: 600, unit: 's', label: 'Fall' })),
+          );
+          track(S.on('config', () => { if (c()) hy.lastElementChild.textContent = unit(); }));
+        } else if (c0.kind === 'fixed') {
+          rows.appendChild(row('Speed', null, slider({ min: 0, max: 100, value: c0.duty, label: 'Speed', format: (v) => v + '%', onInput: (v) => S.edit((cf) => { const x = cf.curve.find((k) => k.name === name); if (x) x.duty = v; }, { live: true, what: 'curve' }), onChange: () => S.save() })));
+        } else if (c0.kind === 'mix') {
+          rows.appendChild(row('Function', null, choice({ options: Object.keys(MIX).map((k) => ({ value: k, label: MIX[k] })), value: c0.function, label: 'Function', onChange: (v) => change((x) => { x.function = v; }) })));
+          const picks = h('<div class="cam-picks"></div>');
+          for (const o of S.curves().filter((k) => k.name !== name && !mixesIn(k.name, name))) {
+            const lab = h(`<label class="cam-check"><input type="checkbox"><span></span><small></small></label>`);
+            lab.querySelector('span').textContent = o.name;
+            lab.querySelector('small').textContent = describeCurve(o);
+            const b = lab.querySelector('input');
+            b.checked = c0.curves.includes(o.name);
+            b.addEventListener('change', () => {
+              const now = c().curves;
+              if (!b.checked && now.length === 1 && now[0] === o.name) { b.checked = true; toast('A mix needs at least one curve.'); return; }
+              change((x) => { x.curves = b.checked ? [...x.curves, o.name] : x.curves.filter((n) => n !== o.name); });
+            });
+            picks.appendChild(lab);
+          }
+          const r = row('Curves', null, null);
+          r.classList.add('cam-row-stack');
+          r.appendChild(picks);
+          rows.appendChild(r);
+        } else {
+          const src = select({ options: sourceOptions(c0.sensor), value: c0.sensor, label: 'Source', onChange: (s) => change((x) => { x.sensor = s; }) });
+          const unit = () => (S.unitOf(c().sensor) === 'celsius' ? '°C' : S.UNIT[S.unitOf(c().sensor)]);
+          // load_at stays above idle_at; a value that would cross it is refused.
+          const at = (k, other, above) => numField({
+            get: () => c()[k], label: k === 'load_at' ? 'Up at' : 'Down at', unit: unit(),
+            set: (v) => {
+              const o = c()[other];
+              if (above ? v <= o : v >= o) { err.textContent = 'The speed goes up at a higher value than it goes back down at.'; fields[k].input.value = n1(c()[k]); return; }
+              err.textContent = '';
+              change((x) => { x[k] = v; });
+            },
+          });
+          const fields = { load_at: at('load_at', 'idle_at', true), idle_at: at('idle_at', 'load_at', false) };
+          rows.append(
+            row('Source', null, src),
+            row('Load speed', null, slider({ min: 0, max: 100, value: c0.load_duty, label: 'Load speed', format: (v) => v + '%', onInput: (v) => S.edit((cf) => { const x = cf.curve.find((k) => k.name === name); if (x) x.load_duty = v; }, { live: true, what: 'curve' }), onChange: () => S.save() })),
+            row('Up at', 'The load speed starts when the sensor reaches this.', fields.load_at),
+            row('Idle speed', null, slider({ min: 0, max: 100, value: c0.idle_duty, label: 'Idle speed', format: (v) => v + '%', onInput: (v) => S.edit((cf) => { const x = cf.curve.find((k) => k.name === name); if (x) x.idle_duty = v; }, { live: true, what: 'curve' }), onChange: () => S.save() })),
+            row('Down at', 'Back to the idle speed only once the sensor falls to this.', fields.idle_at),
+          );
+          track(S.on('config', () => { if (c()) for (const f of Object.values(fields)) f.lastElementChild.textContent = unit(); }));
+        }
+        body.append(rows, err);
+        const saveErr = () => { if (S.st.saveError && !err.textContent) err.textContent = S.st.saveError; };
+        track(S.on('saved', saveErr));
+      },
+      actions: [{ label: 'Done', primary: true }],
+    });
+  }
+
+  /* -------------------------------------------------------------- lighting */
+
+  const EFFECT_ORDER = ['fixed', 'breathing', 'fading', 'pulse', 'candle', 'covering-marquee', 'spectrum-wave', 'rainbow-flow', 'super-rainbow', 'rainbow-pulse', 'tai-chi', 'water-cooler', 'off'];
+  const SPEED_NAME = { slowest: 'Slowest', slower: 'Slow', normal: 'Normal', faster: 'Fast', fastest: 'Fastest' };
+  const PALETTE = ['ffffff', 'bf4cbf', '3232de', '21d373', 'ff8a00', 'ff022d', '00c8ff', 'ffd400'];
+  const LEAVE = '';
+
+  // CAM's names: Ring, Channel 1, RGB connector.
+  function lightLabel(id) {
+    const ch = id.split('/')[1];
+    if (ch === 'ring') return 'Ring';
+    if (ch === 'rgb') return 'RGB connector';
+    const m = /^led(\d+)$/.exec(ch);
+    if (m) return `Channel ${m[1]}`;
+    const l = S.lights().find((x) => x.id === id);
+    return (l && l.hw && l.hw.name) || ch;
+  }
+  const isRing = (id) => id.split('/')[1] === 'ring';
+
+  function fitColors(x) {
+    const [mn, mx] = S.EFFECTS[S.effectKey(x.mode)].colors;
+    x.colors = (x.colors || []).slice(0, mx);
+    let i = 0;
+    while (x.colors.length < mn) x.colors.push(PALETTE.find((c) => !x.colors.includes(c)) || PALETTE[i++ % PALETTE.length]);
+  }
+
+  // CAM's step for telling it which fans are on a channel, with a picture of each look.
+  function fanDialog(lightId) {
+    let pick = fanSpec(lightId);
+    const guess = guessFan(lightId);
+    const l = S.lights().find((x) => x.id === lightId);
+    const acc = ((l && l.hw && l.hw.accessories) || []).filter((a) => a !== 'simulated');
+    modal({
+      title: `Fans on ${lightLabel(lightId)}`,
+      wide: true,
+      render(body) {
+        body.appendChild(h(`<p class="cam-hint cam-lead">${acc.length ? `The device reports ${esc(listText(acc))}. ` : ''}Pick the fans so the preview and effects match your case.${guess ? '' : ' camless could not tell from the device.'}</p>`));
+        const grid = h('<div class="cam-fanpick" role="radiogroup" aria-label="Fan model"></div>');
+        const cards = FAN_MODELS.map((m) => {
+          const b = h('<button type="button" role="radio"><canvas aria-hidden="true"></canvas><b></b><span></span></button>');
+          b.lastElementChild.textContent = m.hint;
+          b.addEventListener('click', () => { pick = Object.assign({}, pick, { model: m.value }); paint(); });
+          grid.appendChild(b);
+          return { b, m, cv: b.querySelector('canvas') };
+        });
+        grid.addEventListener('keydown', (e) => {
+          const d = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+          if (!d) return;
+          e.preventDefault();
+          const i = cards.findIndex((c) => c.m.value === pick.model);
+          const nx = cards[(i + d + cards.length) % cards.length];
+          nx.b.click();
+          nx.b.focus();
+        });
+        body.appendChild(grid);
+        const opts = h('<div class="cam-rows cam-box"></div>');
+        opts.append(
+          row('How many', null, choice({ options: [1, 2, 3].map((n) => ({ value: n, label: String(n) })), value: pick.count, label: 'How many fans', onChange: (v) => { pick = Object.assign({}, pick, { count: v }); } })),
+          row('Size', null, choice({ options: [{ value: 120, label: '120 mm' }, { value: 140, label: '140 mm' }], value: pick.size, label: 'Fan size', onChange: (v) => { pick = Object.assign({}, pick, { size: v }); paint(); } })),
+          row('Color', null, choice({ options: [{ value: 'black', label: 'Black' }, { value: 'white', label: 'White' }], value: pick.color, label: 'Fan color', onChange: (v) => { pick = Object.assign({}, pick, { color: v }); } })),
+        );
+        body.appendChild(opts);
+        function paint() {
+          for (const c of cards) {
+            const sel = c.m.value === pick.model;
+            c.b.setAttribute('aria-checked', String(sel));
+            c.b.tabIndex = sel ? 0 : -1;
+            c.b.children[1].textContent = c.m.value === 'plain' ? 'Without RGB' : `F${pick.size} ${c.m.label}`;
+          }
+        }
+        paint();
+        let time = 0, angle = 0;
+        const fanId = S.fans().find((f) => lightForFan(f.id) === lightId);
+        track(S.on('frame', (dt) => {
+          time += dt;
+          angle += D.spin(fanId ? rpmOf(fanId.id) : 600) * dt * TAU * 0.5;
+          for (const c of cards) {
+            const f = Object.assign({}, pick, { model: c.m.value, count: 1 });
+            const { ctx, w, h: hh } = D.fit(c.cv);
+            ctx.clearRect(0, 0, w, hh);
+            drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 / 1.12, angle, fanLeds(lightId, f, time)(0), f);
+          }
+        }));
+      },
+      actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, onClick: () => { K.setPref('fans', Object.assign({}, K.prefs.fans, { [lightId]: pick })); toast(`${lightLabel(lightId)}: ${fanText(lightId, false)}.`); } }],
+    });
+  }
+
+  // CAM's color row: a swatch per color, and + Add a color up to what the effect takes.
+  function colorSwatches(id) {
+    const sw = h('<div class="cam-swatches"></div>');
+    sw.paint = () => {
+      const x = S.lightOf(id);
+      const [mn, mx] = S.EFFECTS[S.effectKey(x.mode)].colors;
+      sw.textContent = '';
+      const cols = (x.colors || []).slice(0, mx);
+      cols.forEach((c, i) => {
+        const s = h(`<span class="cam-swatch" style="--c:#${esc(c)}"><input type="color" value="#${esc(c)}" aria-label="Color ${i + 1}, #${esc(c)}">${cols.length > mn ? `<button type="button" class="x" aria-label="Remove color ${i + 1}">×</button>` : ''}</span>`);
+        const inp = s.querySelector('input');
+        inp.addEventListener('input', () => { s.style.setProperty('--c', inp.value); S.editLight(id, (y) => { y.colors[i] = inp.value.slice(1); }); });
+        const xb = s.querySelector('.x');
+        if (xb) xb.addEventListener('click', (e) => { e.preventDefault(); S.editLight(id, (y) => { y.colors.splice(i, 1); }); sw.paint(); });
+        sw.appendChild(s);
+      });
+      if (cols.length < mx) {
+        const add = h('<button type="button" class="cam-link">+ Add a color</button>');
+        add.addEventListener('click', () => { S.editLight(id, (y) => { y.colors = (y.colors || []).slice(0, mx); y.colors.push(PALETTE.find((c) => !y.colors.includes(c)) || 'ffffff'); }); sw.paint(); });
+        sw.appendChild(add);
+      }
+    };
+    sw.paint();
+    return sw;
+  }
+
+  function drawLight(cv, id, time, angles) {
+    const { ctx, w, h: hh } = D.fit(cv);
+    ctx.clearRect(0, 0, w, hh);
+    if (isRing(id)) {
+      D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 10, headOpts(S.devOf(id), time, { leds: S.renderLight(S.lightOf(id), time, 24), shadowColor: 'rgba(0,0,0,.45)' }));
+      return;
+    }
+    const fan = S.fans().find((f) => lightForFan(f.id) === id);
+    const rpm = fan ? rpmOf(fan.id) : 0;
+    const f = fanSpec(id);
+    const leds = fanLeds(id, f, time);
+    const n = f.count;
+    if (n > 1) {
+      const r = Math.min(w / 2.4, hh / (2.3 * n + 0.1));
+      for (let i = 0; i < n; i++) drawFan(ctx, w / 2, hh / 2 + (i - (n - 1) / 2) * r * 2.3, r, angles[i] || 0, leds(i), f, rpm / 1800);
+    } else {
+      drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2.6, angles[0] || 0, leds(0), f, rpm / 1500);
+    }
+  }
+
+  function lightEditor(host, id) {
+    const el = h('<div class="cam-panel cam-light"><div class="cam-light-prev"><div class="cam-prev-box"><canvas role="img"></canvas><p></p></div></div><div class="cam-light-ctl cam-rows"></div></div>');
+    const cv = el.querySelector('canvas'), cap1 = el.querySelector('.cam-light-prev p');
+    const ctl = el.querySelector('.cam-light-ctl');
+    const ring = isRing(id);
+    const opts = [{ value: LEAVE, label: 'Not set by camless' }].concat(EFFECT_ORDER.map((k) => ({ value: k, label: S.EFFECTS[k].label })));
+    const fx = select({
+      options: opts, value: LEAVE, label: 'Effect',
+      onChange: (m) => {
+        if (m === LEAVE) S.edit((c) => { c.light = (c.light || []).filter((l) => l.channel !== id); }, { what: 'lighting' });
+        else S.editLight(id, (x) => { x.mode = m; fitColors(x); });
+      },
+    });
+    const rEffect = row('Effect', '', fx);
+    const sw = colorSwatches(id);
+    const rColors = row('Colors', null, sw);
+    const speedIx = () => Math.max(0, S.SPEEDS.indexOf(S.lightOf(id).speed || 'normal'));
+    const sp = slider({ min: 0, max: 4, step: 1, value: speedIx(), label: 'Speed', format: (i) => SPEED_NAME[S.SPEEDS[i]], onInput: (i) => S.editLight(id, (x) => { x.speed = S.SPEEDS[i]; }) });
+    const rSpeed = row('Speed', null, sp);
+    const dir = toggle({ checked: !!S.lightOf(id).backward, label: 'Invert direction', onChange: (v) => S.editLight(id, (x) => { x.backward = v; }) });
+    const rDir = row('Direction', null, [dir, h('<span class="cam-small">Invert direction</span>')]);
+    const fanLbl = h('<span class="cam-fanname"></span>');
+    const rFans = ring ? null : row('Fans', '', [fanLbl, button('Change', { small: true, onClick: () => fanDialog(id) })]);
+    if (rFans) ctl.appendChild(rFans);
+    ctl.append(rEffect, rColors, rSpeed, rDir);
+    const l = S.lights().find((x) => x.id === id);
+    cap1.textContent = ring ? `${(l && l.leds) || 24} LEDs around the screen` : (l && l.hw && l.hw.name) || '';
+
+    function refresh() {
+      const x = S.lightOf(id), k = S.effectKey(x.mode), E = S.EFFECTS[k];
+      const plain = !ring && fanSpec(id).model === 'plain';
+      fx.set(x.unmanaged ? LEAVE : k);
+      rEffect.hint(x.unmanaged ? 'camless leaves this channel as it is. Pick an effect to set it.' : '');
+      rEffect.hidden = plain;
+      rColors.hidden = plain || x.unmanaged || E.colors[1] === 0;
+      rSpeed.hidden = plain || x.unmanaged || !E.speed;
+      rDir.hidden = plain || x.unmanaged || !E.dir;
+      sp.set(speedIx());
+      dir.set(!!x.backward);
+      if (rFans) {
+        fanLbl.textContent = fanText(id);
+        rFans.hint(plain ? 'These fans have no LEDs, so this channel has nothing to light.' : '');
+      }
+      cv.setAttribute('aria-label', `${lightLabel(id)}${rFans ? ', ' + fanText(id) : ''}: ${plain ? 'no LEDs' : S.describeLight(x)}`);
+      sw.paint();
+    }
+    // Only a change of effect rebuilds the controls, so a color picker stays open while it is dragged.
+    let lastMode = null;
+    track(S.on('config', (what) => { const x = S.lightOf(id); const m = x.unmanaged ? LEAVE : x.mode; if (what !== 'lighting' || m !== lastMode) { lastMode = m; refresh(); } }));
+    track(K.on('prefs', (k) => { if (k === 'fans') refresh(); }));
+    lastMode = S.lightOf(id).unmanaged ? LEAVE : S.lightOf(id).mode;
+    refresh();
+    let time = 0;
+    const angles = [0, 0.7, 1.4];
+    track(S.on('frame', (dt) => {
+      time += dt;
+      const fan = ring ? null : S.fans().find((f) => lightForFan(f.id) === id);
+      if (fan) for (let i = 0; i < angles.length; i++) angles[i] += D.spin(rpmOf(fan.id)) * dt * TAU;
+      drawLight(cv, id, time, angles);
+    }));
+    host.appendChild(el);
+  }
+
+  /* ------------------------------------------------------------------- LCD */
+
+  const KRAKENDIAL = 'http://127.0.0.1:30640/';
+
+  // Two sleeved tubes with their fittings, leaving the head at `deg` (0 = to the right).
+  function drawTubes(ctx, cx, cy, r, deg) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((deg * Math.PI) / 180);
+    const tw = r * 0.26, x0 = r * 0.8, len = r * 0.62;
+    for (const dy of [-r * 0.33, r * 0.33]) {
+      const g = ctx.createLinearGradient(x0, 0, x0 + len, 0);
+      g.addColorStop(0, '#4a4d56'); g.addColorStop(0.55, 'rgba(74,77,86,.75)'); g.addColorStop(1, 'rgba(74,77,86,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x0, dy - tw / 2, len, tw);
+      ctx.fillStyle = '#5d616b';
+      D.roundRect(ctx, r * 0.84, dy - tw * 0.62, r * 0.2, tw * 1.24, r * 0.04);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  // The head as installed: tubes where they leave it, the picture upright.
+  function drawHeadInstalled(cv, dev, time, o) {
+    const { ctx, w, h: hh } = D.fit(cv);
+    ctx.clearRect(0, 0, w, hh);
+    const r = Math.min(w, hh) / 2 / 1.42;
+    drawTubes(ctx, w / 2, hh / 2, r, o.orientation);
+    D.head(ctx, w / 2, hh / 2, r, headOpts(dev, time, { shadow: o.shadow, shadowColor: 'rgba(0,0,0,.4)' }));
+  }
+
+  function lcdEditor(host, dev) {
+    const el = h('<div class="cam-panel cam-lcd"><div class="cam-light-prev"><div class="cam-prev-box"><canvas role="img"></canvas><p></p></div></div><div class="cam-light-ctl cam-rows"></div></div>');
+    const cv = el.querySelector('canvas'), cap1 = el.querySelector('.cam-light-prev p');
+    const ctl = el.querySelector('.cam-light-ctl');
+    const L = () => S.lcdOf(dev);
+    const mode = select({
+      options: [{ value: 'liquid', label: 'Liquid temperature' }, { value: 'web', label: 'Web page' }, { value: 'frames', label: 'Frames from a program' }],
+      value: L().mode, label: 'Display mode',
+      onChange: (v) => S.editLcd(dev, (l) => {
+        l.mode = v;
+        // Web mode needs an address; KrakenDial's until another is entered.
+        if (v === 'web' && !/^https?:\/\//.test(l.url || '')) l.url = KRAKENDIAL;
+      }),
+    });
+    const rMode = row('Display mode', '', mode);
+    const url = input({
+      value: L().url || '', label: 'Page address', width: '100%', placeholder: KRAKENDIAL,
+      onChange: (v, inp) => {
+        v = v.trim();
+        if (!/^https?:\/\/\S+$/.test(v)) { toast('The address starts with http:// or https://.'); inp.value = L().url || ''; return; }
+        S.editLcd(dev, (l) => { l.url = v; });
+      },
+    });
+    const rUrl = row('Page', '', url);
+    const fps = slider({ min: 1, max: 30, value: L().fps || 10, label: 'Frames per second', format: (v) => `${v} fps`, onInput: (v) => S.editLcd(dev, (l) => { l.fps = v; }, { live: true }), onChange: () => S.save() });
+    const rFps = row('Frame rate', 'More frames look smoother and cost the browser more CPU.', fps);
+    const br = slider({ min: 0, max: 100, step: 5, value: L().brightness, label: 'Brightness', format: (v) => v + '%', onInput: (v) => S.editLcd(dev, (l) => { l.brightness = v; }, { live: true }), onChange: () => S.save() });
+    const rBr = row('Brightness', null, br);
+    const rotVal = h('<span class="cam-small num"></span>');
+    const rRot = row('Rotate display', 'Match the tubes to how the cooler is installed.', [rotVal, button('Rotate display', { icon: 'rotate', small: true, onClick: () => rotateDialog(dev) })]);
+    ctl.append(rMode, rUrl, rFps, rBr, rRot);
+    function refresh() {
+      const l = L();
+      mode.set(l.mode);
+      if (document.activeElement !== url) url.value = l.url || '';
+      br.set(l.brightness);
+      fps.set(l.fps || 10);
+      rotVal.textContent = l.orientation + '°';
+      rUrl.hidden = rFps.hidden = l.mode !== 'web';
+      const api = (S.config && S.config.api) || { enabled: true, listen: '127.0.0.1:30640' };
+      rMode.hint(l.mode === 'liquid'
+        ? 'The cooler draws this screen itself, so it stays on when camless is closed.'
+        : l.mode === 'web'
+          ? 'camless shows the page the way CAM’s Web Integration does, so pages made for CAM, such as KrakenDial, work. It runs in a hidden Edge window, which takes memory and CPU; the other modes need none.'
+          : `A program on this PC posts frames to <code>http://${esc(api.listen)}/v1/lcd/frame</code>. When they stop, the screen goes back to the cooler’s own display.${api.enabled === false ? ' <b>Turn on Local API in Settings first.</b>' : ''}`);
+      cap1.textContent = l.mode === 'liquid' ? 'Liquid temperature, drawn by the cooler' : l.mode === 'web' ? 'A web page' : 'Frames from a program';
+      cv.setAttribute('aria-label', `Screen preview: ${cap1.textContent}, ${l.brightness}% brightness, rotated ${l.orientation}°`);
+      webState();
+    }
+    function webState() {
+      const l = L(), d = S.device(dev), w = d && d.web;
+      if (l.mode !== 'web') return;
+      const text = !S.status ? '' : !w ? 'Starting the page…' : w.error ? `<span class="cam-bad">${esc(cap(w.error))}</span>` : `On the screen at ${n1(w.fps)} fps${w.browser ? ` through ${esc(w.browser)}` : ''}.`;
+      rUrl.hint(text);
+    }
+    track(S.on('config', refresh));
+    track(S.on('state', webState));
+    refresh();
+    let time = 0;
+    track(S.on('frame', (dt) => { time += dt; drawHeadInstalled(cv, dev, time, { orientation: L().orientation }); }));
+    host.appendChild(el);
+  }
+
+  function rotateDialog(dev) {
+    let pick = S.lcdOf(dev).orientation;
+    modal({
+      title: 'Screen rotation',
+      render(body) {
+        body.appendChild(h('<p class="cam-hint cam-lead">Match the tubes to how the cooler is installed.</p>'));
+        const grid = h('<div class="cam-rot" role="radiogroup" aria-label="Screen rotation"></div>');
+        const cvs = [];
+        for (const d of [0, 90, 180, 270]) {
+          const b = h(`<button type="button" role="radio" aria-checked="${d === pick}"><canvas aria-hidden="true"></canvas><span>${d}°</span></button>`);
+          b.addEventListener('click', () => { pick = d; grid.querySelectorAll('button').forEach((x, i) => x.setAttribute('aria-checked', String([0, 90, 180, 270][i] === pick))); });
+          grid.appendChild(b);
+          cvs.push([b.querySelector('canvas'), d]);
+        }
+        body.appendChild(grid);
+        const draw = () => { for (const [cv, d] of cvs) drawHeadInstalled(cv, dev, 0, { orientation: d, shadow: false }); };
+        requestAnimationFrame(draw);
+        track(S.on('state', draw));
+      },
+      actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, onClick: () => { S.editLcd(dev, (l) => { l.orientation = pick; }); toast(`Screen rotated to ${pick}°.`); } }],
+    });
+  }
+
+  /* --------------------------------------------------------- lighting page */
+
+  const lightState = { device: null, tab: {} };
+
+  // The Control Hub: a dark box with a lit dot per fan port in use.
+  function drawHub(ctx, w, hh, dev) {
+    const d = S.device(dev);
+    const ports = d ? d.fans : [];
+    const bw = Math.min(w * 0.92, hh * 1.4), bh = bw * 0.62;
+    const x = (w - bw) / 2, y = (hh - bh) / 2;
+    ctx.fillStyle = '#16171b';
+    D.roundRect(ctx, x, y, bw, bh, bw * 0.08); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.14)'; ctx.lineWidth = 1;
+    D.roundRect(ctx, x + 0.5, y + 0.5, bw - 1, bh - 1, bw * 0.08); ctx.stroke();
+    const n = Math.max(1, ports.length), step = 0.84 / n;
+    ports.forEach((p, i) => {
+      const px = x + bw * (0.08 + step * (i + 0.5)), py = y + bh * 0.62;
+      ctx.fillStyle = '#25272c';
+      D.roundRect(ctx, px - bw * step * 0.32, py - bh * 0.16, bw * step * 0.64, bh * 0.32, 2); ctx.fill();
+      ctx.fillStyle = p.connected === false ? '#3a3c42' : '#21d373';
+      ctx.beginPath(); ctx.arc(px, y + bh * 0.26, Math.max(1.5, bw * 0.025), 0, TAU); ctx.fill();
+    });
+  }
+
+  function deviceThumb(cv, dev, time) {
+    const { ctx, w, h: hh } = D.fit(cv);
+    ctx.clearRect(0, 0, w, hh);
+    const d = S.device(dev);
+    if ((d && d.lcd) || S.lights().some((l) => l.id === `${dev}/ring`)) D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 2, headOpts(dev, time, { shadow: false }));
+    else drawHub(ctx, w, hh, dev);
+  }
+
+  function lighting(host) {
+    K.pageHead(host, 'Lighting', S.config ? profileControls() : null);
+    if (!S.config) { emptyState(host, 'Lighting can be changed again once the config file loads.'); return; }
+    const devs = [...new Set(S.lights().map((l) => l.dev).concat(S.screens().map((s) => s.id)))];
+    if (!devs.length) { emptyState(host, S.status ? 'camless found no device with lighting or a screen.' : 'Lighting shows up here once the camless service runs.'); return; }
+    if (!devs.includes(lightState.device)) lightState.device = devs[0];
+    if (devs.length > 1) {
+      const pick = h('<div class="cam-devpick" role="group" aria-label="Device"></div>');
+      const thumbs = [];
+      for (const dev of devs) {
+        const b = h(`<button type="button" aria-pressed="${dev === lightState.device}"><canvas aria-hidden="true"></canvas><span><b></b></span></button>`);
+        b.querySelector('b').textContent = devName(dev);
+        b.lastElementChild.appendChild(deviceStatus(dev));
+        b.addEventListener('click', () => { lightState.device = dev; pick.querySelectorAll('button').forEach((x, i) => x.setAttribute('aria-pressed', String(devs[i] === dev))); renderDevice(); });
+        pick.appendChild(b);
+        thumbs.push([b.querySelector('canvas'), dev]);
+      }
+      host.appendChild(pick);
+      let time = 0;
+      track(S.on('frame', (dt) => { time += dt; for (const [cv, dev] of thumbs) deviceThumb(cv, dev, time); }));
+    }
+    const tabsHost = h('<div></div>');
+    const body = h('<div></div>');
+    host.append(tabsHost, body);
+    const draw = K.region(body);
+    function renderDevice() {
+      const dev = lightState.device;
+      const tabs = (S.screens().some((s) => s.id === dev) ? [{ id: 'lcd', label: 'LCD Display' }] : [])
+        .concat(S.lights().filter((l) => l.dev === dev).map((l) => ({ id: l.id, label: lightLabel(l.id) })));
+      if (!tabs.some((t) => t.id === lightState.tab[dev])) lightState.tab[dev] = tabs[0].id;
+      tabsHost.textContent = '';
+      tabsHost.appendChild(K.tabStrip(tabs, lightState.tab[dev], (k) => { lightState.tab[dev] = k; showTab(); }, { sub: true, label: `${devName(dev)} channels` }));
+      showTab();
+      function showTab() {
+        const k = lightState.tab[dev];
+        draw((b) => { if (k === 'lcd') lcdEditor(b, dev); else lightEditor(b, k); });
+      }
+    }
+    renderDevice();
+  }
+
+  /* ------------------------------------------------------------ monitoring */
+
+  const SERIES_COLORS = [['#be9fff', '#640a92'], ['#21d373', '#0f8a4c'], ['#4cc2ff', '#0a6fd6'], ['#ffb547', '#b86e00'], ['#ff6b8a', '#c2183d']];
+  const seriesColor = (i) => SERIES_COLORS[i % SERIES_COLORS.length][K.prefs.theme === 'light' ? 1 : 0];
+
+  function gauge(label) {
+    const R = 50, Ci = TAU * R, Lr = Ci * 0.75;
+    const el = h(`<div class="cam-gauge" role="img"><svg viewBox="0 0 124 124" aria-hidden="true"><g transform="rotate(135 62 62)"><circle class="track" cx="62" cy="62" r="${R}" fill="none" stroke-width="8" stroke-linecap="round" stroke-dasharray="${Lr} ${Ci}"/><circle class="val" cx="62" cy="62" r="${R}" fill="none" stroke-width="8" stroke-linecap="round" stroke-dasharray="0 ${Ci}"/></g><text class="big" x="62" y="66" text-anchor="middle">--</text><text class="unit" x="62" y="84" text-anchor="middle"></text></svg><span></span></div>`);
+    el.lastElementChild.textContent = label;
+    const val = el.querySelector('.val'), big = el.querySelector('.big'), unit = el.querySelector('.unit');
+    el.set = (frac, text, u, hot) => {
+      val.setAttribute('stroke-dasharray', `${Math.max(0.01, Lr * clamp(frac || 0, 0, 1))} ${Ci}`);
+      big.textContent = text;
+      unit.textContent = u;
+      el.classList.toggle('hot', !!hot);
+      el.setAttribute('aria-label', `${label} ${text}${u}`);
+    };
+    return el;
+  }
+
+  // [fraction of the dial, number, unit] for a sensor.
+  function dial(id, v) {
+    if (v == null) return [0, 'N/A', ''];
+    const u = S.unitOf(id);
+    if (u === 'percent') return [v / 100, String(Math.round(v)), '%'];
+    if (u === 'watt') return [v / 300, String(Math.round(v)), 'W'];
+    const [lo, hi] = S.isLiquid(id) ? [20, 60] : [20, 100];
+    return [(v - lo) / (hi - lo), String(Math.round(K.toUnit(v))), K.deg()];
+  }
+
+  function monitoring(host) {
+    K.pageHead(host, 'PC Monitoring');
+    host.appendChild(h('<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="cam-gauge-grad" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#7416e6"/><stop offset="1" stop-color="#bf4cbf"/></linearGradient></defs></svg>'));
+    const grid = h('<div class="cam-mon"></div>');
+    const sens = (id) => () => { const v = S.value(id); return dial(id, v).concat([S.isLiquid(id) && v >= 55]); };
+    const stat = (id) => () => reading(id, S.value(id));
+    const cards = [
+      { title: 'CPU', g: [['Load', sens('cpu.load')], ['Temperature', sens('cpu.temp')]], stats: [['Power', stat('cpu.power')]] },
+      { title: 'GPU', g: [['Load', sens('gpu.load')], ['Temperature', sens('gpu.temp')]], stats: [['Power', stat('gpu.power')]] },
+      { title: 'Memory', g: [['In use', sens('ram.load')]], stats: [] },
+    ];
+    for (const d of S.devices().filter((x) => S.sensors().some((s) => s.id === `${x.id}.liquid`))) {
+      const pump = d.fans.find((f) => f.pump), fans = d.fans.filter((f) => !f.pump);
+      const g = [['Liquid', sens(`${d.id}.liquid`)]];
+      if (pump) g.push(['Pump', () => { const f = S.fan(`${d.id}/${pump.id}`); const v = f && f.hw ? f.hw.duty : null; return v == null ? [0, 'N/A', ''] : [v / 100, String(v), '%']; }]);
+      const stats = [];
+      if (pump) stats.push(['Pump', () => `${K.rpm(rpmOf(`${d.id}/${pump.id}`))} RPM`]);
+      for (const f of fans) stats.push([fans.length > 1 ? f.name.trim() : 'Fan', () => `${K.rpm(rpmOf(`${d.id}/${f.id}`))} RPM`]);
+      cards.push({ title: d.name, sub: d.firmware ? `Firmware ${d.firmware}` : '', g, stats });
+    }
+    const upd = [];
+    for (const c of cards) {
+      const el = h('<section class="cam-panel cam-moncard"><header><h3></h3><span></span></header><div class="cam-gauges"></div><div class="cam-monstats"></div></section>');
+      el.querySelector('h3').textContent = c.title;
+      el.querySelector('header span').textContent = c.sub || '';
+      const gs = c.g.map(([label, f]) => { const g = gauge(label); el.querySelector('.cam-gauges').appendChild(g); return [g, f]; });
+      const ss = c.stats.map(([label, f]) => { const s = h('<span></span>'); s.textContent = label; const b = h('<b></b>'); s.appendChild(b); el.querySelector('.cam-monstats').appendChild(s); return [b, f]; });
+      if (!ss.length) el.querySelector('.cam-monstats').remove();
+      upd.push(() => { for (const [g, f] of gs) { const [fr, t, u, hot] = f(); g.set(fr, t, u, hot); } for (const [b, f] of ss) b.textContent = f(); });
+      grid.appendChild(el);
+    }
+    host.appendChild(grid);
+    const tick = () => { for (const f of upd) f(); };
+    track(S.on('state', tick));
+    track(K.on('prefs', tick));
+    tick();
+    host.appendChild(tempChart());
+  }
+
+  function tempChart() {
+    const el = h('<section class="cam-panel cam-chart"><header><h3>Temperatures</h3></header><canvas role="img" aria-label="Temperatures over the last 10 minutes"></canvas></section>');
+    const ids = ['cpu.temp', 'gpu.temp'].concat(S.sensors().filter((s) => S.isLiquid(s.id)).map((s) => s.id));
+    const series = ids.map((id, i) => ({ id, label: S.sourceLabel(id), i }));
+    const shown = {};
+    for (const s of series) {
+      shown[s.id] = true;
+      const b = h('<button type="button" class="cam-legend" aria-pressed="true"><i></i><span></span></button>');
+      b.lastElementChild.textContent = s.label;
+      b.addEventListener('click', () => { shown[s.id] = !shown[s.id]; b.setAttribute('aria-pressed', String(shown[s.id])); draw(); });
+      el.firstElementChild.appendChild(b);
+      const paint = () => b.firstElementChild.style.setProperty('--c', seriesColor(s.i));
+      paint();
+      track(K.on('prefs', paint));
+    }
+    el.firstElementChild.appendChild(h('<span class="cam-small">Last 10 minutes</span>'));
+    const cv = el.querySelector('canvas');
+    const SPAN = 600e3;
+    function draw() {
+      if (!cv.isConnected) return;
+      const { ctx, w, h: hh } = D.fit(cv);
+      ctx.clearRect(0, 0, w, hh);
+      const css = getComputedStyle(cv);
+      const grid = css.getPropertyValue('--ce-grid').trim(), text = css.getPropertyValue('--t4').trim();
+      const pl = 40, pr = 8, pt = 8, pb = 22;
+      const now = Date.now(), lo = 20, hi = 100;
+      const X = (t) => pl + (1 - (now - t) / SPAN) * (w - pl - pr);
+      const Y = (v) => pt + (1 - (v - lo) / (hi - lo)) * (hh - pt - pb);
+      ctx.font = `500 10.5px ${FONT}`;
+      ctx.textAlign = 'right';
+      for (let v = 20; v <= 100; v += 20) {
+        ctx.strokeStyle = grid; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pl, Math.round(Y(v)) + 0.5); ctx.lineTo(w - pr, Math.round(Y(v)) + 0.5); ctx.stroke();
+        ctx.fillStyle = text; ctx.fillText(Math.round(K.toUnit(v)) + '°', pl - 8, Y(v) + 3.5);
+      }
+      ctx.textAlign = 'center';
+      for (let m = 10; m >= 0; m -= 2) ctx.fillText(m ? `-${m} min` : 'now', clamp(X(now - m * 60e3), pl + 16, w - pr - 14), hh - 5);
+      const hist = S.history.filter((p) => now - p.t <= SPAN);
+      for (const s of series) {
+        if (!shown[s.id]) continue;
+        ctx.strokeStyle = seriesColor(s.i);
+        ctx.lineWidth = 1.8;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        let pen = false, last = 0;
+        for (const p of hist) {
+          const v = p.v[s.id];
+          // A gap in the readings, or a reading missing, breaks the line.
+          if (v == null || p.t - last > 10e3) pen = false;
+          last = p.t;
+          if (v == null) continue;
+          const x = X(p.t), y = Y(clamp(v, lo, hi));
+          if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+        }
+        ctx.stroke();
+      }
+    }
+    track(S.on('state', draw));
+    track(K.on('prefs', draw));
+    const ro = new ResizeObserver(draw);
+    ro.observe(cv);
+    track(() => ro.disconnect());
+    requestAnimationFrame(draw);
+    return el;
+  }
+
+  /* -------------------------------------------------------------- settings */
+
+  function settings(host) {
+    K.pageHead(host, 'Settings');
+    const sv = S.server;
+    const panel = (title, rows) => { const s = K.section(host, title); const p = h('<div class="cam-panel cam-rows"></div>'); p.append(...rows.filter(Boolean)); s.appendChild(p); return s; };
+    const editCfg = (fn, o) => S.edit(fn, Object.assign({ what: 'settings' }, o));
+
+    // The switch shows what Windows has, read again every second.
+    const autoRow = row('Start with Windows', sv.sandbox ? 'In this test copy the switch changes nothing in Windows.' : 'camless starts in the tray when you sign in.', null);
+    const autoT = toggle({ checked: sv.autostart, label: 'Start with Windows', onChange: (v) => setAutostart(v, autoT) });
+    autoRow.lastElementChild.appendChild(autoT);
+    track(S.on('state', () => { if (!autoT.dataset.busy) autoT.set(S.server.autostart); }));
+
+    panel('General', [
+      row('Temperature display', null, choice({ options: [{ value: 'c', label: 'Celsius' }, { value: 'f', label: 'Fahrenheit' }], value: K.prefs.unit, label: 'Temperature display', onChange: (v) => K.setPref('unit', v) })),
+      row('Dark mode', null, toggle({ checked: K.prefs.theme !== 'light', label: 'Dark mode', onChange: (v) => K.setPref('theme', v ? 'dark' : 'light') })),
+      autoRow,
+      row('Closing the window', 'camless stays in the tray, and fans keep following their curves. Exit from the tray icon’s menu; the service keeps running either way.', null),
+    ]);
+
+    if (S.config) {
+      const c = S.config;
+      const fsMin = Math.min(30, c.failsafe_duty);
+      const intervals = [250, 500, 1000, 2000, 5000];
+      if (!intervals.includes(c.interval_ms)) intervals.push(c.interval_ms);
+      intervals.sort((a, b) => a - b);
+      const hot = () => `The Kraken raises its own pump and fan speeds from ${K.temp(45, 0)} liquid, even when camless is closed. At ${K.temp(55, 0)} every fan camless controls runs at 100%. This is always on.`;
+      const hotRow = row('Hot liquid', hot(), h('<span class="cam-status">Always on</span>'));
+      track(K.on('prefs', (k) => { if (k === 'unit') hotRow.hint(hot()); }));
+      panel('Fan safety', [
+        row('Failsafe speed', 'Channels whose sensor has no reading hold this speed, and so does every channel camless sets when the service stops.', slider({ min: fsMin, max: 100, value: c.failsafe_duty, label: 'Failsafe speed', format: (v) => v + '%', onInput: (v) => editCfg((x) => { x.failsafe_duty = v; }, { live: true }), onChange: () => S.save() })),
+        row('Update interval', 'How often camless reads the sensors and sets the speeds.', select({ options: intervals.map((v) => ({ value: v, label: v < 1000 ? `${v} ms` : `${v / 1000} s` })), value: c.interval_ms, label: 'Update interval', onChange: (v) => editCfg((x) => { x.interval_ms = v; }) })),
+        hotRow,
+      ]);
+
+      const api = c.api || { enabled: true, listen: '127.0.0.1:30640' };
+      panel('Local API', [
+        row('Local API', 'This window and LCD pages such as KrakenDial read the service through it. Only this PC can reach it. A change takes effect when the service restarts.', toggle({
+          checked: api.enabled !== false, label: 'Local API',
+          onChange: async (v) => {
+            if (!v && !(await confirmBox({ title: 'Turn off Local API', text: 'After the service restarts, this window can no longer show readings or the service’s state, and pages on the LCD stop working. Settings are still saved and applied.', ok: 'Turn off' }))) { go(); return; }
+            editCfg((x) => { x.api = Object.assign({}, x.api || { listen: api.listen }, { enabled: v }); if (v && x.api.listen === '127.0.0.1:30640') delete x.api; });
+          },
+        })),
+        row('Address', null, h(`<code>http://${esc(api.listen)}</code>`)),
+      ]);
+    }
+
+    panel('Profiles and backup', [
+      S.config ? row('Profiles', `Running: <b>${esc((S.config.profile) || 'no profile')}</b>.`, button('Manage profiles', { small: true, onClick: profilesDialog })) : null,
+      S.config ? row('Import from NZXT CAM', "Make a profile from CAM's curves, fan names, lighting and LCD mode.", button('Import', { small: true, onClick: importCam })) : null,
+      S.config ? row('Import a file', 'Make a profile from a <code>camless.toml</code> saved earlier.', button('Import file', { small: true, onClick: importFile })) : null,
+      row('Config folder', `<code>${esc(sv.config_path)}</code>`, sv.sandbox ? null : button('Open folder', { small: true, onClick: () => act('open-folder', {}) })),
+    ]);
+
+    const devRows = S.devices().map((d) => row(d.name, `Firmware ${esc(d.firmware || 'unknown')}. ${d.verified ? 'Tested on real hardware.' : 'Not yet tested on real hardware; this driver follows other projects’ notes and captures of CAM.'}`, deviceStatus(d.id)));
+    const unsupported = ((S.status && S.status.unsupported) || []).map((u) => row(u.product || 'NZXT device', `No camless driver yet (${u.vid.toString(16).padStart(4, '0')}:${u.pid.toString(16).padStart(4, '0')}).`, null));
+    panel('Devices', devRows.concat(unsupported, [
+      !devRows.length && !unsupported.length ? row(S.status ? 'No devices found' : 'The service is not running', null, null) : null,
+      row('Firmware updates', 'camless shows firmware versions but does not install updates. To update, open NZXT CAM once.', null),
+    ]));
+
+    panel('About', [
+      row('camless', `Window ${esc(sv.app_version)}${S.status ? `, service ${esc(S.status.version)}` : ''}.`, null),
+    ]);
+  }
+
+  async function setAutostart(on, t) {
+    t.dataset.busy = '1';
+    try {
+      const r = await S.api('PUT', 'autostart', { on });
+      t.set(r.autostart);
+    } catch (e) {
+      toast(e.message);
+      t.set(!on);
+    } finally {
+      delete t.dataset.busy;
+    }
+  }
+
+  boot();
+})();

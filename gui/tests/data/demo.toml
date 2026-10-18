@@ -1,0 +1,117 @@
+
+interval_ms = 1000
+failsafe_duty = 70
+
+[[curve]]
+kind = "graph"
+name = "GPU"
+sensor = "gpu.temp"
+points = [[20.0, 25], [45.0, 25], [55.0, 39], [65.0, 50], [70.0, 61], [80.0, 80], [100.0, 80]]
+
+[[curve]]
+kind = "graph"
+name = "GPU 2"
+sensor = "gpu.temp"
+points = [[20.0, 25], [45.0, 25], [50.0, 28], [60.0, 37], [75.0, 57], [80.0, 80], [100.0, 80]]
+
+[[curve]]
+kind = "fixed"
+name = "Fixed 0 %"
+duty = 0
+
+[[curve]]
+kind = "fixed"
+name = "Fixed 100 %"
+duty = 100
+
+[[curve]]
+kind = "graph"
+name = "GPU 3"
+sensor = "gpu.temp"
+points = [[20.0, 11], [45.0, 11], [50.0, 23], [55.0, 25], [65.0, 25], [70.0, 35], [75.0, 48], [80.0, 65], [85.0, 72], [90.0, 76], [100.0, 76]]
+
+[[curve]]
+kind = "graph"
+name = "CPU"
+sensor = "cpu.temp"
+points = [[20.0, 61], [65.0, 61], [70.0, 71], [80.0, 82], [100.0, 82]]
+
+[[curve]]
+kind = "graph"
+name = "Liquid"
+sensor = "demo-cooler.liquid"
+points = [[20.0, 20], [30.0, 20], [40.0, 41], [45.0, 53], [50.0, 75], [55.0, 100], [100.0, 100]]
+
+[[fan]]
+channel = "demo-hub/fan1"
+name = "Bottom"
+curve = "GPU"
+
+[[fan]]
+channel = "demo-hub/fan2"
+name = "Front"
+curve = "GPU 2"
+
+[[fan]]
+channel = "demo-hub/fan3"
+curve = "Fixed 0 %"
+
+[[fan]]
+channel = "demo-hub/fan4"
+curve = "Fixed 100 %"
+
+[[fan]]
+channel = "demo-hub/fan5"
+name = "Rear"
+curve = "GPU 3"
+
+[[fan]]
+channel = "demo-cooler/fan"
+curve = "Liquid"
+
+[[fan]]
+channel = "demo-cooler/pump"
+curve = "CPU"
+
+[[light]]
+channel = "demo-hub/led1"
+mode = "tai-chi"
+colors = ["3232de", "ffffff"]
+
+[[light]]
+channel = "demo-hub/led2"
+mode = "tai-chi"
+colors = ["3232de", "ffffff"]
+
+[[light]]
+channel = "demo-hub/led3"
+mode = "fixed"
+colors = ["aa00ff"]
+
+[[light]]
+channel = "demo-hub/led4"
+mode = "fixed"
+colors = ["aa00ff"]
+
+[[light]]
+channel = "demo-hub/led5"
+mode = "tai-chi"
+colors = ["3232de", "ffffff"]
+
+[[light]]
+channel = "demo-cooler/ring"
+mode = "tai-chi"
+colors = ["3232de", "ffffff"]
+
+[[light]]
+channel = "demo-cooler/rgb"
+mode = "tai-chi"
+colors = ["3232de", "ffffff"]
+
+[[lcd]]
+device = "demo-cooler"
+mode = "web"
+brightness = 100
+orientation = 0
+url = "http://127.0.0.1:30640/"
+fps = 10

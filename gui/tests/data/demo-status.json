@@ -1,0 +1,295 @@
+{
+ "config_error": null,
+ "config_path": "camless.toml",
+ "curves": [
+  {
+   "duty": 43.513099670410156,
+   "input": 59.10281753540039,
+   "name": "GPU"
+  },
+  {
+   "duty": 36.192535400390625,
+   "input": 59.10281753540039,
+   "name": "GPU 2"
+  },
+  {
+   "duty": 0.0,
+   "input": null,
+   "name": "Fixed 0 %"
+  },
+  {
+   "duty": 100.0,
+   "input": null,
+   "name": "Fixed 100 %"
+  },
+  {
+   "duty": 25.0,
+   "input": 59.10281753540039,
+   "name": "GPU 3"
+  },
+  {
+   "duty": null,
+   "input": null,
+   "name": "CPU"
+  },
+  {
+   "duty": 30.658798217773438,
+   "input": 35.075618743896484,
+   "name": "Liquid"
+  }
+ ],
+ "devices": [
+  {
+   "connected": true,
+   "error": null,
+   "fans": [
+    {
+     "connected": true,
+     "device_curves": true,
+     "duty": 70,
+     "id": "pump",
+     "min_duty": 20,
+     "name": "Pump",
+     "pump": true,
+     "rpm": 1959
+    },
+    {
+     "connected": true,
+     "device_curves": true,
+     "duty": 31,
+     "id": "fan",
+     "min_duty": 0,
+     "name": "Fan ",
+     "pump": false,
+     "rpm": 558
+    }
+   ],
+   "firmware": "0.0.0",
+   "id": "demo-cooler",
+   "lcd": {
+    "height": 640,
+    "round": true,
+    "width": 640
+   },
+   "lights": [
+    {
+     "accessories": [
+      "simulated"
+     ],
+     "id": "ring",
+     "leds": 24,
+     "name": "RING"
+    },
+    {
+     "accessories": [
+      "simulated"
+     ],
+     "id": "rgb",
+     "leds": 24,
+     "name": "RGB"
+    }
+   ],
+   "name": "Demo cooler",
+   "verified": true
+  },
+  {
+   "connected": true,
+   "error": null,
+   "fans": [
+    {
+     "connected": true,
+     "device_curves": false,
+     "duty": 44,
+     "id": "fan1",
+     "min_duty": 0,
+     "name": "Fan 1",
+     "pump": false,
+     "rpm": 655
+    },
+    {
+     "connected": true,
+     "device_curves": false,
+     "duty": 36,
+     "id": "fan2",
+     "min_duty": 0,
+     "name": "Fan 2",
+     "pump": false,
+     "rpm": 539
+    },
+    {
+     "connected": false,
+     "device_curves": false,
+     "duty": 0,
+     "id": "fan3",
+     "min_duty": 0,
+     "name": "Fan 3",
+     "pump": false,
+     "rpm": 0
+    },
+    {
+     "connected": true,
+     "device_curves": false,
+     "duty": 100,
+     "id": "fan4",
+     "min_duty": 0,
+     "name": "Fan 4",
+     "pump": false,
+     "rpm": 1499
+    },
+    {
+     "connected": true,
+     "device_curves": false,
+     "duty": 25,
+     "id": "fan5",
+     "min_duty": 0,
+     "name": "Fan 5",
+     "pump": false,
+     "rpm": 375
+    }
+   ],
+   "firmware": "0.0.0",
+   "id": "demo-hub",
+   "lcd": null,
+   "lights": [
+    {
+     "accessories": [
+      "simulated"
+     ],
+     "id": "led1",
+     "leds": 24,
+     "name": "LED1"
+    },
+    {
+     "accessories": [
+      "simulated"
+     ],
+     "id": "led2",
+     "leds": 24,
+     "name": "LED2"
+    },
+    {
+     "accessories": [
+      "simulated"
+     ],
+     "id": "led3",
+     "leds": 24,
+     "name": "LED3"
+    },
+    {
+     "accessories": [
+      "simulated"
+     ],
+     "id": "led4",
+     "leds": 24,
+     "name": "LED4"
+    },
+    {
+     "accessories": [
+      "simulated"
+     ],
+     "id": "led5",
+     "leds": 24,
+     "name": "LED5"
+    }
+   ],
+   "name": "Demo hub",
+   "verified": true
+  }
+ ],
+ "fans": [
+  {
+   "channel": "demo-hub/fan1",
+   "duty": 44,
+   "failsafe": false,
+   "on_device": false
+  },
+  {
+   "channel": "demo-hub/fan2",
+   "duty": 36,
+   "failsafe": false,
+   "on_device": false
+  },
+  {
+   "channel": "demo-hub/fan3",
+   "duty": 0,
+   "failsafe": false,
+   "on_device": false
+  },
+  {
+   "channel": "demo-hub/fan4",
+   "duty": 100,
+   "failsafe": false,
+   "on_device": false
+  },
+  {
+   "channel": "demo-hub/fan5",
+   "duty": 25,
+   "failsafe": false,
+   "on_device": false
+  },
+  {
+   "channel": "demo-cooler/fan",
+   "duty": 31,
+   "failsafe": false,
+   "on_device": true
+  },
+  {
+   "channel": "demo-cooler/pump",
+   "duty": 70,
+   "failsafe": true,
+   "on_device": false
+  }
+ ],
+ "sensors": [
+  {
+   "id": "cpu.temp",
+   "name": "CPU temperature",
+   "unit": "celsius",
+   "value": null
+  },
+  {
+   "id": "cpu.load",
+   "name": "CPU load",
+   "unit": "percent",
+   "value": 56.92308044433594
+  },
+  {
+   "id": "cpu.power",
+   "name": "CPU power",
+   "unit": "watt",
+   "value": null
+  },
+  {
+   "id": "gpu.temp",
+   "name": "GPU temperature",
+   "unit": "celsius",
+   "value": 59.0
+  },
+  {
+   "id": "gpu.load",
+   "name": "GPU load",
+   "unit": "percent",
+   "value": 93.0
+  },
+  {
+   "id": "gpu.power",
+   "name": "GPU power",
+   "unit": "watt",
+   "value": 159.322998046875
+  },
+  {
+   "id": "ram.load",
+   "name": "Memory in use",
+   "unit": "percent",
+   "value": 85.0
+  },
+  {
+   "id": "demo-cooler.liquid",
+   "name": "Liquid (Demo cooler)",
+   "unit": "celsius",
+   "value": 35.17641830444336
+  }
+ ],
+ "unsupported": [],
+ "version": "0.2.0"
+}

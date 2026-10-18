@@ -3,6 +3,7 @@
 //! and memory through plain Win32 calls.
 
 use anyhow::{bail, Context, Result};
+use camless_core::status::{Sensor, Unit};
 use libloading::Library;
 use serde::Serialize;
 use std::ffi::c_void;
@@ -25,6 +26,28 @@ pub struct Readings {
     pub ram_used_pct: Option<f32>,
     pub ram_used_gb: Option<f32>,
     pub ram_total_gb: Option<f32>,
+}
+
+impl Readings {
+    /// Host sensors by the ids curves use. CPU temperature is listed even without a
+    /// reading, so a curve can name it before PawnIO is set up.
+    pub fn list(&self, gpu: bool) -> Vec<Sensor> {
+        let s = |id: &str, name: &str, unit, value| Sensor { id: id.into(), name: name.into(), unit, value };
+        let mut out = vec![
+            s("cpu.temp", "CPU temperature", Unit::Celsius, self.cpu_temp_c),
+            s("cpu.load", "CPU load", Unit::Percent, self.cpu_load_pct),
+            s("cpu.power", "CPU power", Unit::Watt, self.cpu_power_w),
+        ];
+        if gpu {
+            out.extend([
+                s("gpu.temp", "GPU temperature", Unit::Celsius, self.gpu_temp_c),
+                s("gpu.load", "GPU load", Unit::Percent, self.gpu_load_pct),
+                s("gpu.power", "GPU power", Unit::Watt, self.gpu_power_w),
+            ]);
+        }
+        out.push(s("ram.load", "Memory in use", Unit::Percent, self.ram_used_pct));
+        out
+    }
 }
 
 pub struct Sensors {
