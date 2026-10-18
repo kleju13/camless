@@ -16,6 +16,8 @@ Curves work as in FanControl, with an interface closer to CAM:
 
 ![Cooling](docs/cooling.png)
 
+Not affiliated with or endorsed by NZXT. NZXT, CAM and Kraken are trademarks of NZXT, Inc.
+
 ## Status
 
 | Device | USB id | Driver | Verified on hardware |
