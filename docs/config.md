@@ -78,8 +78,10 @@ step_down = 5                 # % per second at most
 
 [[light]]
 channel = "kraken-elite-v2/ring"
-mode = "tai-chi"              # off | fixed | fading | spectrum-wave | covering-marquee | pulse | breathing
-colors = ["3232de", "ffffff"] # candle | rainbow-flow | super-rainbow | rainbow-pulse | tai-chi | water-cooler
+# mode: off | fixed | fading | spectrum-wave | covering-marquee | pulse | breathing
+#       candle | rainbow-flow | super-rainbow | rainbow-pulse | tai-chi | water-cooler
+mode = "tai-chi"
+colors = ["3232de", "ffffff"] # hex RGB
 speed = "normal"              # slowest | slower | normal | faster | fastest
 
 [[lcd]]
