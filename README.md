@@ -1,4 +1,6 @@
-# <img src="gui/icon.svg" width="40" height="40" alt="" align="top"> camless
+<img src="gui/icon.svg" width="160" height="160" alt="">
+
+# camless
 
 A light replacement for NZXT CAM: fan and pump curves, lighting and the Kraken LCD, without CAM's 1 GB of Electron.
 
