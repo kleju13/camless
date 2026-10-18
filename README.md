@@ -18,6 +18,8 @@ Curves work as in FanControl, with an interface closer to CAM:
 
 Not affiliated with or endorsed by NZXT. NZXT, CAM and Kraken are trademarks of NZXT, Inc.
 
+**camless sets your pump and fan speeds, and a bad curve can overheat your hardware.** It comes with no warranty (sections 15 and 16 of the [license](LICENSE)): use it at your own risk. Two safeguards hold whatever the config says. While camless runs, liquid at 55 °C or above sends every managed fan and pump to 100 %. The curve stored on a Kraken reaches 100 % at 55 °C liquid, even when camless is not running. See [How the control works](#how-the-control-works).
+
 ## Status
 
 | Device | USB id | Driver | Verified on hardware |
