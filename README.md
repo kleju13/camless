@@ -31,15 +31,30 @@ Other NZXT devices show up in the app as "no driver yet". A driver is one file; 
 
 > Version 0.2 rewrote the service around device drivers and added the app. It runs on the maintainer's Kraken Elite 2024 and Control Hub: curves stored on the cooler and driven from the host, lighting, and LCD brightness and rotation. Web pages on the LCD have so far run against simulated devices (`camless run --demo`) only.
 
+## Install
+
+Download [camless-setup.exe](https://github.com/kleju13/camless/releases/latest/download/camless-setup.exe) from the [latest release](https://github.com/kleju13/camless/releases/latest) and run it. It installs both exes for your Windows user in `%LOCALAPPDATA%\Programs\camless`, without administrator rights, and adds camless to the Start menu and to *Settings → Apps*, where it uninstalls. The setup is not code-signed, so SmartScreen may stop it: *More info → Run anyway*.
+
+Or in PowerShell, which checks the download's SHA-256 and installs silently:
+
+```
+irm https://raw.githubusercontent.com/kleju13/camless/main/scripts/install.ps1 | iex
+```
+
+The app asks GitHub for the latest release once each time it starts. When there is a newer one, *Update available* shows under the service in the sidebar, and *Settings → About* has *Update*. That downloads the setup, checks its SHA-256 and runs it. The setup closes the app, stops the service, replaces both exes and opens the app, which starts the service again. Running the setup or the install command again does the same.
+
+Uninstalling asks whether to delete your settings and profiles in `%APPDATA%\camless`; by default they stay.
+
 ## Getting started
 
 1. Quit NZXT CAM and stop its CAM Service. It holds the devices exclusively.
-2. Optionally bring over what CAM is set to: *Profiles → Import from NZXT CAM* in the app, or `camless import-cam -o %APPDATA%\camless\camless.toml`.
-3. Open `camless-gui.exe` and answer Yes when Windows asks for administrator rights. It starts the service; `camless run` does the same from a terminal.
+2. [Install](#install) camless. The setup opens it at the end; after that, it is *camless* in the Start menu.
+3. Answer Yes when Windows asks for administrator rights. The app starts the service; `camless run` does the same from a terminal.
+4. Optionally bring over what CAM is set to: *Profiles → Import from NZXT CAM* in the app, or `camless import-cam -o %APPDATA%\camless\camless.toml`.
 
 To try the app without hardware, run `camless run --demo`. It uses a simulated cooler and hub and touches no USB device.
 
-CPU temperature on AMD Zen needs [PawnIO](https://pawnio.eu), its signed `AMDFamily17.bin` next to `camless.exe`, and administrator rights. Without them, curves on `cpu.temp` hold the failsafe duty. The cooler's liquid temperature works without any of this, so it is the default sensor for new curves.
+CPU temperature on AMD Zen needs [PawnIO](https://pawnio.eu), its signed `AMDFamily17.bin` next to `camless.exe` (in `%LOCALAPPDATA%\Programs\camless` once installed), and administrator rights. Without them, curves on `cpu.temp` hold the failsafe duty. The cooler's liquid temperature works without any of this, so it is the default sensor for new curves.
 
 ## Commands
 
@@ -179,11 +194,14 @@ It listens on `127.0.0.1:30641` by default and binds to loopback only. It reject
 ## Building
 
 ```
-cargo build --release                         # camless.exe and camless-gui.exe in target/release
+cargo build --release --workspace             # camless.exe and camless-gui.exe in target/release
 cargo test --workspace --release
+.\scripts\package.ps1                         # both, packed into dist\camless-setup.exe; needs Inno Setup 6
 camless run --demo demo.toml                  # simulated devices, for working on the app
 camless-gui --serve 127.0.0.1:30652 --config demo.toml --ui-dir gui/ui   # the app's page in a browser
 ```
+
+CI builds the setup for every pull request; it is the run's *camless-setup* artifact. A tag `vX.Y.Z` that matches the version in all three `Cargo.toml` files publishes it as a release.
 
 The workspace has three crates:
 - `camless`: the service, drivers and CLI;
@@ -194,8 +212,7 @@ The protocol details are in [docs/protocol.md](docs/protocol.md).
 
 ## Not done yet
 
-- Starting the service at logon without a UAC prompt. *Start with Windows* starts the app, which asks for administrator rights each time.
-- Drivers for other NZXT devices.
+- Starting the service at logon without a UAC prompt. *Start with Windows* starts the app, which asks for administrator rights each time.- Drivers for other NZXT devices.
 
 ## License
 

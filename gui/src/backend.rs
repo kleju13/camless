@@ -7,7 +7,7 @@
 //! each saved change by itself, so closing the app never stops fan control.
 
 use crate::service::{self, Action};
-use crate::{assets, client, tray};
+use crate::{assets, client, tray, update};
 use anyhow::{anyhow, Context, Result};
 use camless_core::cam_import;
 use camless_core::config::{self, Config, LcdMode, Setup};
@@ -125,6 +125,9 @@ impl Backend {
             ("POST", "service/stop") => self.service(Action::Stop),
             ("POST", "service/restart") => self.service(Action::Restart),
             ("PUT", "autostart") => self.set_autostart(body),
+            ("POST", "update/check") => update::check().map(|_| json!({})).map_err(Refused::from),
+            ("POST", "update/install") => self.install_update(),
+            ("POST", "update/notes") => self.release_notes(),
             ("POST", "open-folder") => self.open_folder(),
             ("POST", "window/closed") => {
                 if let Some(f) = &self.on_closed {
@@ -190,6 +193,7 @@ impl Backend {
             "service_busy": sv.busy,
             "service_note": sv.note,
             "autostart": autostart,
+            "update": update::state(),
             "sandbox": self.sandbox,
         })
     }
@@ -348,6 +352,23 @@ impl Backend {
         }
         tray::autostart::set(on)?;
         Ok(json!({ "autostart": tray::autostart::enabled() }))
+    }
+
+    fn install_update(&self) -> Answer {
+        if self.sandbox {
+            bail_refused("the sandbox does not install updates")?;
+        }
+        update::install()?;
+        Ok(json!({}))
+    }
+
+    fn release_notes(&self) -> Answer {
+        if self.sandbox {
+            bail_refused("the sandbox does not open a browser")?;
+        }
+        let page = update::page().ok_or_else(|| anyhow!("no release found yet; check for updates first"))?;
+        std::process::Command::new("explorer.exe").arg(page).spawn().context("opening the browser")?;
+        Ok(json!({}))
     }
 
     fn open_folder(&self) -> Answer {

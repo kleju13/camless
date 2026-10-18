@@ -11,9 +11,11 @@ mod app;
 mod assets;
 mod backend;
 mod client;
+mod http;
 mod serve;
 mod service;
 mod tray;
+mod update;
 
 use anyhow::Context;
 use backend::{Backend, Options};

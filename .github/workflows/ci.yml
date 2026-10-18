@@ -1,0 +1,24 @@
+# Tests every push to main and every pull request, and builds camless-setup.exe from it: the run's
+# camless-setup artifact installs that exact build.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo test --workspace --release
+      - run: choco install innosetup --no-progress -y
+      - run: ./scripts/package.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: camless-setup
+          path: dist/*

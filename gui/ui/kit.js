@@ -25,6 +25,7 @@
     close: ic('<path d="M6 6l12 12M18 6L6 18"/>'),
     rotate: ic('<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4.5H15"/>'),
     play: ic('<path d="M8 5.5v13l10-6.5z"/>'),
+    download: ic('<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/>'),
     swap: ic('<path d="M4 8h13l-3.5-3.5M20 16H7l3.5 3.5"/>'),
     warn: ic('<path d="M12 3.5l9 16H3z"/><path d="M12 10v4.2M12 17h.01"/>'),
     info: ic('<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>'),
