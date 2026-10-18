@@ -6,6 +6,7 @@ name = "camless"
 version = "0.2.0"
 edition = "2021"
 description = "A small replacement for NZXT CAM: pump, fan, lighting and LCD control for NZXT devices"
+license = "AGPL-3.0-or-later"
 publish = false
 
 [dependencies]

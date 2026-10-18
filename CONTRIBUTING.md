@@ -2,6 +2,8 @@
 
 The maintainer can only test a Kraken Elite 2024 and a Control Hub. Every other NZXT device needs someone who owns it. A driver is one Rust file. The service, the config and the app pick a new device up from what the driver describes, so nothing else changes.
 
+The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you agree that your contribution is licensed under it too.
+
 ## Layout
 
 | Path | What |

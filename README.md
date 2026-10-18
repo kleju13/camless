@@ -192,3 +192,11 @@ The protocol details are in [docs/protocol.md](docs/protocol.md).
 
 - Starting the service at logon without a UAC prompt. *Start with Windows* starts the app, which asks for administrator rights each time.
 - Drivers for other NZXT devices.
+
+## License
+
+Copyright (C) 2026 kleju13 and camless contributors.
+
+[GNU AGPL v3](LICENSE). Use it, change it and share it freely, at work too. If you pass on a changed version, or run one for other people over a network, you must publish its source under the same license.
+
+The Montserrat font in `gui/ui` is under the [SIL Open Font License](gui/ui/OFL.txt).

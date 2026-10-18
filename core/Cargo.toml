@@ -3,6 +3,7 @@ name = "camless-core"
 version = "0.2.0"
 edition = "2021"
 description = "Config, curve engine and status types shared by the camless daemon and GUI"
+license = "AGPL-3.0-or-later"
 publish = false
 
 [dependencies]
