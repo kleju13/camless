@@ -32,7 +32,8 @@
     curve: ic('<path d="M3 19h18M4 17c5 0 6-9 9-9s3.5 2 7-4"/>'),
     more: ic('<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>'),
   };
-  const LOGO = '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="none" stroke="#bf4cbf" stroke-width="4.5" stroke-dasharray="3.3 1.4"/><circle cx="16" cy="16" r="5.5" fill="currentColor"/></svg>';
+  // c and a minus, for cam-less. tools/icon/make_icon.py draws the same mark for the exe and the tray.
+  const LOGO = '<svg viewBox="0 0 64 64" aria-hidden="true"><path d="M35.607 42.607A15 15 0 1 1 35.607 21.393" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round"/><path d="M43 32H55" stroke="var(--orchid)" stroke-width="9" stroke-linecap="round"/></svg>';
   const FONT = '"Montserrat", system-ui, sans-serif';
 
   /* ------------------------------------------------------------ prefs, bus */

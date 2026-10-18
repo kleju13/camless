@@ -15,6 +15,7 @@ The maintainer can only test a Kraken Elite 2024 and a Control Hub. Every other 
 | `gui/` | the app: tray icon, WebView2 window, and the JSON API its page uses |
 | `gui/ui/` | the app's page: HTML, CSS and plain JavaScript, built into `camless-gui.exe` |
 | `tools/capture/` | Frida scripts that log what CAM sends to a device |
+| `tools/icon/` | draws the logo into `gui/camless.ico`, the icon in both exes, the tray and the window, and into `gui/icon.svg` |
 | `docs/protocol.md` | protocol notes per device |
 
 ## Adding a device

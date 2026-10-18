@@ -1,4 +1,4 @@
-# camless
+# <img src="gui/icon.svg" width="40" height="40" alt="" align="top"> camless
 
 A light replacement for NZXT CAM: fan and pump curves, lighting and the Kraken LCD, without CAM's 1 GB of Electron.
 
@@ -179,7 +179,7 @@ camless-gui --serve 127.0.0.1:30652 --config demo.toml --ui-dir gui/ui   # the a
 The workspace has three crates:
 - `camless`: the service, drivers and CLI;
 - `core`: config, curve engine and status types, with no hardware code;
-- `gui`: the app, a tray icon and a WebView2 window; the page itself is in `gui/ui`.
+- `gui`: the app, a tray icon and a WebView2 window; the page itself is in `gui/ui`. Its icon, `gui/camless.ico`, is built into both exes; `tools/icon/make_icon.py` redraws it.
 
 The protocol details are in [docs/protocol.md](docs/protocol.md).
 

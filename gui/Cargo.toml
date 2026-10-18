@@ -27,4 +27,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+# Puts camless.ico into the exe, for Explorer, the taskbar, the tray and the window.
+embed-resource = "3"

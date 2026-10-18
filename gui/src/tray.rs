@@ -10,6 +10,7 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ};
 use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject, INFINITE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXICON, SM_CXSMICON};
 
 /// Passed by the logon entry: start with the icon only.
 pub const TRAY_ONLY: &str = "--tray";
@@ -77,7 +78,7 @@ impl Tray {
         menu.append_items(&[&show, &logon, &PredefinedMenuItem::separator(), &exit])?;
         let icon = TrayIconBuilder::new()
             .with_tooltip("camless")
-            .with_icon(Icon::from_rgba(icon_rgba(32), 32, 32)?)
+            .with_icon(Icon::from_resource(ICON, Some((icon_size(false), icon_size(false))))?)
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
             .build()?;
@@ -111,20 +112,14 @@ impl Tray {
     }
 }
 
-/// camless's mark: a ring in the accent colour, like the Kraken's.
-pub fn icon_rgba(size: u32) -> Vec<u8> {
-    let s = size as f32;
-    let c = (s - 1.0) / 2.0;
-    let (outer, inner) = (s * 0.46, s * 0.27);
-    let mut px = Vec::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let d = ((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt();
-            let a = (outer - d + 0.5).clamp(0.0, 1.0) * (d - inner + 0.5).clamp(0.0, 1.0);
-            px.extend_from_slice(&[0x8b, 0x5c, 0xf6, (a * 255.0).round() as u8]);
-        }
-    }
-    px
+/// camless.ico, which build.rs puts into the exe.
+pub const ICON: u16 = 1;
+
+/// The size Windows wants for a small icon (tray, title bar) or a big one (taskbar,
+/// Alt+Tab) at the current scale, so the icon is picked, not stretched.
+pub fn icon_size(big: bool) -> u32 {
+    let metric = if big { SM_CXICON } else { SM_CXSMICON };
+    unsafe { GetSystemMetrics(metric) }.max(16) as u32
 }
 
 /// The per-user Run entry, so camless starts in the tray at logon.

@@ -12,9 +12,10 @@ use std::time::Duration;
 use tray_icon::menu::MenuEvent;
 use tray_icon::TrayIconEvent;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
 use winit::window::{Icon, Window, WindowId};
 use wry::http::{Request, Response};
 use wry::{WebContext, WebView, WebViewBuilder, WebViewBuilderExtWindows};
@@ -109,10 +110,14 @@ impl App {
     }
 
     fn create(&mut self, el: &ActiveEventLoop) -> Result<Open> {
-        let icon = Icon::from_rgba(tray::icon_rgba(64), 64, 64)?;
+        let icon = |big| {
+            let s = tray::icon_size(big);
+            Icon::from_resource(tray::ICON, Some(PhysicalSize::new(s, s)))
+        };
         let attrs = Window::default_attributes()
             .with_title("camless")
-            .with_window_icon(Some(icon))
+            .with_window_icon(Some(icon(false)?))
+            .with_taskbar_icon(Some(icon(true)?))
             .with_inner_size(LogicalSize::new(1180.0, 760.0))
             .with_min_inner_size(LogicalSize::new(900.0, 560.0))
             .with_visible(false);
