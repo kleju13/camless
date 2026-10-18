@@ -16,6 +16,9 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 | `core/` | config and profiles, curve engine, CAM import, status types; no hardware code |
 | `gui/` | the app: tray icon, WebView2 window, and the JSON API its page uses |
 | `gui/ui/` | the app's page: HTML, CSS and plain JavaScript, built into `camless-gui.exe` |
+| `installer/camless.iss` | the Inno Setup script for `camless-setup.exe`, which installs, updates and uninstalls both exes |
+| `scripts/` | `package.ps1` builds the setup; `install.ps1` installs the latest release |
+| `.github/workflows/` | `ci.yml` tests and packages every pull request; `release.yml` publishes a release for a `v*` tag |
 | `tools/capture/` | Frida scripts that log what CAM sends to a device |
 | `tools/icon/` | draws the logo into `gui/camless.ico`, the icon in both exes, the tray and the window, and into `gui/icon.svg` |
 | `docs/protocol.md` | protocol notes per device |
