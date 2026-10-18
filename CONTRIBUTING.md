@@ -8,6 +8,7 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 
 | Path | What |
 |---|---|
+| `src/` | the `camless` crate: the service, drivers and CLI |
 | `src/drivers/<model>.rs` | one device: its protocol and a `Driver` |
 | `src/drivers/mod.rs` | the `Driver` and `Lcd` traits, `MODELS`, bus scanning |
 | `src/drivers/hid.rs`, `hue2.rs` | shared HID I/O and the Hue 2 lighting protocol |
@@ -57,10 +58,12 @@ Start it, then start CAM, and use the feature you want to capture within those 1
 
 Attaching Frida to CAM needs the same user, and administrator rights if CAM runs elevated. Before you share a capture, remove anything personal from it: serial numbers, file paths, and any images you showed on a screen.
 
-## Testing
+## Building and testing
 
 ```
+cargo build --release --workspace                   # camless.exe and camless-gui.exe in target/release
 cargo test --workspace --release
+.\scripts\package.ps1                               # both, packed into dist\camless-setup.exe; needs Inno Setup 6
 camless run --demo demo.toml                        # simulated devices for working on the app
 camless-gui --serve 127.0.0.1:30652 --config demo.toml --ui-dir gui/ui
 ```
@@ -68,3 +71,5 @@ camless-gui --serve 127.0.0.1:30652 --config demo.toml --ui-dir gui/ui
 `demo.toml` can be a copy of `gui/tests/data/demo.toml`. `--serve` shows the app's page at http://127.0.0.1:30652/ in any browser and edits only the file given with `--config`. With `--ui-dir`, the page comes from the source folder, so a reload picks up changes to `gui/ui` without a rebuild.
 
 Run the tests before opening a pull request. A new driver needs tests for its report builders and parsers, preferably against bytes captured from CAM.
+
+CI builds the setup for every pull request, as the run's *camless-setup* artifact. A tag `vX.Y.Z` publishes it as a release, and fails unless all three `Cargo.toml` files are at that version: the app compares its own version with the latest release.
