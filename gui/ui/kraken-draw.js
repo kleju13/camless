@@ -6,12 +6,67 @@
   const C = window.S;
   const TAU = Math.PI * 2;
 
+  // A canvas's CSS box comes from a ResizeObserver, and whether it is on screen from an
+  // IntersectionObserver: measuring it every frame would force a layout each time. A
+  // picture that resizes or comes into view asks for a frame, as without motion no
+  // other frame may come.
+  const boxes = new WeakMap(), shown = new WeakMap();
+  const ro = new ResizeObserver((entries) => {
+    let resized = false;
+    for (const e of entries) {
+      const b = e.borderBoxSize && e.borderBoxSize[0];
+      const box = b ? { width: b.inlineSize, height: b.blockSize } : { width: e.contentRect.width, height: e.contentRect.height };
+      const was = boxes.get(e.target);
+      if (!was || was.width !== box.width || was.height !== box.height) resized = true;
+      boxes.set(e.target, box);
+    }
+    if (resized) C.schedule();
+  });
+  const io = new IntersectionObserver((entries) => {
+    let appeared = false;
+    for (const e of entries) {
+      if (e.isIntersecting && shown.get(e.target) === false) appeared = true;
+      shown.set(e.target, e.isIntersecting);
+      // A picture taken off the page is not followed any more.
+      if (!e.target.isConnected) { io.unobserve(e.target); ro.unobserve(e.target); boxes.delete(e.target); }
+    }
+    if (appeared) C.schedule();
+  });
+  function watch(canvas) {
+    if (boxes.has(canvas)) return;
+    const r = canvas.getBoundingClientRect();
+    boxes.set(canvas, { width: r.width, height: r.height });
+    ro.observe(canvas);
+    io.observe(canvas);
+  }
+  // Whether drawing on `canvas` would show: on the page and not scrolled out of view.
+  function visible(canvas) {
+    if (!canvas.isConnected) return false;
+    watch(canvas);
+    return shown.get(canvas) !== false;
+  }
+
+  // Draws a picture only when it shows and would come out different from what is on
+  // the canvas: `key` holds everything the picture depends on. A canvas left as it
+  // is costs the window no paint.
+  function paint(canvas, key, draw) {
+    if (!visible(canvas)) return;
+    const f = fit(canvas);
+    const k = `${f.w}x${f.h}|${typeof key === 'string' ? key : JSON.stringify(key)}`;
+    if (canvas._painted === k) return;
+    canvas._painted = k;
+    f.ctx.clearRect(0, 0, f.w, f.h);
+    draw(f.ctx, f.w, f.h);
+  }
+
   // Sizes a canvas for its CSS box and device pixel ratio; returns the 2D context.
   function fit(canvas) {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const r = canvas.getBoundingClientRect();
+    watch(canvas);
+    const r = boxes.get(canvas);
     const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    // Resizing clears the canvas, so what `paint` drew there is gone too.
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; canvas._painted = null; }
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     return { ctx, w: r.width, h: r.height };
@@ -39,16 +94,38 @@
         if (lum < 0.02) continue;
         const a = -Math.PI / 2 + (i + 0.5) * seg;
         const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-        const g = ctx.createRadialGradient(x, y, 0, x, y, width * 3.2);
-        g.addColorStop(0, C.color.css(c, 0.42 * glow));
-        g.addColorStop(1, C.color.css(c, 0));
-        ctx.fillStyle = g;
+        ctx.translate(x, y);
+        ctx.fillStyle = glowAt0(c, 0.42 * glow, 0, width * 3.2);
         ctx.beginPath();
-        ctx.arc(x, y, width * 3.2, 0, TAU);
+        ctx.arc(0, 0, width * 3.2, 0, TAU);
         ctx.fill();
+        ctx.translate(-x, -y);
       }
     }
     ctx.restore();
+  }
+
+  // Radial glows around the origin by color and size, made once: a gradient holds memory
+  // outside the script heap that only a full garbage collection frees, and a ring made
+  // one per LED per frame, ~2 MB a second. Colors are rounded to 4 bits a channel,
+  // which a soft glow does not show.
+  const glows = new Map();
+  const GLOWS = 256;
+  const glowCtx = document.createElement('canvas').getContext('2d');
+  function glowAt0(c, alpha, r0, r1) {
+    const q = [c[0] >> 4, c[1] >> 4, c[2] >> 4];
+    const k = `${q}|${alpha}|${r0.toFixed(1)}|${r1.toFixed(1)}`;
+    let g = glows.get(k);
+    if (g) glows.delete(k);
+    else {
+      const col = [q[0] * 17, q[1] * 17, q[2] * 17];
+      g = glowCtx.createRadialGradient(0, 0, r0, 0, 0, r1);
+      g.addColorStop(0, C.color.css(col, alpha));
+      g.addColorStop(1, C.color.css(col, 0));
+      if (glows.size >= GLOWS) glows.delete(glows.keys().next().value);
+    }
+    glows.set(k, g);
+    return g;
   }
 
   // The cooler's own liquid screen (FactoryBackupGraphic), approximated.
@@ -146,12 +223,40 @@
     ctx.fillText('Web page', cx, cy + r * 0.48);
   }
 
-  /**
-   * o: { leds, liquid, lcd: { mode, brightness, orientation, url }, sensors: { cpu, gpu, liquid },
-   *      rotation, bezel, rimTop, font, glow, shadow, shadowColor }
-   */
-  function head(ctx, cx, cy, r, o) {
-    const font = o.font || 'system-ui, sans-serif';
+  // Parts of a picture that stay the same while its LEDs change, drawn once into a
+  // canvas of their own and copied in each frame: blurring the head's shadow and
+  // drawing its screen on every frame cost more than the rest of the picture.
+  const layers = new Map();
+  const LAYERS = 12;
+  // Draws `draw(ctx, cx, cy)` around (cx, cy) on `ctx`, `ext` units out each way, from a
+  // cached layer under `key`. The layer lines up with device pixels, so it copies sharp.
+  function cached(ctx, key, cx, cy, ext, draw) {
+    const m = ctx.getTransform();
+    if (m.b || m.c || m.a !== m.d) { draw(ctx, cx, cy); return; }
+    const s = m.a;
+    const x0 = Math.floor((cx - ext) * s + m.e), y0 = Math.floor((cy - ext) * s + m.f);
+    const lx = (cx * s + m.e - x0) / s, ly = (cy * s + m.f - y0) / s;
+    const size = Math.ceil((ext * 2 + 2) * s);
+    const k = `${key}|${s}|${lx.toFixed(2)}|${ly.toFixed(2)}|${size}`;
+    let c = layers.get(k);
+    if (c) layers.delete(k);
+    else {
+      // A canvas element, not an OffscreenCanvas, so text uses the page's own fonts.
+      c = document.createElement('canvas');
+      c.width = c.height = size;
+      const lc = c.getContext('2d');
+      lc.scale(s, s);
+      draw(lc, lx, ly);
+      if (layers.size >= LAYERS) layers.delete(layers.keys().next().value);
+    }
+    layers.set(k, c);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(c, x0, y0);
+    ctx.restore();
+  }
+
+  function bezel(ctx, cx, cy, r, o) {
     ctx.save();
     if (o.shadow !== false) {
       ctx.shadowColor = o.shadowColor || 'rgba(0,0,0,.35)';
@@ -168,11 +273,10 @@
     ctx.strokeStyle = rim;
     ctx.lineWidth = Math.max(1, r * 0.015);
     ctx.beginPath(); ctx.arc(cx, cy, r - ctx.lineWidth / 2, 0, TAU); ctx.stroke();
-    // Ring.
-    if (o.leds) ledRing(ctx, cx, cy, r * 0.9, o.leds, r * 0.07, o.glow ?? 1);
-    // Screen.
-    const sr = r * 0.78;
-    const lcd = o.lcd || { mode: 'liquid', brightness: 100, orientation: 0 };
+  }
+
+  function screen(ctx, cx, cy, sr, o, lcd) {
+    const font = o.font || 'system-ui, sans-serif';
     ctx.save();
     ctx.beginPath(); ctx.arc(cx, cy, sr, 0, TAU); ctx.clip();
     ctx.translate(cx, cy);
@@ -194,6 +298,25 @@
     ctx.fillStyle = glass;
     ctx.fillRect(cx - sr, cy - sr, sr * 2, sr * 2);
     ctx.restore();
+  }
+
+  /**
+   * o: { leds, liquid, lcd: { mode, brightness, orientation, url }, sensors: { cpu, gpu, liquid },
+   *      rotation, bezel, rimTop, font, glow, shadow, shadowColor }
+   */
+  function head(ctx, cx, cy, r, o) {
+    const shadow = o.shadow !== false;
+    // The shadow reaches its blur plus its offset below the bezel.
+    const ext = r * (shadow ? 1.5 : 1.02);
+    cached(ctx, JSON.stringify(['bezel', r, o.bezel, o.rimTop, shadow && (o.shadowColor || '')]), cx, cy, ext,
+      (c, x, y) => bezel(c, x, y, r, o));
+    if (o.leds) ledRing(ctx, cx, cy, r * 0.9, o.leds, r * 0.07, o.glow ?? 1);
+    // The screen covers the ring's glow inside it, so it goes on top.
+    const sr = r * 0.78;
+    const lcd = o.lcd || { mode: 'liquid', brightness: 100, orientation: 0 };
+    const what = lcd.mode === 'frames' ? o.sensors || { liquid: o.liquid } : lcd.mode === 'web' ? lcd.url : o.liquid;
+    cached(ctx, JSON.stringify(['screen', sr, lcd.mode, lcd.brightness, o.rotation != null ? o.rotation : lcd.orientation, what, o.font]), cx, cy, sr + 1,
+      (c, x, y) => screen(c, x, y, sr, o, lcd));
   }
 
   /**
@@ -252,5 +375,5 @@
   // a calm, monotonic mapping.
   const spin = (rpm) => (rpm / 60) * 0.55;
 
-  window.KrakenDraw = { fit, head, fan, ledRing, roundRect, spin, liquidScreen, apiScreen, webScreen };
+  window.KrakenDraw = { fit, paint, visible, cached, glowAt0, head, fan, ledRing, roundRect, spin, liquidScreen, apiScreen, webScreen };
 })();

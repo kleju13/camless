@@ -56,7 +56,7 @@
       this.svg.addEventListener('pointermove', (e) => this.onMove(e));
       this.svg.addEventListener('pointerup', (e) => this.onUp(e));
       this.svg.addEventListener('pointercancel', (e) => this.onUp(e));
-      this.unsub = this.opts.onFrame ? this.opts.onFrame(() => this.updateLive()) : () => {};
+      this.unsub = this.opts.onFrame ? this.opts.onFrame((dt) => this.updateLive(false, dt)) : () => {};
       this.layout();
     }
 
@@ -140,21 +140,34 @@
       this.updateLive(true);
     }
 
-    updateLive(now) {
+    // `now` jumps to the reading; otherwise the dot eases towards it over time, the
+    // same at any frame rate. Attributes are only written when they change: each
+    // write invalidates style, and the next measurement forces a layout.
+    updateLive(now, dt) {
       const m = this.m;
       if (!m || !this.range) return;
       const live = this.opts.live ? this.opts.live() : null;
       const [a, b] = this.range;
       const show = !!live && live.y != null;
       const hasX = show && live.x != null && m.kind !== 'fixed';
-      this.liveDot.style.display = this.liveHalo.style.display = this.liveText.style.display = show ? '' : 'none';
-      this.liveV.style.display = hasX ? '' : 'none';
+      const vis = `${show}${hasX}`;
+      if (now === true || vis !== this.liveVis) {
+        this.liveVis = vis;
+        this.liveDot.style.display = this.liveHalo.style.display = this.liveText.style.display = show ? '' : 'none';
+        this.liveV.style.display = hasX ? '' : 'none';
+        this.liveAt = null;
+      }
       if (!show) return;
       const tx = hasX ? clamp(live.x, a, b) : (a + b) / 2;
-      const k = now === true ? 1 : 0.15;
+      // A frame without motion (dt 0) shows the reading as it is.
+      const k = now === true || dt === 0 ? 1 : 1 - Math.pow(0.85, (dt || 1 / 60) * 60);
       this.liveX = this.liveX == null ? tx : lerp(this.liveX, tx, k);
       this.liveY = this.liveY == null ? live.y : lerp(this.liveY, live.y, k);
       const x = this.x(this.liveX), y = this.y(this.liveY);
+      const text = this.opts.liveLabel ? this.opts.liveLabel(hasX ? live.x : null, live.y) : `${Math.round(live.y)}%`;
+      const at = this.liveAt;
+      if (at && Math.abs(at.x - x) < 0.05 && Math.abs(at.y - y) < 0.05 && at.text === text && at.w === this.w && at.h === this.h) return;
+      this.liveAt = { x, y, text, w: this.w, h: this.h };
       this.liveDot.setAttribute('cx', x); this.liveDot.setAttribute('cy', y);
       this.liveHalo.setAttribute('cx', x); this.liveHalo.setAttribute('cy', y);
       this.liveV.setAttribute('x1', x); this.liveV.setAttribute('x2', x);
@@ -163,7 +176,7 @@
       this.liveText.setAttribute('x', right ? x - 9 : x + 9);
       this.liveText.setAttribute('y', y - 9);
       this.liveText.setAttribute('text-anchor', right ? 'end' : 'start');
-      this.liveText.textContent = this.opts.liveLabel ? this.opts.liveLabel(hasX ? live.x : null, live.y) : `${Math.round(live.y)}%`;
+      if (this.liveText.textContent !== text) this.liveText.textContent = text;
     }
 
     start(e, i) {

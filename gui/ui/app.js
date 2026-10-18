@@ -576,10 +576,7 @@
       // The LEDs sit in the hub and light the blades from the middle.
       const c = mean(leds);
       ctx.globalCompositeOperation = 'lighter';
-      const g = ctx.createRadialGradient(0, 0, r * 0.2, 0, 0, r * 0.82);
-      g.addColorStop(0, S.color.css(c, 0.5));
-      g.addColorStop(1, S.color.css(c, 0));
-      ctx.fillStyle = g;
+      ctx.fillStyle = D.glowAt0(c, 0.5, r * 0.2, r * 0.82);
       ctx.beginPath(); ctx.arc(0, 0, r * 0.82, 0, TAU); ctx.fill();
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = P.hub;
@@ -790,15 +787,17 @@
     let time = 0, angle = 0;
     track(S.on('frame', (dt) => {
       time += dt;
-      if (!cv.isConnected) return;
-      const { ctx, w, h: hh } = D.fit(cv);
-      ctx.clearRect(0, 0, w, hh);
-      const dev = S.devOf(id);
-      if (pump) { D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 1, headOpts(dev, time, { shadow: false })); return; }
-      const rpm = rpmOf(id);
+      const rpm = pump ? 0 : rpmOf(id);
       angle += D.spin(rpm) * dt * TAU;
+      if (!D.visible(cv)) return;
+      if (pump) {
+        const o = headOpts(S.devOf(id), time, { shadow: false });
+        D.paint(cv, o, (ctx, w, hh) => D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 1, o));
+        return;
+      }
       const f = lightId ? fanSpec(lightId) : { model: 'plain', size: 120, color: 'black', count: 1 };
-      drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 / 1.1, angle, fanLeds(lightId, f, time)(0), f, rpm / 1500);
+      const leds = fanLeds(lightId, f, time)(0);
+      D.paint(cv, [angle, rpm, f, leds], (ctx, w, hh) => drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 / 1.1, angle, leds, f, rpm / 1500));
     }));
   }
 
@@ -1205,10 +1204,10 @@
           time += dt;
           angle += D.spin(fanId ? rpmOf(fanId.id) : 600) * dt * TAU * 0.5;
           for (const c of cards) {
+            if (!D.visible(c.cv)) continue;
             const f = Object.assign({}, pick, { model: c.m.value, count: 1 });
-            const { ctx, w, h: hh } = D.fit(c.cv);
-            ctx.clearRect(0, 0, w, hh);
-            drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 / 1.12, angle, fanLeds(lightId, f, time)(0), f);
+            const leds = fanLeds(lightId, f, time)(0);
+            D.paint(c.cv, [angle, f, leds], (ctx, w, hh) => drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 / 1.12, angle, leds, f));
           }
         }));
       },
@@ -1243,23 +1242,27 @@
   }
 
   function drawLight(cv, id, time, angles) {
-    const { ctx, w, h: hh } = D.fit(cv);
-    ctx.clearRect(0, 0, w, hh);
+    if (!D.visible(cv)) return;
     if (isRing(id)) {
-      D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 10, headOpts(S.devOf(id), time, { leds: S.renderLight(S.lightOf(id), time, 24), shadowColor: 'rgba(0,0,0,.45)' }));
+      const o = headOpts(S.devOf(id), time, { leds: S.renderLight(S.lightOf(id), time, 24), shadowColor: 'rgba(0,0,0,.45)' });
+      D.paint(cv, o, (ctx, w, hh) => D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 10, o));
       return;
     }
     const fan = S.fans().find((f) => lightForFan(f.id) === id);
     const rpm = fan ? rpmOf(fan.id) : 0;
     const f = fanSpec(id);
-    const leds = fanLeds(id, f, time);
     const n = f.count;
-    if (n > 1) {
-      const r = Math.min(w / 2.4, hh / (2.3 * n + 0.1));
-      for (let i = 0; i < n; i++) drawFan(ctx, w / 2, hh / 2 + (i - (n - 1) / 2) * r * 2.3, r, angles[i] || 0, leds(i), f, rpm / 1800);
-    } else {
-      drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2.6, angles[0] || 0, leds(0), f, rpm / 1500);
-    }
+    const all = fanLeds(id, f, time);
+    const leds = Array.from({ length: n }, (_, i) => all(i));
+    const at = angles.slice(0, n).map((a) => a || 0);
+    D.paint(cv, [f, rpm, at, leds], (ctx, w, hh) => {
+      if (n > 1) {
+        const r = Math.min(w / 2.4, hh / (2.3 * n + 0.1));
+        for (let i = 0; i < n; i++) drawFan(ctx, w / 2, hh / 2 + (i - (n - 1) / 2) * r * 2.3, r, at[i] || 0, leds[i], f, rpm / 1800);
+      } else {
+        drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2.6, at[0] || 0, leds[0], f, rpm / 1500);
+      }
+    });
   }
 
   function lightEditor(host, id) {
@@ -1348,11 +1351,13 @@
   }
   // The head as installed: tubes where they leave it, the picture upright.
   function drawHeadInstalled(cv, dev, time, o) {
-    const { ctx, w, h: hh } = D.fit(cv);
-    ctx.clearRect(0, 0, w, hh);
-    const r = Math.min(w, hh) / 2 / 1.42;
-    drawTubes(ctx, w / 2, hh / 2, r, o.orientation);
-    D.head(ctx, w / 2, hh / 2, r, headOpts(dev, time, { shadow: o.shadow, shadowColor: 'rgba(0,0,0,.4)' }));
+    if (!D.visible(cv)) return;
+    const opts = headOpts(dev, time, { shadow: o.shadow, shadowColor: 'rgba(0,0,0,.4)' });
+    D.paint(cv, [o.orientation, opts], (ctx, w, hh) => {
+      const r = Math.min(w, hh) / 2 / 1.42;
+      D.cached(ctx, `tubes|${r}|${o.orientation}`, w / 2, hh / 2, r * 1.45, (c, x, y) => drawTubes(c, x, y, r, o.orientation));
+      D.head(ctx, w / 2, hh / 2, r, opts);
+    });
   }
 
   function lcdEditor(host, dev) {
@@ -1466,11 +1471,14 @@
   }
 
   function deviceThumb(cv, dev, time) {
-    const { ctx, w, h: hh } = D.fit(cv);
-    ctx.clearRect(0, 0, w, hh);
+    if (!D.visible(cv)) return;
     const d = S.device(dev);
-    if ((d && d.lcd) || S.lights().some((l) => l.id === `${dev}/ring`)) D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 2, headOpts(dev, time, { shadow: false }));
-    else drawHub(ctx, w, hh, dev);
+    if ((d && d.lcd) || S.lights().some((l) => l.id === `${dev}/ring`)) {
+      const o = headOpts(dev, time, { shadow: false });
+      D.paint(cv, o, (ctx, w, hh) => D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 2, o));
+    } else {
+      D.paint(cv, ['hub', ((S.device(dev) || {}).fans || []).map((p) => p.connected !== false)], (ctx, w, hh) => drawHub(ctx, w, hh, dev));
+    }
   }
 
   function lighting(host) {
@@ -1668,6 +1676,10 @@
     panel('General', [
       row('Temperature display', null, choice({ options: [{ value: 'c', label: 'Celsius' }, { value: 'f', label: 'Fahrenheit' }], value: K.prefs.unit, label: 'Temperature display', onChange: (v) => K.setPref('unit', v) })),
       row('Dark mode', null, toggle({ checked: K.prefs.theme !== 'light', label: 'Dark mode', onChange: (v) => K.setPref('theme', v ? 'dark' : 'light') })),
+      row('Animations', 'How smoothly fans and lights move in this window. Lower uses less CPU and GPU. It slows down by itself when the window is not in use.', choice({
+        options: [{ value: 'smooth', label: 'Smooth' }, { value: 'balanced', label: 'Balanced' }, { value: 'low', label: 'Low' }, { value: 'off', label: 'Off' }],
+        value: K.prefs.motion || 'balanced', label: 'Animations', onChange: (v) => K.setPref('motion', v),
+      })),
       autoRow,
       row('Closing the window', 'camless stays in the tray, and fans keep following their curves. Exit from the tray icon’s menu; the service keeps running either way.', null),
     ]);

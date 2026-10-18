@@ -29,6 +29,13 @@ const SAVE_WAIT: Duration = Duration::from_secs(2);
 /// The window's background until the page draws, the page's own.
 const BACKGROUND: (u8, u8, u8, u8) = (0x1a, 0x1c, 0x1e, 0xff);
 
+/// The page is a few panels and small canvases, which Edge draws on the CPU for about
+/// the same cost as on the GPU. Without a GPU process and with the GPU and network
+/// work in the browser process, the open window takes ~130 MB instead of ~250 MB and
+/// two processes fewer. The first flag repeats wry's defaults, which these replace.
+const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+    --disable-gpu --in-process-gpu --enable-features=NetworkServiceInProcess2";
+
 pub enum UserEvent {
     Tray(TrayIconEvent),
     Menu(MenuEvent),
@@ -140,6 +147,7 @@ impl App {
             // The page never leaves the app, and opens no windows of its own.
             .with_navigation_handler(|url| url.starts_with(ORIGIN))
             .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
+            .with_additional_browser_args(BROWSER_ARGS)
             .build(&window)?;
         window.set_visible(true);
         window.focus_window();

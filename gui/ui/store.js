@@ -14,7 +14,12 @@
   /* ------------------------------------------------------------------- bus */
 
   const listeners = {};
-  function on(evt, fn) { (listeners[evt] = listeners[evt] || []).push(fn); return () => off(evt, fn); }
+  function on(evt, fn) {
+    (listeners[evt] = listeners[evt] || []).push(fn);
+    // The animation clock runs only while a picture listens.
+    if (evt === 'frame') schedule();
+    return () => off(evt, fn);
+  }
   function off(evt, fn) { listeners[evt] = (listeners[evt] || []).filter((f) => f !== fn); }
   // A listener dropped by an earlier one, such as a page built again, is not called.
   function emit(evt, arg) {
@@ -594,15 +599,75 @@
 
   /* ----------------------------------------------------------------- frame */
 
-  // One animation clock for every picture; it stops while the window is hidden.
-  let lastFrame = 0;
-  function frame(now) {
-    const dt = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 0.016;
-    lastFrame = now;
-    if (!document.hidden) emit('frame', dt);
-    requestAnimationFrame(frame);
+  // One animation clock for every picture. Each frame costs the whole window a paint
+  // and the GPU process a present, at the display's rate (240 Hz is common), so it
+  // ticks at a fixed, lower rate, only while a picture listens and the window shows,
+  // and slower when nobody has touched the window for a while.
+  const MOTION_FPS = { smooth: 60, balanced: 30, low: 12, off: 0 };
+  const IDLE_AFTER = 20000;
+  // A window in the background can still be scrolled or hovered; it slows down soon after.
+  const IDLE_AFTER_UNFOCUSED = 2000;
+  const IDLE_FPS = 12;
+  // `due` is when the next frame should run: a step after the last one was due rather than
+  // after it ran, since a frame runs up to a display refresh late and the rate would drift.
+  let lastFrame = 0, due = 0, lastInput = performance.now(), focused = document.hasFocus(), timer = 0, queued = false;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+
+  function motion() {
+    const m = window.K && K.prefs.motion;
+    return reduced.matches ? 'off' : (m in MOTION_FPS ? m : 'balanced');
   }
-  document.addEventListener('visibilitychange', () => { lastFrame = 0; if (!document.hidden) poll(); });
+  function fps() {
+    const f = MOTION_FPS[motion()];
+    const idle = performance.now() - lastInput > (focused ? IDLE_AFTER : IDLE_AFTER_UNFOCUSED);
+    return idle ? Math.min(f, IDLE_FPS) : f;
+  }
+  function wanted() { return !document.hidden && (listeners.frame || []).length > 0; }
+
+  function schedule() {
+    if (timer || queued || !wanted()) return;
+    const f = fps();
+    // Without motion the pictures still show the latest state, once per change. Motion
+    // turned on while this frame waits finds it queued, so the clock starts from here.
+    if (!f) { queued = true; requestAnimationFrame(() => { queued = false; lastFrame = due = 0; if (wanted()) emit('frame', 0); if (fps()) schedule(); }); return; }
+    const wait = due ? Math.max(0, due - performance.now() - 4) : 0;
+    timer = setTimeout(() => { timer = 0; queued = true; requestAnimationFrame(frame); }, wait);
+  }
+  function frame(now) {
+    queued = false;
+    if (!wanted()) { lastFrame = due = 0; return; }
+    const dt = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 1 / 60;
+    lastFrame = now;
+    emit('frame', dt);
+    const f = fps();
+    if (!f) return;
+    const step = 1000 / f;
+    due = due && now - due < step ? due + step : now + step;
+    schedule();
+  }
+  // Back to full rate at once when someone uses the window. Without motion the pointer
+  // asks for no frame: a change does (below).
+  function woke() {
+    const was = fps();
+    lastInput = performance.now();
+    const f = fps();
+    if (!f) return;
+    if (f !== was && timer) { clearTimeout(timer); timer = 0; due = lastFrame && f ? lastFrame + 1000 / f : 0; }
+    schedule();
+  }
+  for (const evt of ['pointermove', 'pointerdown', 'wheel', 'keydown']) addEventListener(evt, woke, { passive: true, capture: true });
+  addEventListener('focus', () => { focused = true; woke(); });
+  addEventListener('blur', () => { focused = false; lastInput = Math.min(lastInput, performance.now() - IDLE_AFTER_UNFOCUSED); });
+  reduced.addEventListener('change', schedule);
+  // Without motion the pictures are drawn once per change: new readings, an edit, a pref
+  // or a pick in a dialog. kraken-draw.js asks for a frame when a picture shows or resizes.
+  function changed() { if (!fps()) schedule(); }
+  on('state', changed);
+  on('config', changed);
+  for (const evt of ['click', 'input', 'change']) addEventListener(evt, changed, { passive: true, capture: true });
+  // The motion setting lives with the page's other prefs, in kit.js, loaded later.
+  addEventListener('DOMContentLoaded', () => K.on('prefs', (k) => { if (k === 'motion') { lastFrame = due = 0; schedule(); } else changed(); }));
+  document.addEventListener('visibilitychange', () => { lastFrame = due = 0; if (!document.hidden) { poll(); schedule(); } });
 
   window.S = {
     get st() { return st; },
@@ -610,7 +675,7 @@
     get status() { return st.status; },
     get server() { return st.server; },
     get history() { return st.history; },
-    on, off, emit, api, action, edit, save, poll,
+    on, off, emit, schedule, api, action, edit, save, poll,
     util: { clamp, lerp, clone, same, smoothstep },
     curveMath: { dutyAt, dutyAtExact, normalize, dragPoint, addPoint, removePoint, safetyFloor },
     UNIT, sensors, sensor, value, unitOf, isLiquid, sourceLabel, range, presets,
@@ -624,5 +689,4 @@
   };
 
   poll();
-  requestAnimationFrame(frame);
 })();
