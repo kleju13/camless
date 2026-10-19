@@ -6,8 +6,12 @@
 use crate::client;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::Path;
+use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 const NEW_ISSUE: &str = "https://github.com/kleju13/camless/issues/new?template=hardware-report.yml";
 /// GitHub sends someone who is not signed in to its login page with the whole URL in
@@ -67,23 +71,57 @@ struct Report {
     text: String,
 }
 
-/// `camless report` gives up on the service and the devices after a few seconds by
-/// itself, so this waits for it.
+/// `camless report` gives up on the service after a few seconds by itself, but a
+/// device that does not answer its descriptor reads could hold it up for good. On the
+/// maintainer's PC it takes under half a second.
+const TIMEOUT: Duration = Duration::from_secs(10);
+
 fn run(exe: &Path, config: &Path) -> Result<Report> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = std::process::Command::new(exe)
-        .arg("report")
-        .arg(config)
-        .arg("--json")
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .context("running camless.exe report")?;
+    let mut command = Command::new(exe);
+    command.arg("report").arg(config).arg("--json").creation_flags(CREATE_NO_WINDOW);
+    let Some(out) = output_within(&mut command, TIMEOUT).context("running camless.exe report")? else {
+        bail!(
+            r#"The report took more than {} seconds, so camless stopped it. Run it in PowerShell instead, where it can take as long as it needs: & "$env:LOCALAPPDATA\Programs\camless\camless.exe" report"#,
+            TIMEOUT.as_secs()
+        );
+    };
     if !out.status.success() {
         bail!("camless.exe report failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     serde_json::from_slice(&out.stdout).context("reading what camless.exe report printed")
+}
+
+/// `Command::output`, but the child is killed after `limit`, and then this gives `None`.
+/// Threads read its output, so a full pipe cannot hold it up. It is not waited for after
+/// the kill: a process stuck in a driver call can outlive TerminateProcess, and Windows
+/// needs no wait to clean up.
+fn output_within(command: &mut Command, limit: Duration) -> std::io::Result<Option<Output>> {
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let join = |t: JoinHandle<Vec<u8>>| t.join().unwrap_or_default();
+            return Ok(Some(Output { status, stdout: join(stdout), stderr: join(stderr) }));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
 }
 
 /// Opens the new issue in the default browser with the last report. Returns whether
@@ -164,6 +202,27 @@ mod tests {
         assert!(!filled);
         assert!(url.ends_with(&format!("&report={}", encode(PASTE_HERE))));
         assert!(url.len() <= MAX_URL);
+    }
+
+    #[test]
+    fn a_report_that_hangs_is_stopped() {
+        // ping waits a second between pings, so this one would take about 30 s.
+        let start = Instant::now();
+        let out = output_within(Command::new("ping").args(["-n", "31", "127.0.0.1"]), Duration::from_millis(500)).unwrap();
+        assert!(out.is_none());
+        assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn a_long_output_does_not_fill_the_pipe() {
+        // 4 MB. Read only after the child exits, this much holds `type` up until the kill.
+        let file = std::env::temp_dir().join(format!("camless-report-pipe-{}.txt", std::process::id()));
+        std::fs::write(&file, "0123456789abcdef".repeat(1 << 18)).unwrap();
+        let out = output_within(Command::new("cmd").arg("/C").arg("type").arg(&file), TIMEOUT);
+        let _ = std::fs::remove_file(&file);
+        let out = out.unwrap().expect("cmd finished");
+        assert!(out.status.success());
+        assert_eq!(out.stdout.len(), 16 << 18);
     }
 
     #[test]
