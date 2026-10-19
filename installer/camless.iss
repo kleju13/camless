@@ -155,17 +155,33 @@ begin
     MsgBox('The camless service did not stop. Restart Windows, then uninstall again.', mbError, MB_OK);
 end;
 
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+{ Deletes the task the app sets up for Start as administrator without asking. Its user may delete
+  it; if that fails anyway, Windows is asked. A task left behind would run whatever exe is put in
+  the folder it points at, so a failure is reported. }
+procedure DeleteTask;
 var
+  Schtasks, Name: String;
   Code: Integer;
+begin
+  Schtasks := ExpandConstant('{sys}\schtasks.exe');
+  Name := '"camless (' + GetUserNameString + ')"';
+  if not Exec(Schtasks, '/Query /TN ' + Name, '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+    Exit;
+  if Exec(Schtasks, '/Delete /TN ' + Name + ' /F', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
+    Exit;
+  if ShellExec('runas', Schtasks, '/Delete /TN ' + Name + ' /F', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
+    Exit;
+  if not UninstallSilent then
+    MsgBox('camless could not delete its scheduled task ' + Name + '. Delete it in Task Scheduler.', mbError, MB_OK);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
   { The app adds this value for Start with Windows. }
   RegDeleteValue(HKEY_CURRENT_USER, RunKey, 'camless');
-  { And this task for Start as administrator without asking. Its user may delete it. }
-  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "camless (' + GetUserNameString + ')" /F', '', SW_HIDE,
-    ewWaitUntilTerminated, Code);
+  DeleteTask;
   if not UninstallSilent and (MsgBox('Also delete your camless settings and profiles?' + #13#10#13#10
       + ExpandConstant('{userappdata}\camless') + #13#10 + ExpandConstant('{localappdata}\camless'),
       mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then

@@ -47,7 +47,12 @@ pub fn spawn(on: bool) -> Result<()> {
 }
 
 /// Whether the task is set up and starts the camless next to this app, not another copy.
+/// On a standard account it would start the service without administrator rights, so
+/// there UAC asks as before.
 pub fn ready() -> bool {
+    if !administrator() {
+        return false;
+    }
     let (Ok(name), Ok(exe)) = (name(), std::env::current_exe()) else { return false };
     let Ok(file) = std::fs::read(system32().join("Tasks").join(name)) else { return false };
     command(&file).is_some_and(|c| c.to_lowercase() == exe.display().to_string().to_lowercase())
@@ -59,6 +64,9 @@ pub fn run() -> Result<()> {
 }
 
 fn set_up() -> Result<()> {
+    if !administrator() {
+        bail!("this account is not an administrator, so the task could only start the service without administrator rights");
+    }
     let exe = std::env::current_exe()?;
     let xml = definition(&user_sid()?, &exe);
     let file = std::env::temp_dir().join(format!("camless-task-{}.xml", std::process::id()));
@@ -97,6 +105,29 @@ fn name() -> Result<String> {
     }
     // `len` counts the terminating null.
     Ok(format!("camless ({})", String::from_utf16_lossy(&buf[..len as usize - 1])))
+}
+
+/// Whether this user is an administrator: running as one, or with the rights UAC can
+/// give. A standard user who types an administrator's password at the prompt is not;
+/// a task that runs as them gets only their own rights.
+fn administrator() -> bool {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TokenElevationType, TokenElevationTypeFull, TokenElevationTypeLimited, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let (mut kind, mut elevated, mut len) = (0i32, TOKEN_ELEVATION { TokenIsElevated: 0 }, 0);
+        let typed = GetTokenInformation(token, TokenElevationType, &mut kind as *mut _ as *mut c_void, size_of::<i32>() as u32, &mut len) != 0;
+        let read = GetTokenInformation(token, TokenElevation, &mut elevated as *mut _ as *mut c_void, size_of::<TOKEN_ELEVATION>() as u32, &mut len) != 0;
+        CloseHandle(token);
+        (typed && (kind == TokenElevationTypeLimited || kind == TokenElevationTypeFull)) || (read && elevated.TokenIsElevated != 0)
+    }
 }
 
 /// The SID of the user this app runs as, such as `S-1-5-21-…-1001`.
