@@ -2,7 +2,7 @@
 
 # camless
 
-A light replacement for NZXT CAM. It handles fan and pump curves, lighting and the Kraken LCD in two small exes, about 4 MB together, where CAM ships 1 GB of Electron.
+A light replacement for NZXT CAM. It handles fan and pump curves, lighting and the Kraken LCD in two small exes, about 4 MB together, where CAM installs about 500 MB of Electron.
 
 ![The Cooling page: liquid, CPU and GPU temperatures, and each fan on its curve](docs/screenshots/cooling.png)
 
