@@ -233,6 +233,12 @@ mod tests {
     }
 
     #[test]
+    fn the_task_belongs_to_this_user() {
+        assert_eq!(name().unwrap(), format!("camless ({})", std::env::var("USERNAME").unwrap()));
+        assert!(user_sid().unwrap().starts_with("S-1-5-"), "{}", user_sid().unwrap());
+    }
+
+    #[test]
     fn a_file_without_a_command_runs_nothing() {
         assert_eq!(command(&[]), None);
         assert_eq!(command(&"<Task></Task>".encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>()), None);
