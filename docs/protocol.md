@@ -7,8 +7,8 @@ Sources:
 - CAM's own profile files.
 
 **HID framing**
-- Reports are numbered, and the report ID is the first command byte. Payloads go out as they are, padded to 64 bytes.
-- CAM's service opens both devices exclusively. Another process can open them but gets `Access is denied` on the first read.
+- Reports are numbered, and the report ID is the first command byte. Payloads go out as they are, padded to at least 64 bytes. Some are longer: the Control Hub's static colour is 76 bytes.
+- The NZXT CAM app opens both devices exclusively. Another process can open them but gets `Access is denied` on the first read. CAM Service (`service.exe`) does not hold them: camless drives both devices while it runs.
 
 **Kraken Elite V2**
 - Init: `70 02 01 B8 01`, then `70 01`.
@@ -47,4 +47,20 @@ Sources:
 - Names follow liquidctl's `Hue2Accessory`. LED counts known from CAM captures: `0x19` 8, `0x1d` (F360 RGB Core) 24, `0x1e` (Kraken Elite ring) 24, `0x1f` 24. CAM sends 24 for channels it does not tell apart.
 - The LED count goes into byte 7 of `26 06` and the effect footer, as CAM sends it.
 
-These notes cover what camless's drivers send. Each driver module in `src/drivers/` names its sources at the top; a new driver should add its own section here.
+**What did not work**
+
+What was tried on the Kraken Elite V2 and the Control Hub and failed, so the next device does not repeat it.
+
+- LCD:
+  - Raw RGB565 frames (format `0x06`): the cooler acknowledged every test frame and showed none. It shows only Q565 (`0x08`), the format CAM sends.
+  - A `38 01 05 00` mode switch before streaming was a guess. The cooler never answered it, and none is needed: the first frame switches the screen.
+  - The 20-byte header and the frame in one bulk transfer: the transfer timed out, and the cooler did not answer `36 02`. They have to be two transfers, header first.
+  - LCD I/O in the same loop as fan control: one LCD error held the fans for up to 12 s, because each command waited 6 s for a reply. LCD commands now wait at most 500 ms, and the loop gets frames already encoded.
+- Replies: `ff 01` reports after lighting commands looked like errors. They are acknowledgements that echo the command in bytes 14–15, and CAM gets the same ones.
+- HID writes capped at 64 bytes: the Control Hub's 76-byte static colour failed with "packet too large". Its output reports are longer, as its descriptor says.
+- Capturing CAM:
+  - Hooking `WriteFile` in CAM caught none of the LCD commands. cam-core is Rust, and Rust's standard library calls `NtWriteFile` and `NtReadFile` in ntdll directly. `tools/capture/` hooks those and `WinUsb_WritePipe`.
+  - Static analysis of the whole CAM folder with rea also parses the 19,245 files in `node_modules`, about 50 minutes for nothing. Point it at CAM's own bundles and `index.node`. Their strings gave the image formats and display modes. The Q565 wire format came only from a live capture.
+- Flash: memory-bucket uploads were never tried. liquidctl #927 reports that repeated uploads on `1e71:3012` left Krakens in the bootloader until standby power was cut.
+
+These notes cover what camless's drivers send. Each driver module in `src/drivers/` names its sources at the top. A new driver should add its own section here, with what did not work.

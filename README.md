@@ -37,7 +37,7 @@ The app lists other NZXT devices as "no driver yet". A driver is one Rust file, 
 
 ## Install
 
-1. Quit NZXT CAM and stop its CAM Service. CAM holds the devices and camless cannot open them while it runs.
+1. Quit NZXT CAM, and turn it off in *Task Manager → Startup apps* so it does not come back at the next logon. While CAM's app runs, it holds the devices and camless cannot open them. CAM Service can keep running.
 2. Run [camless-setup.exe](https://github.com/kleju13/camless/releases/latest/download/camless-setup.exe). It needs no administrator rights. It is not code-signed, so SmartScreen may stop it: *More info → Run anyway*. Or install from PowerShell, which also checks the download's SHA-256:
    ```
    irm https://raw.githubusercontent.com/kleju13/camless/main/scripts/install.ps1 | iex
@@ -59,6 +59,10 @@ CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed
 ## Not done yet
 
 - Drivers for other NZXT devices.
+
+## Credits
+
+Most of what camless knows about NZXT devices comes from [liquidctl](https://github.com/liquidctl/liquidctl): its drivers, issues and pull requests. The Linux `nzxt-kraken3` driver helped too. Frames for the Kraken LCD are [Q565](https://github.com/seritools/q565), by seritools. How CAM streams them to the Kraken Elite was worked out from captures of CAM. The [protocol notes](docs/protocol.md) list the sources for each device.
 
 ## License
 
