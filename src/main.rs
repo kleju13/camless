@@ -30,7 +30,8 @@ Usage:
   camless sensors              Read CPU, GPU and memory sensors once
   camless report [config]      Print a hardware report for a GitHub issue: the NZXT
                                devices with their USB descriptors, and what the
-                               service knows; read only, nothing is sent to them
+                               service knows; read only, no commands are sent
+                               to them
   camless import-cam [dir]     Print a camless.toml built from CAM's active profiles
   camless check [config]       Validate a config and show what each fan follows
   camless run [config]         Apply the config and keep fans on their curves

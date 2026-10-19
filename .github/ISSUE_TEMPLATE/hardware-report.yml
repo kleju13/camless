@@ -15,12 +15,14 @@ body:
         & "$env:LOCALAPPDATA\Programs\camless\camless.exe" report
         ```
 
+        **With an older camless, or without camless:** give the device's name and its *Hardware Ids* from Device Manager (the device → Properties → Details → Hardware Ids), for example `USB\VID_1E71&PID_3012&REV_0102`. Not the *Device instance path*: that one holds the serial number.
+
         The report is read only: standard USB descriptor reads, no commands sent to the devices. It leaves out serial numbers, device paths, and your user and PC names. Read it before you submit; everything here is public.
   - type: textarea
     id: report
     attributes:
       label: Report from camless
-      description: If the app copied the report instead of filling it in, paste it here.
+      description: If the app copied the report instead of filling it in, paste it here. Without `camless report`, the device's name and Hardware Ids go here.
     validations:
       required: true
   - type: textarea
