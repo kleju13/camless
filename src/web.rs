@@ -5,8 +5,12 @@
 //!
 //! The browser runs as the signed-in user even when camless is elevated, with a
 //! profile of its own, and in a job object, so it ends when camless does.
+//!
+//! A page can also hand camless its moving background (backdrop.rs) and draw only
+//! what lies over it; camless then plays the background under the page's frames.
 
 use crate::api;
+use crate::backdrop::{self, Backdrop, Change};
 use crate::cdp::{self, Cdp};
 use crate::daemon::{Event, Snapshot};
 use crate::q565;
@@ -40,6 +44,8 @@ pub struct State {
     /// Frames per second over the last two seconds.
     pub fps: f32,
     pub browser: Option<String>,
+    /// Frames of the background the page handed over; 0 while it draws its own.
+    pub background: usize,
 }
 
 pub struct Renderer {
@@ -129,6 +135,9 @@ impl Job {
         cdp.call("Emulation.setDeviceMetricsOverride", json!({ "width": w, "height": h, "deviceScaleFactor": 1, "mobile": false }), s)?;
         // Pages without a background are drawn on black, as on CAM's screen.
         cdp.call("Emulation.setDefaultBackgroundColorOverride", json!({ "color": { "r": 0, "g": 0, "b": 0, "a": 1 } }), s)?;
+        // What the page sends through window.nzxt.v1.camless arrives as Runtime.bindingCalled.
+        cdp.call("Runtime.enable", json!({}), s)?;
+        cdp.call("Runtime.addBinding", json!({ "name": backdrop::BINDING }), s)?;
         cdp.call("Page.addScriptToEvaluateOnNewDocument", json!({ "source": shim(&self.page) }), s)?;
         let nav = cdp.call("Page.navigate", json!({ "url": lcd_url(&self.page.url) }), s)?;
         if let Some(e) = nav["errorText"].as_str() {
@@ -136,11 +145,14 @@ impl Job {
         }
         // The screencast belongs to the document, so it starts once the page is in,
         // and again whenever the page loads anew (KrakenDial reloads on an update).
+        // A page may write to camless before that; those messages wait.
         let screencast = json!({ "format": "png", "maxWidth": w, "maxHeight": h, "everyNthFrame": 1 });
+        let mut early = VecDeque::new();
         let deadline = Instant::now() + Duration::from_secs(15);
         while let Some(left) = deadline.checked_duration_since(Instant::now()) {
             match cdp.next_event(left)? {
                 Some(ev) if ev["method"] == "Page.loadEventFired" => break,
+                Some(ev) if ev["method"] == "Runtime.bindingCalled" => early.push_back(ev),
                 _ => {}
             }
         }
@@ -153,6 +165,13 @@ impl Job {
         let mut last_ack = Instant::now();
         let mut next_data = Instant::now();
         let mut times: VecDeque<Instant> = VecDeque::new();
+        let mut back = Backdrop::default();
+        // The page's latest frame, laid over a background it hands over from then on.
+        let mut last_png = Vec::new();
+        let (mut ticked, mut next_tick) = (Instant::now(), Instant::now());
+        let backdrop_alpha = |cdp: &mut Cdp, a: u8| {
+            cdp.send("Emulation.setDefaultBackgroundColorOverride", json!({ "color": { "r": 0, "g": 0, "b": 0, "a": a } }), s)
+        };
         loop {
             if self.stopped() {
                 let _ = cdp.send("Browser.close", json!({}), None);
@@ -173,6 +192,21 @@ impl Job {
                     ack = Some((id, due));
                 }
             }
+            // With a background, frames go out at the page's rate whether the page
+            // changes or not.
+            if back.active() && now >= next_tick {
+                if let Some(q565) = back.next(now - ticked) {
+                    if self.events.try_send(Event::Frame { device: self.device.clone(), q565: q565.clone() }).is_ok() {
+                        times.push_back(now);
+                    }
+                    last = Some((q565, now));
+                }
+                ticked = now;
+                next_tick += every;
+                if next_tick < now {
+                    next_tick = now + every;
+                }
+            }
             if let Some((q565, sent)) = last.as_mut() {
                 if sent.elapsed() >= KEEPALIVE {
                     let _ = self.events.try_send(Event::Frame { device: self.device.clone(), q565: q565.clone() });
@@ -182,28 +216,70 @@ impl Job {
             while times.front().is_some_and(|t| t.elapsed() > Duration::from_secs(2)) {
                 times.pop_front();
             }
-            self.set(|st| st.fps = times.len() as f32 / 2.0);
+            self.set(|st| (st.fps, st.background) = (times.len() as f32 / 2.0, back.frames()));
 
             let mut wake = next_data.min(now + Duration::from_millis(250));
             if let Some((_, due)) = &ack {
                 wake = wake.min(*due);
             }
-            let Some(ev) = cdp.next_event(wake.saturating_duration_since(Instant::now()))? else { continue };
+            if back.active() {
+                wake = wake.min(next_tick);
+            }
+            let ev = match early.pop_front() {
+                Some(ev) => ev,
+                None => match cdp.next_event(wake.saturating_duration_since(Instant::now()))? {
+                    Some(ev) => ev,
+                    None => continue,
+                },
+            };
             match ev["method"].as_str().unwrap_or_default() {
                 "Page.screencastFrame" => {
                     let p = &ev["params"];
                     let png = cdp::base64_decode(p["data"].as_str().unwrap_or_default())?;
-                    let q565 = q565_from_png(&png, w, h)?;
-                    if self.stopped() {
-                        continue;
+                    if back.active() {
+                        back.page_frame(&png, w, h)?;
+                    } else {
+                        let q565 = q565_from_png(&png, w, h)?;
+                        if self.stopped() {
+                            continue;
+                        }
+                        if self.events.try_send(Event::Frame { device: self.device.clone(), q565: q565.clone() }).is_ok() {
+                            times.push_back(Instant::now());
+                        }
+                        last = Some((q565, Instant::now()));
                     }
-                    if self.events.try_send(Event::Frame { device: self.device.clone(), q565: q565.clone() }).is_ok() {
-                        times.push_back(Instant::now());
-                    }
-                    last = Some((q565, Instant::now()));
+                    last_png = png;
                     // On a fixed beat from the last ack, so the time a frame takes to
                     // arrive does not slow the rate down.
                     ack = Some((p["sessionId"].clone(), (last_ack + every).max(Instant::now())));
+                }
+                "Runtime.bindingCalled" if ev["params"]["name"] == backdrop::BINDING => {
+                    let msg: Value = serde_json::from_str(ev["params"]["payload"].as_str().unwrap_or_default()).unwrap_or_default();
+                    let result = back.message(&msg, w, h);
+                    match result {
+                        // The page stays as it was until its next frame, which then
+                        // comes on nothing.
+                        Ok(Change::Started) => {
+                            if !last_png.is_empty() {
+                                back.page_frame(&last_png, w, h)?;
+                            }
+                            backdrop_alpha(&mut cdp, 0)?;
+                            (ticked, next_tick) = (Instant::now(), Instant::now());
+                        }
+                        Ok(Change::Stopped) => {
+                            backdrop_alpha(&mut cdp, 1)?;
+                        }
+                        _ => {}
+                    }
+                    let error = result.err().map(|e| format!("{e:#}"));
+                    let id = msg["id"].as_u64().unwrap_or_default();
+                    cdp.send("Runtime.evaluate", json!({ "expression": backdrop::reply(id, error.as_deref()) }), s)?;
+                }
+                // A new document draws its own background until it hands one over again.
+                "Runtime.executionContextsCleared" => {
+                    if back.clear() {
+                        backdrop_alpha(&mut cdp, 1)?;
+                    }
                 }
                 "Page.loadEventFired" => {
                     ack = None;
@@ -217,7 +293,7 @@ impl Job {
     }
 }
 
-/// What CAM gives a page before its own scripts run.
+/// What CAM gives a page before its own scripts run, and camless's own addition.
 fn shim(page: &Page) -> String {
     let v1 = json!({
         "width": page.width,
@@ -225,7 +301,7 @@ fn shim(page: &Page) -> String {
         "shape": if page.round { "circle" } else { "square" },
         "targetFps": page.fps,
     });
-    format!("window.nzxt = window.nzxt || {{}}; window.nzxt.v1 = Object.assign(window.nzxt.v1 || {{}}, {v1});")
+    format!("window.nzxt = window.nzxt || {{}}; window.nzxt.v1 = Object.assign(window.nzxt.v1 || {{}}, {v1});\n{}", backdrop::BRIDGE)
 }
 
 /// JSON is a JavaScript expression, so the data goes in as it is.

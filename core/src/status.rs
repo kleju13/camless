@@ -56,6 +56,10 @@ pub struct WebState {
     pub fps: f32,
     /// Why the page is not shown; the screen is on its own display meanwhile.
     pub error: Option<String>,
+    /// Frames of the background the page handed over, which camless plays under it;
+    /// 0 while the page draws its own.
+    #[serde(default)]
+    pub background_frames: u32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

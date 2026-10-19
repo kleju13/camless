@@ -14,6 +14,7 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 | `src/drivers/hid.rs`, `hue2.rs` | shared HID I/O and the Hue 2 lighting protocol |
 | `src/daemon.rs` | the service loop: curves, duties, reloads, failsafes |
 | `src/web.rs`, `src/cdp.rs` | web pages on an LCD: a headless browser driven over the DevTools protocol |
+| `src/backdrop.rs` | a moving background a page hands over, which camless plays under the page |
 | `core/` | config and profiles, curve engine, CAM import, status types; no hardware code |
 | `gui/` | the app: tray icon, WebView2 window, the JSON API its page uses, and updates from GitHub releases |
 | `gui/ui/` | the app's page: HTML, CSS and plain JavaScript, built into `camless-gui.exe` |

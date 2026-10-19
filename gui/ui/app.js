@@ -1436,7 +1436,7 @@
     function webState() {
       const l = L(), d = S.device(dev), w = d && d.web;
       if (l.mode !== 'web') return;
-      const text = !S.status ? '' : !w ? 'Starting the page…' : w.error ? `<span class="cam-bad">${esc(cap(w.error))}</span>` : `On the screen at ${n1(w.fps)} fps${w.browser ? ` through ${esc(w.browser)}` : ''}.`;
+      const text = !S.status ? '' : !w ? 'Starting the page…' : w.error ? `<span class="cam-bad">${esc(cap(w.error))}</span>` : `On the screen at ${n1(w.fps)} fps${w.browser ? ` through ${esc(w.browser)}` : ''}${w.background_frames === 1 ? ', over a still background that the page handed over' : w.background_frames ? `, over a background of ${w.background_frames} frames that the page handed over` : ''}.`;
       rUrl.hint(text);
     }
     track(S.on('config', refresh));

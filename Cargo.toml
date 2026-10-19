@@ -22,6 +22,8 @@ toml = "0.8"
 tiny_http = "0.12"
 # Decodes the frames a browser renders for an LCD in web mode.
 png = "0.18"
+# Packs the frames of a background a page hands over; png uses the same version.
+miniz_oxide = "0.8"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

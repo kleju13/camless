@@ -623,7 +623,13 @@ impl Daemon {
                 d.error = if s.dev.is_some() { None } else { s.last_error.clone() };
                 d.web = self.pages.get(s.id()).map(|r| {
                     let state = r.renderer.state();
-                    WebState { url: r.renderer.page.url.clone(), browser: state.browser, fps: state.fps, error: state.error }
+                    WebState {
+                        url: r.renderer.page.url.clone(),
+                        browser: state.browser,
+                        fps: state.fps,
+                        error: state.error,
+                        background_frames: state.background as u32,
+                    }
                 });
                 d
             })
