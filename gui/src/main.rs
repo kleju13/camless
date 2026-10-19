@@ -4,6 +4,7 @@
 //!
 //! `camless-gui --serve 127.0.0.1:<port> --config <camless.toml> [--ui-dir <dir>]`
 //! serves the same page to a browser instead, as a sandbox, to work on the UI.
+//! `camless-gui --start-service` starts the service and exits; see [`task`].
 
 #![windows_subsystem = "windows"]
 
@@ -14,6 +15,7 @@ mod client;
 mod http;
 mod serve;
 mod service;
+mod task;
 mod tray;
 mod update;
 
@@ -25,6 +27,10 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     let ui_dir = value("--ui-dir").map(PathBuf::from);
+    // The scheduled task runs this as administrator: the service inherits that.
+    if args.iter().any(|a| a == task::START_SERVICE) {
+        return client::start_daemon(&camless_core::config::default_path());
+    }
     if let Some(listen) = value("--serve") {
         let config = value("--config")
             .map(PathBuf::from)

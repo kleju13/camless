@@ -6,6 +6,8 @@ camless is two programs:
 
 The app starts the service if it is not running. It asks Windows for administrator rights (UAC), so CPU temperature works. If the answer is no, the service runs without them and the app says so. The bottom of the sidebar always shows the service's state with a start or restart button, and *Settings → Service* starts, restarts and stops it.
 
+*Settings → Service → Start as administrator without asking* stops the prompts. It is off until you turn it on, and Windows asks once then. The app sets up a scheduled task, `camless (<your user name>)`, that runs `camless-gui.exe --start-service` with your full rights, and from then on starts the service through it, also at logon with *Start with Windows*. The task has no trigger of its own. You may run and delete it without administrator rights, so turning the switch off and uninstalling need none. The trade-off: camless sits in a folder you can write to, so any program you run could replace it and use the task to get administrator rights without a prompt. On a standard account the switch refuses: a task that runs as you could not give the service administrator rights.
+
 ## Fan control
 
 - **Curves a device can run by itself are stored on it.** This means a fixed duty, or a graph on the device's own sensor (a Kraken's liquid temperature). The Kraken keeps running them if camless stops. The fan's offset and limits are folded in. Smoothing and hysteresis are host-only.

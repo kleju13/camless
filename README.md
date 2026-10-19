@@ -42,7 +42,7 @@ The app lists other NZXT devices as "no driver yet". A driver is one Rust file, 
    ```
    irm https://raw.githubusercontent.com/kleju13/camless/main/scripts/install.ps1 | iex
    ```
-3. The setup adds camless to the Start menu and opens it. The app starts the service and asks Windows for administrator rights. Answer Yes, so the service can read CPU temperature.
+3. The setup adds camless to the Start menu and opens it. The app starts the service and asks Windows for administrator rights. Answer Yes, so the service can read CPU temperature. To be asked only once, turn on *Settings → Service → Start as administrator without asking*.
 4. To bring over your CAM setup, use *Profiles → Import from NZXT CAM*.
 
 The app checks for a new release each time it starts and shows *Update available* under the service in the sidebar. *Update* there, or in *Settings → About*, installs it. Uninstall camless from *Settings → Apps* in Windows. It keeps your settings in `%APPDATA%\camless` unless you choose to delete them.
@@ -58,7 +58,6 @@ CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed
 
 ## Not done yet
 
-- Starting the service at logon without a UAC prompt. *Start with Windows* starts the app, and the app asks for administrator rights each time.
 - Drivers for other NZXT devices.
 
 ## License

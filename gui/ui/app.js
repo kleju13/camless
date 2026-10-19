@@ -1689,13 +1689,15 @@
     const panel = (title, rows) => { const s = K.section(host, title); const p = h('<div class="cam-panel cam-rows"></div>'); p.append(...rows.filter(Boolean)); s.appendChild(p); return s; };
     const editCfg = (fn, o) => S.edit(fn, Object.assign({ what: 'settings' }, o));
 
-    // The switch shows what Windows has, read again every second.
-    const autoRow = row('Start with Windows', sv.sandbox ? 'In this test copy the switch changes nothing in Windows.' : 'camless starts in the tray when you sign in, and starts the service, asking Windows for administrator rights.', null);
+    // The switches show what Windows has, read again every second.
+    const sandboxHint = 'In this test copy the switch changes nothing in Windows.';
+    const autoHint = () => sv.sandbox ? sandboxHint : `camless starts in the tray when you sign in, and starts the service${S.server.admin_task ? ' as administrator.' : ', asking Windows for administrator rights.'}`;
+    const autoRow = row('Start with Windows', autoHint(), null);
     const autoT = toggle({ checked: sv.autostart, label: 'Start with Windows', onChange: (v) => setAutostart(v, autoT) });
     autoRow.lastElementChild.appendChild(autoT);
-    track(S.on('state', () => { if (!autoT.dataset.busy) autoT.set(S.server.autostart); }));
+    track(S.on('state', () => { if (!autoT.dataset.busy) autoT.set(S.server.autostart); autoRow.hint(autoHint()); }));
 
-    panel('Service', [serviceRow()]);
+    panel('Service', [serviceRow(), adminRow()]);
 
     panel('General', [
       row('Temperature display', null, choice({ options: [{ value: 'c', label: 'Celsius' }, { value: 'f', label: 'Fahrenheit' }], value: K.prefs.unit, label: 'Temperature display', onChange: (v) => K.setPref('unit', v) })),
@@ -1787,7 +1789,7 @@
     const sv = S.server, v = esc(sv.update.latest);
     const ok = await confirmBox({
       title: `Update to camless ${sv.update.latest}`,
-      text: `camless downloads ${v}, closes, installs the app and the service together, and opens again. Windows then asks for administrator rights for the service, as at every start. For those few seconds, fans that camless sets run at the failsafe speed; curves stored on a cooler keep running.`,
+      text: `camless downloads ${v}, closes, installs the app and the service together, and opens again.${sv.admin_task ? '' : ' Windows then asks for administrator rights for the service, as at every start.'} For those few seconds, fans that camless sets run at the failsafe speed; curves stored on a cooler keep running.`,
       ok: 'Update',
     });
     if (ok) act('update/install', {});
@@ -1822,6 +1824,36 @@
     track(S.on('state', upd));
     upd();
     return r;
+  }
+
+  // Off until the user turns it on. Windows asks first, so it is set up in the background.
+  function adminRow() {
+    const title = 'Start as administrator without asking';
+    const r = row(title, '', null);
+    const t = toggle({ checked: S.server.admin_task, label: title, onChange: (v) => setAdminTask(v, t) });
+    r.lastElementChild.appendChild(t);
+    const upd = () => {
+      const sv = S.server;
+      if (!t.dataset.busy && !sv.admin_task_busy) t.set(sv.admin_task);
+      let hint;
+      if (sv.sandbox) hint = 'In this test copy the switch changes nothing in Windows.';
+      else if (sv.admin_task_busy) hint = 'Waiting for Windows…';
+      else hint = 'Windows asks once, when you turn this on. From then on camless starts the service as administrator without asking, also when you sign in. Any program you run could then use camless to get administrator rights without a prompt too.';
+      if (sv.admin_task_error && !sv.admin_task_busy) hint += `<span class="cam-err">${esc(sv.admin_task_error)}</span>`;
+      r.hint(hint);
+    };
+    track(S.on('state', upd));
+    upd();
+    return r;
+  }
+
+  async function setAdminTask(on, t) {
+    t.dataset.busy = '1';
+    try {
+      if ((await act('admin-task', { on })) === null) t.set(!on);
+    } finally {
+      delete t.dataset.busy;
+    }
   }
 
   async function setAutostart(on, t) {

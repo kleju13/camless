@@ -7,7 +7,7 @@
 //! each saved change by itself, so closing the app never stops fan control.
 
 use crate::service::{self, Action};
-use crate::{assets, client, tray, update};
+use crate::{assets, client, task, tray, update};
 use anyhow::{anyhow, Context, Result};
 use camless_core::cam_import;
 use camless_core::config::{self, Config, LcdMode, Setup};
@@ -72,6 +72,8 @@ struct Inner {
     link: Option<Arc<Mutex<client::Link>>>,
     /// Start with Windows, in a sandbox.
     autostart: bool,
+    /// What the sandbox shows for the task that starts the service without UAC.
+    admin_task: bool,
 }
 
 impl Backend {
@@ -79,7 +81,7 @@ impl Backend {
         let follow_service = o.config.is_none();
         let path = o.config.unwrap_or_else(config::default_path);
         Backend {
-            inner: Mutex::new(Inner { path, follow_service, link: None, autostart: false }),
+            inner: Mutex::new(Inner { path, follow_service, link: None, autostart: false, admin_task: false }),
             ui_dir: o.ui_dir,
             sandbox: o.sandbox,
             on_closed,
@@ -125,6 +127,7 @@ impl Backend {
             ("POST", "service/stop") => self.service(Action::Stop),
             ("POST", "service/restart") => self.service(Action::Restart),
             ("PUT", "autostart") => self.set_autostart(body),
+            ("POST", "admin-task") => self.set_admin_task(body),
             ("POST", "update/check") => update::check().map(|_| json!({})).map_err(Refused::from),
             ("POST", "update/install") => self.install_update(),
             ("POST", "update/notes") => self.release_notes(),
@@ -171,6 +174,7 @@ impl Backend {
         }
         let sv = if self.sandbox { service::State::default() } else { service::state() };
         let autostart = if self.sandbox { inner.autostart } else { tray::autostart::enabled() };
+        let (admin_task, task) = if self.sandbox { (inner.admin_task, task::State::default()) } else { (task::ready(), task::state()) };
         drop(inner);
 
         let profiles: Vec<Value> = config::list_profiles(&path)
@@ -193,6 +197,9 @@ impl Backend {
             "service_busy": sv.busy,
             "service_note": sv.note,
             "autostart": autostart,
+            "admin_task": admin_task,
+            "admin_task_busy": task.busy,
+            "admin_task_error": task.error,
             "update": update::state(),
             "sandbox": self.sandbox,
         })
@@ -352,6 +359,21 @@ impl Backend {
         }
         tray::autostart::set(on)?;
         Ok(json!({ "autostart": tray::autostart::enabled() }))
+    }
+
+    /// Sets up or removes the task in the background, since Windows asks the user first.
+    fn set_admin_task(&self, body: &[u8]) -> Answer {
+        #[derive(Deserialize)]
+        struct On {
+            on: bool,
+        }
+        let On { on } = parse(body)?;
+        if self.sandbox {
+            self.lock().admin_task = on;
+        } else {
+            task::spawn(on)?;
+        }
+        Ok(json!({}))
     }
 
     fn install_update(&self) -> Answer {
@@ -561,5 +583,8 @@ mod tests {
         assert_eq!(call(&b, "POST", "/api/open-folder", json!({})).0, 409);
         assert_eq!(call(&b, "PUT", "/api/autostart", json!({ "on": true })).1["autostart"], true);
         assert_eq!(call(&b, "GET", "/api/state", Value::Null).1["autostart"], true);
+        assert_eq!(call(&b, "POST", "/api/admin-task", json!({ "on": true })).0, 200);
+        let (_, state) = call(&b, "GET", "/api/state", Value::Null);
+        assert_eq!((&state["admin_task"], &state["admin_task_busy"]), (&json!(true), &json!(false)));
     }
 }
