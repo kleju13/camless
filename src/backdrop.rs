@@ -20,10 +20,11 @@ const MAX_BYTES: usize = 64 << 20;
 const MAX_RATE: f64 = 8.0;
 
 /// `window.nzxt.v1.camless`, run after CAM's `window.nzxt.v1`. Each call resolves once
-/// camless has taken the message in, so a page sending frames waits for camless.
+/// camless has taken the message in, so a page sending frames waits for camless. Frames
+/// inside the page do not get it.
 pub const BRIDGE: &str = r#"(() => {
   const send = window.__camless;
-  if (typeof send !== "function") return;
+  if (typeof send !== "function" || window.top !== window) return;
   let seq = 0;
   const waiting = new Map();
   const call = (op, args) => new Promise((resolve, reject) => {

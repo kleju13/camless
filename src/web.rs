@@ -143,16 +143,18 @@ impl Job {
         if let Some(e) = nav["errorText"].as_str() {
             bail!("{} did not load: {e}", self.page.url);
         }
+        let frame = nav["frameId"].clone();
         // The screencast belongs to the document, so it starts once the page is in,
         // and again whenever the page loads anew (KrakenDial reloads on an update).
-        // A page may write to camless before that; those messages wait.
+        // A page may write to camless before that; those messages, and which context
+        // is the page's, wait.
         let screencast = json!({ "format": "png", "maxWidth": w, "maxHeight": h, "everyNthFrame": 1 });
         let mut early = VecDeque::new();
         let deadline = Instant::now() + Duration::from_secs(15);
         while let Some(left) = deadline.checked_duration_since(Instant::now()) {
             match cdp.next_event(left)? {
                 Some(ev) if ev["method"] == "Page.loadEventFired" => break,
-                Some(ev) if ev["method"] == "Runtime.bindingCalled" => early.push_back(ev),
+                Some(ev) if ev["method"].as_str().is_some_and(|m| m.starts_with("Runtime.")) => early.push_back(ev),
                 _ => {}
             }
         }
@@ -168,6 +170,8 @@ impl Job {
         let mut back = Backdrop::default();
         // The page's latest frame, laid over a background it hands over from then on.
         let mut last_png = Vec::new();
+        // Only the page itself, not a frame inside it, talks to camless.
+        let mut page_context = None;
         let (mut ticked, mut next_tick) = (Instant::now(), Instant::now());
         let backdrop_alpha = |cdp: &mut Cdp, a: u8| {
             cdp.send("Emulation.setDefaultBackgroundColorOverride", json!({ "color": { "r": 0, "g": 0, "b": 0, "a": a } }), s)
@@ -253,7 +257,17 @@ impl Job {
                     // arrive does not slow the rate down.
                     ack = Some((p["sessionId"].clone(), (last_ack + every).max(Instant::now())));
                 }
+                "Runtime.executionContextCreated" => {
+                    let c = &ev["params"]["context"];
+                    if c["auxData"]["frameId"] == frame && c["auxData"]["isDefault"] == true {
+                        page_context = c["id"].as_i64();
+                    }
+                }
                 "Runtime.bindingCalled" if ev["params"]["name"] == backdrop::BINDING => {
+                    let from = ev["params"]["executionContextId"].as_i64();
+                    if from.is_none() || from != page_context {
+                        continue;
+                    }
                     let msg: Value = serde_json::from_str(ev["params"]["payload"].as_str().unwrap_or_default()).unwrap_or_default();
                     let result = back.message(&msg, w, h);
                     match result {
@@ -273,10 +287,11 @@ impl Job {
                     }
                     let error = result.err().map(|e| format!("{e:#}"));
                     let id = msg["id"].as_u64().unwrap_or_default();
-                    cdp.send("Runtime.evaluate", json!({ "expression": backdrop::reply(id, error.as_deref()) }), s)?;
+                    cdp.send("Runtime.evaluate", json!({ "expression": backdrop::reply(id, error.as_deref()), "contextId": from }), s)?;
                 }
                 // A new document draws its own background until it hands one over again.
                 "Runtime.executionContextsCleared" => {
+                    (page_context, last_png) = (None, Vec::new());
                     if back.clear() {
                         backdrop_alpha(&mut cdp, 1)?;
                     }

@@ -29,7 +29,7 @@ The browser runs as the signed-in user even when camless runs as administrator, 
 
 A browser is the heavy part of camless: KrakenDial with a video background takes Edge about 170 MB of memory and 40 % of one CPU core. Edge runs without a GPU, as CAM's Web Integration does, which saves it about 150 MB. The other LCD modes need no browser.
 
-Most of that CPU goes to redrawing and capturing the whole page for every frame of a moving background. A page that knows camless can hand its background over instead. It bakes the background into a loop of frames once, and `window.nzxt.v1.camless.background`, which exists only under camless, takes it:
+Most of that CPU goes to redrawing and capturing the whole page for every frame of a moving background. A page that knows camless can hand its background over instead. It bakes the background into a loop of frames once, and `window.nzxt.v1.camless.background`, which exists only under camless and only in the page itself, not in frames inside it, takes it:
 - `begin(fps, frames)` starts a loop of 1 to 600 frames, played at 1 to 60 fps;
 - `frame(index, png)` gives frame `index` as a PNG data URL at the screen's size;
 - `end()` starts the loop once every frame is in. From then on the browser draws the page on a transparent background, and camless lays it over the loop, so the page should leave its own background out;
