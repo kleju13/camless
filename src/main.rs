@@ -1,4 +1,5 @@
 mod api;
+mod backdrop;
 mod cdp;
 mod daemon;
 mod drivers;
@@ -421,7 +422,12 @@ fn lcd_page(url: &str, out: &Path, duration: Duration) -> Result<()> {
     enc.set_color(png::ColorType::Rgb);
     enc.write_header()?.write_image_data(&rgb)?;
     let browser = state.browser.unwrap_or_default();
-    eprintln!("{browser}: {frames} frames, the last at {:.1} fps; wrote {}", state.fps, out.display());
+    let background = match state.background {
+        0 => String::new(),
+        1 => " over a still background from the page".into(),
+        n => format!(" over a background of {n} frames from the page"),
+    };
+    eprintln!("{browser}: {frames} frames, the last at {:.1} fps{background}; wrote {}", state.fps, out.display());
     Ok(())
 }
 

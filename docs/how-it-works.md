@@ -27,7 +27,16 @@ The app starts the service if it is not running. It asks Windows for administrat
 
 The browser runs as the signed-in user even when camless runs as administrator, with its own profile in `%LOCALAPPDATA%\camless\browser`, and it ends with camless. If the page does not load, the screen shows liquid temperature and camless tries again every 10 s. `camless lcd page URL` renders a page once, without a device, to check it.
 
-A browser is the heavy part of camless: KrakenDial with a video background takes Edge about 380 MB of memory and a fifth of a CPU core. The other LCD modes need no browser.
+A browser is the heavy part of camless: KrakenDial with a video background takes Edge about 170 MB of memory and 40 % of one CPU core. Edge runs without a GPU, as CAM's Web Integration does, which saves it about 150 MB. The other LCD modes need no browser.
+
+Most of that CPU goes to redrawing and capturing the whole page for every frame of a moving background. A page that knows camless can hand its background over instead. It bakes the background into a loop of frames once, and `window.nzxt.v1.camless.background`, which exists only under camless and only in the page itself, not in frames inside it, takes it:
+- `begin(fps, frames)` starts a loop of 1 to 600 frames, played at 1 to 60 fps;
+- `frame(index, png)` gives frame `index` as a PNG data URL at the screen's size;
+- `end()` starts the loop once every frame is in. From then on the browser draws the page on a transparent background, and camless lays it over the loop, so the page should leave its own background out;
+- `speed(rate)` plays the loop 0 to 8 times as fast;
+- `clear()` gives the page the whole screen again, as does loading another page.
+
+Each call returns a promise that resolves once camless has taken the message, or rejects with the reason it did not. A loop can take up to 64 MB in camless. KrakenDial's camless mode uses this. With a video background at 10 fps, Edge then takes about 140 MB and 3 % of a core, and camless 5 % playing a loop of 300 frames, against 30 to 40 % without it.
 
 ## Local API
 
