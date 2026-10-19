@@ -12,6 +12,7 @@
 
   const n1 = (v) => String(Math.round(v * 10) / 10);
   const listText = (xs) => (xs.length < 2 ? xs[0] || '' : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+  const usbId = (u) => `${u.vid.toString(16).padStart(4, '0')}:${u.pid.toString(16).padStart(4, '0')}`;
   const failsafe = () => (S.config ? S.config.failsafe_duty : 70);
   const devName = (id) => { const d = S.device(id); return d ? d.name : id; };
   const hasSetup = (c) => !!c && ['curve', 'fan', 'light', 'lcd'].some((k) => (c[k] || []).length);
@@ -121,6 +122,67 @@
         onClose: () => { if (!done) resolve(false); },
       });
     });
+  }
+
+  // A hardware report for a GitHub issue. The app gathers it and shows all of it; Open on
+  // GitHub fills in a new issue, which reaches GitHub only once the person submits it there.
+  function reportDialog() {
+    let report = null, closed = false;
+    const pre = h('<pre class="cam-report" tabindex="0">Gathering the report…</pre>');
+    const note = h('<p class="cam-hint"></p>');
+    const m = modal({
+      title: 'Hardware report',
+      wide: true,
+      render(body) {
+        body.appendChild(h('<p class="cam-hint cam-lead">For a device camless does not drive yet, or drives wrong. The report is read only: standard USB descriptor reads, no commands sent to the devices. It leaves out serial numbers, device paths, and your user and PC names. It goes into a public GitHub issue, and only once you submit it there.</p>'));
+        body.append(pre, note);
+      },
+      actions: [
+        { label: 'Cancel' },
+        { label: 'Copy', onClick: () => { copy(); return false; } },
+        { label: 'Open on GitHub', primary: true, onClick: () => { openIssue(); return false; } },
+      ],
+      onClose: () => { closed = true; },
+    });
+    const [, copyBtn, openBtn] = m.buttons;
+    copyBtn.disabled = openBtn.disabled = true;
+
+    const failed = (e) => ({ error: e.message });
+    (async () => {
+      let r = await S.api('POST', 'report', {}).catch(failed);
+      while (!closed && r.busy) {
+        await new Promise((ok) => setTimeout(ok, 400));
+        r = await S.api('GET', 'report').catch(failed);
+      }
+      if (closed) return;
+      if (r.error || !r.text) {
+        pre.textContent = 'The report could not be made.';
+        note.innerHTML = `<span class="cam-err">${esc(r.error || 'camless.exe printed nothing')}</span>`;
+        return;
+      }
+      report = r;
+      pre.textContent = r.text;
+      copyBtn.disabled = openBtn.disabled = false;
+      note.textContent = r.fits
+        ? 'Open on GitHub fills in a new issue with this report. Check it there, then submit.'
+        : 'This report is too long for a link. Open on GitHub copies it to your clipboard, and you paste it into the issue.';
+    })();
+
+    async function copy() {
+      try { await navigator.clipboard.writeText(report.text); toast('Report copied.'); } catch (e) { toast(`The report could not be copied: ${e.message}`); }
+    }
+
+    async function openIssue() {
+      if (!report.fits) {
+        try { await navigator.clipboard.writeText(report.text); } catch (e) { toast(`The report could not be copied: ${e.message}`); return; }
+      }
+      const r = await act('report/issue', {});
+      if (!r) return;
+      const ids = ((S.status && S.status.unsupported) || []).map(usbId);
+      K.setPref('reported', [...new Set([...(K.prefs.reported || []), ...ids])]);
+      m.close();
+      toast(r.filled ? 'GitHub opened with the report filled in. Check it, then submit.' : 'GitHub opened. Paste the report from your clipboard into the Report field.');
+    }
   }
 
   /* ----------------------------------------------------------------- shell */
@@ -292,6 +354,15 @@
       out.push({ kind: 'error', html: `<b>Liquid is at ${K.temp(max)}.</b> Every fan camless controls runs at 100% until it cools below ${K.temp(55, 0)}.` });
     }
     for (const d of status.devices) if (d.error) out.push({ kind: 'warn', html: `<b>${esc(d.name)} is not available.</b> ${esc(cap(d.error))}` });
+    // Until a report about them went to GitHub.
+    const fresh = (status.unsupported || []).filter((u) => !(K.prefs.reported || []).includes(usbId(u)));
+    if (fresh.length) {
+      out.push({
+        kind: 'info',
+        html: `<b>camless found ${fresh.length > 1 ? 'NZXT devices' : 'an NZXT device'} it does not drive yet: ${esc(listText(fresh.map((u) => `${u.product || 'NZXT device'} (${usbId(u)})`)))}.</b> A hardware report on GitHub helps add ${fresh.length > 1 ? 'them' : 'it'}.`,
+        button: { label: 'Create report', onClick: reportDialog },
+      });
+    }
     const fs = status.fans.filter((f) => f.failsafe);
     if (fs.length) {
       const names = listText(fs.map((f) => fanLabel(f.channel)));
@@ -1746,9 +1817,10 @@
     ]);
 
     const devRows = S.devices().map((d) => row(d.name, `Firmware ${esc(d.firmware || 'unknown')}. ${d.verified ? 'Tested on real hardware.' : 'Not yet tested on real hardware; this driver follows other projects’ notes and captures of CAM.'}`, deviceStatus(d.id)));
-    const unsupported = ((S.status && S.status.unsupported) || []).map((u) => row(u.product || 'NZXT device', `No camless driver yet (${u.vid.toString(16).padStart(4, '0')}:${u.pid.toString(16).padStart(4, '0')}).`, null));
+    const unsupported = ((S.status && S.status.unsupported) || []).map((u) => row(u.product || 'NZXT device', `No camless driver yet (${usbId(u)}).`, null));
     panel('Devices', devRows.concat(unsupported, [
       !devRows.length && !unsupported.length ? row(S.status ? 'No devices found' : 'The service is not running', null, null) : null,
+      row('Hardware report', 'A device camless does not drive yet, a wrong reading, or an LCD that stays dark: a report opens a GitHub issue with what a fix needs. You see all of it first.', button('Create report', { small: true, onClick: reportDialog })),
       row('Firmware updates', 'camless shows firmware versions but does not install updates. To update, open NZXT CAM once.', null),
     ]));
 

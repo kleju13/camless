@@ -13,6 +13,7 @@ mod assets;
 mod backend;
 mod client;
 mod http;
+mod report;
 mod serve;
 mod service;
 mod task;
