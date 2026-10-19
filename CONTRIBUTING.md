@@ -2,6 +2,8 @@
 
 The maintainer can only test a Kraken Elite 2024 and a Control Hub. Every other NZXT device needs someone who owns it. A driver is one Rust file. The service, the config and the app pick a new device up from what the driver describes, so nothing else changes.
 
+If you own such a device but will not write the driver, open a [hardware report](https://github.com/kleju13/camless/issues/new?template=hardware-report.yml). `camless report` prints what it needs: the device's USB interfaces, endpoints and HID report ids, and what the service knows. It only reads standard USB descriptors.
+
 The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you agree that your contribution is licensed under it too.
 
 ## Layout

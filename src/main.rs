@@ -4,6 +4,7 @@ mod cdp;
 mod daemon;
 mod drivers;
 mod q565;
+mod report;
 mod sensors;
 mod web;
 
@@ -27,6 +28,9 @@ Usage:
   camless watch [seconds]      Listen to input reports without sending anything
                                (default 10 s; CAM must not hold the devices)
   camless sensors              Read CPU, GPU and memory sensors once
+  camless report [config]      Print a hardware report for a GitHub issue: the NZXT
+                               devices with their USB descriptors, and what the
+                               service knows; read only, nothing is sent to them
   camless import-cam [dir]     Print a camless.toml built from CAM's active profiles
   camless check [config]       Validate a config and show what each fan follows
   camless run [config]         Apply the config and keep fans on their curves
@@ -44,6 +48,7 @@ Options:
                                the app without hardware
   --for SECONDS                run: stop after this long, the same way as Ctrl+C
   --raw                        watch: print every report in hex
+  --json                       report: the issue title and the report as JSON
   -o FILE                      import-cam: write to FILE instead of stdout;
                                lcd page: the PNG (default lcd-page.png)
   --for SECONDS                lcd page: how long to render (default 6)
@@ -82,6 +87,7 @@ fn main() -> Result<()> {
             watch(Duration::from_secs(secs.unwrap_or(10)), flag("--raw"))
         }
         Some("sensors") => sensors(),
+        Some("report") => report(&config_path(), flag("--json")),
         Some("import-cam") => {
             let dir = positional.first().map(PathBuf::from).unwrap_or_else(cam_import::default_dir);
             import_cam(&dir, option("-o").map(PathBuf::from))
@@ -136,6 +142,19 @@ fn sensors() -> Result<()> {
     for x in r.list(s.gpu_name.is_some()) {
         let value = x.value.map_or("-".into(), |v| format!("{v:.1} {}", x.unit.symbol()));
         println!("  {:<10} {value:<10} {}", x.id, x.name);
+    }
+    Ok(())
+}
+
+/// The config only says where the service listens; a missing or broken one means
+/// the default address.
+fn report(config: &Path, json: bool) -> Result<()> {
+    let api = Config::load(config).map(|c| c.api).unwrap_or_default();
+    let r = report::collect(api.enabled.then_some(api.listen.as_str()));
+    if json {
+        println!("{}", serde_json::to_string(&r)?);
+    } else {
+        print!("{}", r.text);
     }
     Ok(())
 }

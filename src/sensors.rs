@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::ffi::c_void;
 use std::time::Instant;
 use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
-use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ};
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetSystemTimes, ReleaseMutex, WaitForSingleObject,
@@ -117,26 +117,31 @@ impl Sensors {
 }
 
 fn cpu_name() -> Option<String> {
-    let key: Vec<u16> = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0".encode_utf16().chain([0]).collect();
-    let value: Vec<u16> = "ProcessorNameString".encode_utf16().chain([0]).collect();
-    let mut buf = [0u16; 128];
+    reg_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString")
+}
+
+/// A string value under HKEY_LOCAL_MACHINE.
+pub fn reg_string(key: &str, value: &str) -> Option<String> {
+    let mut buf = [0u16; 256];
     let mut size = std::mem::size_of_val(&buf) as u32;
-    let rc = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            key.as_ptr(),
-            value.as_ptr(),
-            RRF_RT_REG_SZ,
-            std::ptr::null_mut(),
-            buf.as_mut_ptr().cast(),
-            &mut size,
-        )
-    };
-    if rc != 0 {
+    if reg_value(key, value, RRF_RT_REG_SZ, buf.as_mut_ptr().cast(), &mut size) != 0 {
         return None;
     }
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     Some(String::from_utf16_lossy(&buf[..len]).trim().to_string())
+}
+
+/// A DWORD value under HKEY_LOCAL_MACHINE.
+pub fn reg_dword(key: &str, value: &str) -> Option<u32> {
+    let mut v = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    (reg_value(key, value, RRF_RT_REG_DWORD, (&mut v as *mut u32).cast(), &mut size) == 0).then_some(v)
+}
+
+fn reg_value(key: &str, value: &str, kind: u32, out: *mut c_void, size: &mut u32) -> u32 {
+    let key: Vec<u16> = key.encode_utf16().chain([0]).collect();
+    let value: Vec<u16> = value.encode_utf16().chain([0]).collect();
+    unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), value.as_ptr(), kind, std::ptr::null_mut(), out, size) }
 }
 
 fn zero_ft() -> FILETIME {
