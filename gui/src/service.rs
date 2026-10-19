@@ -1,10 +1,11 @@
 //! Starting, stopping and restarting the service from the app, so camless is one
 //! thing to launch. The service needs administrator rights for CPU temperature and
-//! power, so the app starts it through UAC; if that is declined, it starts it
-//! without them and says so. Each action runs on its own thread: UAC can wait on
-//! the user for as long as they like.
+//! power, so the app starts it through UAC, or through the task that needs none once
+//! the user turned it on; if UAC is declined, it starts it without them and says so.
+//! Each action runs on its own thread: UAC can wait on the user for as long as they
+//! like.
 
-use crate::client;
+use crate::{client, task};
 use anyhow::{anyhow, bail, Context, Result};
 use camless_core::config::{self, Config};
 use std::path::{Path, PathBuf};
@@ -95,13 +96,18 @@ fn start(addr: &str, config: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
     let exe = client::daemon_exe().context("camless.exe is not next to camless-gui.exe")?;
-    let note = match run_as_admin(&exe, config) {
-        Ok(()) => None,
-        Err(Elevate::Declined) => {
-            client::start_daemon(config)?;
-            Some("Started without administrator rights, so CPU temperature and power are off.".to_string())
+    // The task runs the default config. Without it, or if it is gone, UAC asks.
+    let note = if config == config::default_path() && task::ready() && task::run().is_ok() {
+        None
+    } else {
+        match run_elevated(&exe, &run_args(config), false) {
+            Ok(_) => None,
+            Err(Elevate::Declined) => {
+                client::start_daemon(config)?;
+                Some("Started without administrator rights, so CPU temperature and power are off.".to_string())
+            }
+            Err(Elevate::Failed(e)) => return Err(e),
         }
-        Err(Elevate::Failed(e)) => return Err(e),
     };
     wait(Duration::from_secs(10), || running(addr)).map_err(|_| anyhow!("the service did not start within 10 s"))?;
     Ok(note)
@@ -128,19 +134,20 @@ fn wait(limit: Duration, done: impl Fn() -> bool) -> std::result::Result<(), ()>
     Err(())
 }
 
-enum Elevate {
+pub enum Elevate {
     Declined,
     Failed(anyhow::Error),
 }
 
-/// `camless.exe run <config>` through UAC, with no console window. Returns once it
-/// started.
-fn run_as_admin(exe: &Path, config: &Path) -> std::result::Result<(), Elevate> {
+/// `exe` with `params` through UAC, with no console window. Returns once it started,
+/// or with its exit code once it ended if `wait`.
+pub fn run_elevated(exe: &Path, params: &str, wait: bool) -> std::result::Result<Option<u32>, Elevate> {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_CANCELLED};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
     use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let (verb, file, params) = (wide("runas"), wide(&exe.display().to_string()), wide(&run_args(config)));
+    let (verb, file, params) = (wide("runas"), wide(&exe.display().to_string()), wide(params));
     let dir = wide(&exe.parent().map(|d| d.display().to_string()).unwrap_or_default());
     unsafe {
         let mut info: SHELLEXECUTEINFOW = std::mem::zeroed();
@@ -159,11 +166,16 @@ fn run_as_admin(exe: &Path, config: &Path) -> std::result::Result<(), Elevate> {
                 Elevate::Failed(anyhow!("starting {} as administrator: {}", exe.display(), std::io::Error::from_raw_os_error(err as i32)))
             });
         }
+        let mut code = None;
         if !info.hProcess.is_null() {
+            let mut c = 0;
+            if wait && WaitForSingleObject(info.hProcess, INFINITE) == 0 && GetExitCodeProcess(info.hProcess, &mut c) != 0 {
+                code = Some(c);
+            }
             CloseHandle(info.hProcess);
         }
+        Ok(code)
     }
-    Ok(())
 }
 
 /// The command line for `run`. Windows paths cannot hold `"`, and the config is a

@@ -156,11 +156,16 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Code: Integer;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
   { The app adds this value for Start with Windows. }
   RegDeleteValue(HKEY_CURRENT_USER, RunKey, 'camless');
+  { And this task for Start as administrator without asking. Its user may delete it. }
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "camless (' + GetUserNameString + ')" /F', '', SW_HIDE,
+    ewWaitUntilTerminated, Code);
   if not UninstallSilent and (MsgBox('Also delete your camless settings and profiles?' + #13#10#13#10
       + ExpandConstant('{userappdata}\camless') + #13#10 + ExpandConstant('{localappdata}\camless'),
       mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
