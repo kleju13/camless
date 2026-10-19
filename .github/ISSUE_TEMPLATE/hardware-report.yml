@@ -1,0 +1,51 @@
+name: Hardware report
+description: An NZXT device camless does not drive yet, or drives wrong. The camless app fills in the report.
+title: "Hardware: "
+labels: ["hardware"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The maintainer only has a Kraken Elite 2024 and a Control Hub. Reports like this one are how other devices get drivers.
+
+        **In the app:** Settings → Devices → **Create report**, then **Open on GitHub**. The app fills in the report below.
+        **Without the app:** run this in PowerShell and paste what it prints:
+
+        ```powershell
+        & "$env:LOCALAPPDATA\Programs\camless\camless.exe" report
+        ```
+
+        **With an older camless, or without camless:** give the device's name and its *Hardware Ids* from Device Manager (the device → Properties → Details → Hardware Ids), for example `USB\VID_1E71&PID_3012&REV_0102`. Not the *Device instance path*: that one holds the serial number.
+
+        The report is read only: standard USB descriptor reads, no commands sent to the devices. It leaves out serial numbers, device paths, and your user and PC names. Read it before you submit; everything here is public.
+  - type: textarea
+    id: report
+    attributes:
+      label: Report from camless
+      description: If the app copied the report instead of filling it in, paste it here. Without `camless report`, the device's name and Hardware Ids go here.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What should work, or what is wrong
+      description: Which device, and what you would like camless to control on it (pump, fans, lighting, LCD), or what it gets wrong.
+    validations:
+      required: true
+  - type: dropdown
+    id: test
+    attributes:
+      label: Can you test a build on this hardware?
+      options:
+        - "Yes"
+        - "Maybe"
+        - "No"
+    validations:
+      required: true
+  - type: checkboxes
+    id: public
+    attributes:
+      label: Before you submit
+      options:
+        - label: I read the report, and it is fine to publish.
+          required: true
