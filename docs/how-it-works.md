@@ -27,7 +27,7 @@ The app starts the service if it is not running. It asks Windows for administrat
 
 The browser runs as the signed-in user even when camless runs as administrator, with its own profile in `%LOCALAPPDATA%\camless\browser`, and it ends with camless. If the page does not load, the screen shows liquid temperature and camless tries again every 10 s. `camless lcd page URL` renders a page once, without a device, to check it.
 
-A browser is the heavy part of camless: KrakenDial with a video background takes Edge about 380 MB of memory and a fifth of a CPU core. The other LCD modes need no browser.
+A browser is the heavy part of camless: KrakenDial with a video background takes Edge about 170 MB of memory and 40 % of one CPU core. Edge runs without a GPU, as CAM's Web Integration does, which saves it about 150 MB. The other LCD modes need no browser.
 
 ## Local API
 

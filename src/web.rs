@@ -342,6 +342,12 @@ impl Browser {
             "--disable-renderer-backgrounding".into(),
             "--disable-backgrounding-occluded-windows".into(),
             "--autoplay-policy=no-user-gesture-required".into(),
+            // Without these, headless Edge keeps a GPU process of about 150 MB for a
+            // page CAM also draws without a GPU, and a spare renderer next to the page's.
+            "--disable-gpu".into(),
+            "--disable-gpu-compositing".into(),
+            "--renderer-process-limit=1".into(),
+            "--disable-features=SpareRendererForSitePerProcess".into(),
             "about:blank".into(),
         ];
         let process = win::spawn(&exe, &args)?;
