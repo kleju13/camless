@@ -10,6 +10,7 @@ camless was built with a coding agent, and new devices will mostly come the same
 
 ## Working on a device
 
+- **Start from the report.** For a device from an issue labeled `hardware`, start from the `camless report` output in that issue: it has the USB interfaces, endpoints and HID report ids. If the issue only has Hardware Ids, ask for that output.
 - **You can't see the hardware.** Ask the person you work with what the device actually does after each step: the screen, the pump, the fan speeds, the lights. A reply without an error is not proof that something worked.
 - **Look before you write.** Quit the NZXT CAM app first: it opens the devices exclusively, and it starts again at logon unless it is turned off in Task Manager's startup apps. CAM Service does not hold them. Then run `camless status`: it lists every NZXT device and opens only the ones with a driver.
 - **Starting CAM from your shell**, for a capture: if it exits at once with code 0 or 9 and writes no log, your shell has `ELECTRON_RUN_AS_NODE=1` set, as some agent harnesses do. CAM's exe then runs as plain Node. Remove the variable for that process first.

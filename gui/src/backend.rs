@@ -7,7 +7,7 @@
 //! each saved change by itself, so closing the app never stops fan control.
 
 use crate::service::{self, Action};
-use crate::{assets, client, task, tray, update};
+use crate::{assets, client, report, task, tray, update};
 use anyhow::{anyhow, Context, Result};
 use camless_core::cam_import;
 use camless_core::config::{self, Config, LcdMode, Setup};
@@ -132,6 +132,9 @@ impl Backend {
             ("POST", "update/install") => self.install_update(),
             ("POST", "update/notes") => self.release_notes(),
             ("POST", "open-folder") => self.open_folder(),
+            ("POST", "report") => report::start(&self.path()).map(|_| json!(report::state())).map_err(Refused::from),
+            ("GET", "report") => Ok(json!(report::state())),
+            ("POST", "report/issue") => self.report_issue(),
             ("POST", "window/closed") => {
                 if let Some(f) = &self.on_closed {
                     f();
@@ -393,6 +396,14 @@ impl Backend {
         Ok(json!({}))
     }
 
+    /// Opens a new GitHub issue with the last report in the browser.
+    fn report_issue(&self) -> Answer {
+        if self.sandbox {
+            bail_refused("the sandbox does not open a browser")?;
+        }
+        Ok(json!({ "filled": report::open_issue()? }))
+    }
+
     fn open_folder(&self) -> Answer {
         if self.sandbox {
             bail_refused("the sandbox does not open Explorer")?;
@@ -581,6 +592,7 @@ mod tests {
         }
         assert_eq!(call(&b, "GET", "/api/state", Value::Null).1["service_busy"], Value::Null);
         assert_eq!(call(&b, "POST", "/api/open-folder", json!({})).0, 409);
+        assert_eq!(call(&b, "POST", "/api/report/issue", json!({})).0, 409);
         assert_eq!(call(&b, "PUT", "/api/autostart", json!({ "on": true })).1["autostart"], true);
         assert_eq!(call(&b, "GET", "/api/state", Value::Null).1["autostart"], true);
         assert_eq!(call(&b, "POST", "/api/admin-task", json!({ "on": true })).0, 200);

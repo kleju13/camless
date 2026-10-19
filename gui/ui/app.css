@@ -372,6 +372,7 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--t3); }
 .cam-idle { display: grid; gap: 8px; margin-top: 16px; }
 .cam-lead { margin: 0 0 12px; }
+.cam-report { margin: 0; max-height: min(46vh, 420px); overflow: auto; padding: 10px 12px; border-radius: var(--radius); background: var(--panel-2); color: var(--t2); font: 400 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .cam-box { margin-top: 12px; border: 1px solid var(--panel-line); border-radius: var(--radius); }
 .cam-box:first-child { margin-top: 0; }
 .cam-notes { margin: 6px 0 0; padding-left: 20px; font-size: 12px; line-height: 1.55; color: var(--t2); }
