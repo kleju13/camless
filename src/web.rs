@@ -358,13 +358,8 @@ pub fn q565_from_png(png_bytes: &[u8], w: u16, h: u16) -> Result<Vec<u8>> {
 }
 
 pub fn rgb565_from_png(png_bytes: &[u8], w: u16, h: u16) -> Result<Vec<u16>> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
-    decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder.read_info().context("reading a frame")?;
-    let mut buf = vec![0; reader.output_buffer_size().context("a frame too large")?];
-    let info = reader.next_frame(&mut buf).context("reading a frame")?;
-    let channels = info.color_type.samples();
-    let (fw, fh, w, h) = (info.width as usize, info.height as usize, w as usize, h as usize);
+    let (buf, fw, fh, channels) = decode_png(png_bytes)?;
+    let (w, h) = (w as usize, h as usize);
     let mut rgba = vec![0u8; w * h * 4];
     for y in 0..fh.min(h) {
         for x in 0..fw.min(w) {
@@ -375,6 +370,24 @@ pub fn rgb565_from_png(png_bytes: &[u8], w: u16, h: u16) -> Result<Vec<u16>> {
         }
     }
     Ok(q565::rgb565_from_rgba(&rgba))
+}
+
+/// Wider or higher than any screen. A page hands frames over, so a PNG is checked
+/// against this before anything is allocated for its pixels.
+const MAX_SIDE: u32 = 4096;
+
+/// A PNG as 8-bit samples, with its width, height and samples per pixel.
+pub fn decode_png(png_bytes: &[u8]) -> Result<(Vec<u8>, usize, usize, usize)> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().context("reading a frame")?;
+    let (fw, fh) = (reader.info().width, reader.info().height);
+    if fw > MAX_SIDE || fh > MAX_SIDE {
+        bail!("a frame of {fw}×{fh}, over {MAX_SIDE} pixels a side");
+    }
+    let mut buf = vec![0; reader.output_buffer_size().context("a frame too large")?];
+    let info = reader.next_frame(&mut buf).context("reading a frame")?;
+    Ok((buf, fw as usize, fh as usize, info.color_type.samples()))
 }
 
 /// `%LOCALAPPDATA%\camless\browser\<device>`: cookies and storage of the pages on
@@ -705,5 +718,20 @@ mod tests {
         assert_eq!(rgb565_from_png(&png_bytes, 3, 2).unwrap(), vec![0xf800, 0x001f, 0, 0, 0, 0]);
         let q = q565_from_png(&png_bytes, 3, 2).unwrap();
         assert_eq!(q565::decode(&q).unwrap(), (3, 2, vec![0xf800, 0x001f, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn a_huge_frame_is_refused_before_it_is_decoded() {
+        // a few kB that would decode to 4097×4097 pixels
+        let mut png_bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png_bytes, 4097, 4097);
+            enc.set_color(png::ColorType::Grayscale);
+            enc.set_depth(png::BitDepth::One);
+            enc.write_header().unwrap().write_image_data(&vec![0; 4097 * 513]).unwrap();
+        }
+        let err = decode_png(&png_bytes).unwrap_err().to_string();
+        assert!(err.contains("4097×4097"), "{err}");
+        assert!(rgb565_from_png(&png_bytes, 640, 640).is_err());
     }
 }

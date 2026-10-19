@@ -188,13 +188,8 @@ impl Backdrop {
 /// straight alpha has a colour far above its alpha somewhere, and is premultiplied here.
 pub fn premultiplied_from_png(png_bytes: &[u8], w: u16, h: u16) -> Result<Vec<u8>> {
     const ROUNDING: u8 = 32;
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
-    decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder.read_info().context("reading a frame")?;
-    let mut buf = vec![0; reader.output_buffer_size().context("a frame too large")?];
-    let info = reader.next_frame(&mut buf).context("reading a frame")?;
-    let channels = info.color_type.samples();
-    let (fw, fh, w, h) = (info.width as usize, info.height as usize, w as usize, h as usize);
+    let (buf, fw, fh, channels) = web::decode_png(png_bytes)?;
+    let (w, h) = (w as usize, h as usize);
     let mut rgba = vec![0u8; w * h * 4];
     for y in 0..fh.min(h) {
         for x in 0..fw.min(w) {
