@@ -54,7 +54,8 @@ Options:
                                lcd page: the PNG (default lcd-page.png)
   --for SECONDS                lcd page: how long to render (default 6)
 
-NZXT CAM and its CAM Service hold the devices exclusively; stop them first.
+The NZXT CAM app holds the devices exclusively; quit it first (CAM Service can
+keep running).
 CPU temperature needs PawnIO, AMDFamily17.bin and administrator rights.
 ";
 
