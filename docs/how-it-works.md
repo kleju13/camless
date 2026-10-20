@@ -19,6 +19,14 @@ The app starts the service if it is not running. It asks Windows for administrat
 - **On exit:** host-driven fans go to `failsafe_duty` or their fixed duty, and LCDs go back to their own screen.
 - **Lost devices** (sleep, resume, replug) are reopened every 5 s.
 
+## History
+
+The service records every sensor, and the speed and duty of every fan, while it runs:
+- the last hour at one reading a second, in memory;
+- each minute's average and highest value, in `history/` next to `camless.toml`, one CSV file per UTC day. Files older than 30 days are deleted. A day takes about 300 KB with a Kraken and a Control Hub.
+
+*Monitoring → History* shows them for the last 10 minutes, hour, 24 hours, 7 days or 30 days: temperatures, loads, power or fan speeds. Pointing at the chart shows the values at that moment, and the highest value too where a point stands for several readings. `camless run --demo` keeps its simulated readings in memory only.
+
 ## Web pages on the LCD
 
 `mode = "web"` shows a page the way CAM's Web Integration does, so pages made for CAM, such as [KrakenDial](https://github.com/kleju13/krakendial), work unchanged:
@@ -45,6 +53,7 @@ Each call returns a promise that resolves once camless has taken the message, or
 | | |
 |---|---|
 | `GET /v1/status` | devices, channels, sensors, curves and duties, as `camless_core::status::Status`; the app reads this |
+| `GET /v1/history?span=<seconds>&ids=<id>,<id>` | the readings over the last `span` seconds (600 by default, up to 30 days), at most 721 points a series: `from` and `step` in seconds, `count`, and for each series id its `avg` and `max` at every point, `null` where there was no reading. Ids are sensor ids, and `<device>/<channel>.rpm` or `.duty` for fans; without `ids`, every series |
 | `GET /v1/monitoring` | CAM's Web Integration monitoring object (`cpus`, `gpus`, `kraken`, `ram`); pages in web mode get the same through `window.nzxt.v1` |
 | `POST /v1/stop` | stops the service the way Ctrl+C does: host-driven fans to `failsafe_duty` or their fixed duty, the LCD back to its own screen; `Content-Type: application/json` only, so web pages cannot send it |
 | `POST /v1/lcd/frame` | one frame for the LCD in `frames` mode at its size (640×640 on the Kraken Elite), raw RGBA or RGB565 big-endian, `Content-Type: application/octet-stream`; 202, 409 without such an LCD, 429 when two frames are already waiting |

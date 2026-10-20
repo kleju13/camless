@@ -356,6 +356,18 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-legend[aria-pressed=false] { opacity: .4; }
 .cam-legend:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
 .cam-chart canvas { width: 100%; height: 220px; display: block; }
+.cam-chart-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 8px; }
+.cam-chart-bar .cam-tabs.sub { margin: 0; }
+.cam-chart-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.cam-chart-plot { position: relative; }
+.cam-chart-tip { position: absolute; top: 4px; z-index: 2; min-width: 150px; padding: 8px 10px; border-radius: var(--radius); background: var(--panel-2); border: 1px solid var(--panel-line); box-shadow: var(--shadow); font-size: 12px; pointer-events: none; }
+.cam-chart-tip time { display: block; margin-bottom: 4px; color: var(--t3); font-weight: 500; }
+.cam-chart-tip div { display: flex; align-items: center; gap: 7px; line-height: 1.6; }
+.cam-chart-tip i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+.cam-chart-tip span { flex: 1; color: var(--t2); }
+.cam-chart-tip b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.cam-chart-tip small { color: var(--t3); margin-left: 6px; font-variant-numeric: tabular-nums; }
+.cam-chart-note { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: 0 24px; text-align: center; font-size: 12px; color: var(--t3); }
 
 /* ------------------------------------------------------------ app parts */
 .cam-alerts { position: sticky; top: 0; z-index: 5; display: grid; gap: 8px; }

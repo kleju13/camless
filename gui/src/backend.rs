@@ -98,7 +98,8 @@ impl Backend {
 
     /// `path` is the request target, with or without a query.
     pub fn handle(&self, method: &str, path: &str, content_type: Option<&str>, body: &[u8]) -> Reply {
-        let path = path.split(['?', '#']).next().unwrap_or("/");
+        let target = path.split('#').next().unwrap_or_default();
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let Some(route) = path.strip_prefix("/api/") else {
             if method != "GET" {
                 return Reply::empty(405);
@@ -115,6 +116,7 @@ impl Backend {
         }
         let answer = match (method, route) {
             ("GET", "state") => Ok(self.state()),
+            ("GET", "history") => self.history(query),
             ("PUT", "config") => self.put_config(body),
             ("POST", "profiles/switch") => self.switch_profile(body),
             ("POST", "profiles/save-current") => self.save_current(body),
@@ -206,6 +208,15 @@ impl Backend {
             "update": update::state(),
             "sandbox": self.sandbox,
         })
+    }
+
+    /// Sensor and fan history from the service, for the charts.
+    fn history(&self, query: &str) -> Answer {
+        let path = history_path(query).map_err(|e| Refused(400, e))?;
+        let addr = self.lock().link.as_ref().map(|l| l.lock().unwrap_or_else(|e| e.into_inner()).addr.clone());
+        let addr = addr.unwrap_or_else(|| camless_core::DEFAULT_API.to_string());
+        let body = client::get(&addr, &path).map_err(|e| Refused(502, format!("{e:#}")))?;
+        serde_json::from_str(&body).map_err(|e| Refused(502, format!("the service's history: {e}")))
     }
 
     /// The config on disk, to change. A file with a mistake stays as it is: the page
@@ -428,6 +439,35 @@ fn bail_refused(msg: impl Into<String>) -> std::result::Result<(), Refused> {
     Err(Refused(409, msg.into()))
 }
 
+/// The service's history request for the page's: only `span`, a number, and `ids`,
+/// series ids, go through, so nothing else reaches the request line.
+fn history_path(query: &str) -> std::result::Result<String, String> {
+    let mut path = String::from("/v1/history?span=");
+    let mut span = "600";
+    let mut ids = None;
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        match pair.split_once('=').unwrap_or((pair, "")) {
+            ("span", v) if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v.len() < 10 => span = v,
+            ("span", v) => return Err(format!("span {v:?} is not a number of seconds")),
+            ("ids", v) => ids = Some(v),
+            _ => {}
+        }
+    }
+    path.push_str(span);
+    if let Some(ids) = ids {
+        path.push_str("&ids=");
+        for b in ids.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b',' | b'/' => path.push(b as char),
+                // Already escaped by the page, e.g. %23 for the # of a second device.
+                b'%' => path.push('%'),
+                _ => path.push_str(&format!("%{b:02X}")),
+            }
+        }
+    }
+    Ok(path)
+}
+
 /// The config and its profile; a file that is not there yet is an empty config.
 fn read_config(path: &Path) -> Result<Config> {
     match Config::load(path) {
@@ -487,6 +527,19 @@ mod tests {
     fn call(b: &Backend, method: &str, path: &str, body: Value) -> (u16, Value) {
         let r = b.handle(method, path, Some("application/json"), body.to_string().as_bytes());
         (r.status, serde_json::from_slice(&r.body).unwrap_or(Value::Null))
+    }
+
+    #[test]
+    fn history_requests_pass_only_what_the_service_takes() {
+        assert_eq!(history_path("").unwrap(), "/v1/history?span=600");
+        assert_eq!(
+            history_path("span=3600&ids=cpu.temp,kraken-elite-v2%232.liquid&x=1").unwrap(),
+            "/v1/history?span=3600&ids=cpu.temp,kraken-elite-v2%232.liquid"
+        );
+        assert_eq!(history_path("ids=a b<x>").unwrap(), "/v1/history?span=600&ids=a%20b%3Cx%3E");
+        assert!(history_path("span=-1").is_err());
+        let (b, _) = fixture("camless-gui-history");
+        assert_eq!(call(&b, "GET", "/api/history?span=day", Value::Null).0, 400);
     }
 
     #[test]

@@ -6,8 +6,10 @@
 //! keeps working. `POST /v1/lcd/frame` takes one frame for the LCD in frames mode, raw
 //! RGBA or RGB565 big-endian at the screen's size (640×640 on a Kraken Elite).
 //! `POST /v1/stop` ends the service the way Ctrl+C does; the app uses it to restart it.
+//! `GET /v1/history?span=<seconds>&ids=<id>,<id>` is sensor and fan history for charts.
 
 use crate::daemon::{Event, Snapshot};
+use crate::history::{self, History};
 use crate::q565;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -16,9 +18,16 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tiny_http::{Header, Method, Request, Response, Server};
 
-pub fn spawn(listen: &str, shared: Arc<Mutex<Snapshot>>, frames: SyncSender<Event>, stop: &'static AtomicBool) -> Result<()> {
+pub fn spawn(
+    listen: &str,
+    shared: Arc<Mutex<Snapshot>>,
+    history: Arc<Mutex<History>>,
+    frames: SyncSender<Event>,
+    stop: &'static AtomicBool,
+) -> Result<()> {
     let addr: SocketAddr = listen.parse().with_context(|| format!("api listen {listen:?} is not ip:port"))?;
     if !addr.ip().is_loopback() {
         bail!("api listen must be a loopback address; {listen} would expose the devices to the network");
@@ -27,7 +36,7 @@ pub fn spawn(listen: &str, shared: Arc<Mutex<Snapshot>>, frames: SyncSender<Even
     let hosts = [format!("127.0.0.1:{}", addr.port()), format!("localhost:{}", addr.port()), format!("[::1]:{}", addr.port())];
     std::thread::Builder::new().name("api".into()).spawn(move || {
         for req in server.incoming_requests() {
-            if let Err(e) = handle(req, &hosts, &shared, &frames, stop) {
+            if let Err(e) = handle(req, &hosts, &shared, &history, &frames, stop) {
                 eprintln!("api: {e:#}");
             }
         }
@@ -39,16 +48,34 @@ fn header<'a>(req: &'a Request, name: &'static str) -> Option<&'a str> {
     req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str())
 }
 
-fn handle(mut req: Request, hosts: &[String], shared: &Mutex<Snapshot>, frames: &SyncSender<Event>, stop: &AtomicBool) -> Result<()> {
+fn handle(
+    mut req: Request,
+    hosts: &[String],
+    shared: &Mutex<Snapshot>,
+    history: &Mutex<History>,
+    frames: &SyncSender<Event>,
+    stop: &AtomicBool,
+) -> Result<()> {
     // A Host check stops DNS rebinding: a web page cannot reach this server under its
     // own domain name.
     if !header(&req, "Host").is_some_and(|h| hosts.iter().any(|ok| ok.eq_ignore_ascii_case(h))) {
         return Ok(req.respond(Response::empty(421))?);
     }
     let snapshot = || shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    match (req.method(), req.url()) {
+    let url = req.url().to_string();
+    let (path, query) = url.split_once('?').unwrap_or((&url, ""));
+    match (req.method(), path) {
         (Method::Get, "/v1/monitoring") => respond_json(req, &monitoring(&snapshot())),
         (Method::Get, "/v1/status") => respond_json(req, &serde_json::to_value(&snapshot().status)?),
+        (Method::Get, "/v1/history") => {
+            let (span, ids) = match history_query(query) {
+                Ok(q) => q,
+                Err(msg) => return Ok(req.respond(Response::from_string(msg).with_status_code(400))?),
+            };
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let range = history::query(history, now, span, ids.as_deref());
+            respond_json(req, &serde_json::to_value(&range)?)
+        }
         (Method::Post, "/v1/stop") => {
             // A web page cannot send JSON here without a preflight, which this server
             // never approves, so only programs on this PC can stop the service.
@@ -89,6 +116,41 @@ fn handle(mut req: Request, hosts: &[String], shared: &Mutex<Snapshot>, frames: 
         }
         _ => Ok(req.respond(Response::empty(404))?),
     }
+}
+
+/// `span` in seconds, 600 by default, and `ids`, a comma-separated list of series.
+fn history_query(query: &str) -> std::result::Result<(i64, Option<Vec<String>>), String> {
+    let (mut span, mut ids) = (600, None);
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        match k {
+            "span" => span = v.parse().map_err(|_| format!("span {v:?} is not a number of seconds"))?,
+            "ids" => ids = Some(percent_decode(v).split(',').filter(|s| !s.is_empty()).map(String::from).collect()),
+            _ => {}
+        }
+    }
+    Ok((span, ids))
+}
+
+/// `%2F` and the like, for ids a client encoded; anything malformed stays as it is.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        match (b[i], b.get(i + 1).copied().and_then(hex), b.get(i + 2).copied().and_then(hex)) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (c, _, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn respond_json(req: Request, v: &Value) -> Result<()> {
@@ -140,4 +202,19 @@ pub fn monitoring(s: &Snapshot) -> Value {
         "kraken": kraken,
         "ram": { "inUse": mb(r.ram_used_gb), "totalSize": mb(r.ram_total_gb) },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_queries_parse() {
+        assert_eq!(history_query(""), Ok((600, None)));
+        let (span, ids) = history_query("span=86400&ids=cpu.temp,control-hub%2Ffan1.rpm").unwrap();
+        assert_eq!(span, 86400);
+        assert_eq!(ids.unwrap(), ["cpu.temp", "control-hub/fan1.rpm"]);
+        assert!(history_query("span=day").is_err());
+        assert_eq!(percent_decode("a%2"), "a%2");
+    }
 }
