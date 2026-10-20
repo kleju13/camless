@@ -8,6 +8,7 @@ pub mod control_hub;
 pub mod demo;
 pub mod hid;
 pub mod hue2;
+pub mod kraken3;
 pub mod kraken_elite_v2;
 
 use anyhow::Result;
@@ -19,7 +20,16 @@ use std::ffi::CString;
 pub const NZXT_VID: u16 = 0x1e71;
 
 /// Every model camless can drive.
-pub const MODELS: &[Model] = &[kraken_elite_v2::MODEL, control_hub::MODEL];
+pub const MODELS: &[Model] = &[
+    kraken_elite_v2::MODEL,
+    kraken_elite_v2::PLUS,
+    kraken3::ELITE_2023,
+    kraken3::KRAKEN_2023,
+    kraken3::Z3,
+    kraken3::X3,
+    kraken3::X3_2014,
+    control_hub::MODEL,
+];
 
 pub struct Model {
     pub vid: u16,

@@ -462,12 +462,19 @@ impl Daemon {
             }
         }
         let lcd_config = self.cfg.lcds.iter().find(|c| c.device == id);
+        let frames = s.info.lcd.as_ref().is_some_and(|l| l.frames);
         if let Some(c) = lcd_config.filter(|c| s.lcd_sent.as_ref() != Some(*c)) {
             match dev.lcd() {
                 None => notes.push(format!("lcd {id}: this device has no screen")),
                 Some(lcd) => {
                     let shown = lcd.settings(c.brightness, (c.orientation / 90) as u8).and_then(|_| match c.mode {
                         LcdMode::Liquid => lcd.show_builtin(),
+                        LcdMode::Frames | LcdMode::Web if !frames => {
+                            notes.push(format!(
+                                "lcd {id}: this cooler takes pictures only into its flash memory, which camless does not write, so it keeps its own display"
+                            ));
+                            lcd.show_builtin()
+                        }
                         // The stream takes over when the first frame arrives.
                         LcdMode::Frames | LcdMode::Web => Ok(()),
                     });
@@ -614,7 +621,7 @@ impl Daemon {
         let mut want = HashMap::new();
         for c in self.cfg.lcds.iter().filter(|c| c.mode == LcdMode::Web) {
             let Some(s) = self.slots.iter().find(|s| s.found.id == c.device && s.dev.is_some()) else { continue };
-            let Some(lcd) = &s.info.lcd else { continue };
+            let Some(lcd) = s.info.lcd.as_ref().filter(|l| l.frames) else { continue };
             let page = web::Page { url: c.url.clone(), fps: c.fps, width: lcd.width, height: lcd.height, round: lcd.round };
             want.insert(c.device.clone(), page);
         }
@@ -719,7 +726,7 @@ impl Daemon {
         };
         let frame_target = self.cfg.lcds.iter().filter(|c| c.mode == LcdMode::Frames).find_map(|c| {
             let s = self.slots.iter().find(|s| s.found.id == c.device && s.dev.is_some())?;
-            let lcd = s.info.lcd.as_ref()?;
+            let lcd = s.info.lcd.as_ref().filter(|l| l.frames)?;
             Some((c.device.clone(), lcd.width, lcd.height))
         });
         let mut snap = self.shared.lock().unwrap_or_else(|e| e.into_inner());

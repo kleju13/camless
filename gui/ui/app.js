@@ -272,7 +272,7 @@
     if (!S.server) return 'loading';
     return JSON.stringify([
       !!S.config,
-      S.devices().map((d) => [d.id, d.connected, !!d.lcd]),
+      S.devices().map((d) => [d.id, d.connected, !!d.lcd, !!(d.lcd && d.lcd.frames)]),
       S.fans().map((f) => f.id + (f.hw && f.hw.connected === false && !S.fanCfg(f.id) ? '-' : '')),
       S.lights().map((l) => l.id),
       S.screens().map((s) => s.id),
@@ -794,10 +794,11 @@
   const rpmOf = (fanId) => { const f = S.fan(fanId); return (f && f.hw && f.hw.rpm) || 0; };
   const ringOf = (dev, time) => (S.lights().some((l) => l.id === `${dev}/ring`) ? S.renderLight(S.lightOf(`${dev}/ring`), time, 24) : null);
   function headOpts(dev, time, o = {}) {
-    const liquid = S.value(`${dev}.liquid`);
+    const liquid = S.value(`${dev}.liquid`), d = S.device(dev);
+    // A screen without streamed pictures keeps its own display, whatever the config says.
+    const lcd = !d || !d.lcd ? { mode: 'liquid', brightness: 100 } : d.lcd.frames === false ? { ...S.lcdOf(dev), mode: 'liquid' } : S.lcdOf(dev);
     return Object.assign({
-      leds: ringOf(dev, time), liquid,
-      lcd: S.device(dev) && S.device(dev).lcd ? S.lcdOf(dev) : { mode: 'liquid', brightness: 100 },
+      leds: ringOf(dev, time), liquid, lcd,
       sensors: { cpu: S.value('cpu.temp'), gpu: S.value('gpu.temp'), liquid },
       font: FONT, rotation: 0,
     }, o);
@@ -1588,8 +1589,10 @@
     const cv = el.querySelector('canvas'), cap1 = el.querySelector('.cam-light-prev p');
     const ctl = el.querySelector('.cam-light-ctl');
     const L = () => S.lcdOf(dev);
+    // Some coolers take pictures only into flash memory, which camless does not write.
+    const stills = () => { const d = S.device(dev); return !!(d && d.lcd && d.lcd.frames === false); };
     const mode = select({
-      options: [{ value: 'liquid', label: 'Liquid temperature' }, { value: 'web', label: 'Web page' }, { value: 'frames', label: 'Frames from a program' }],
+      options: [{ value: 'liquid', label: 'Liquid temperature' }].concat(stills() ? [] : [{ value: 'web', label: 'Web page' }, { value: 'frames', label: 'Frames from a program' }]),
       value: L().mode, label: 'Display mode',
       onChange: (v) => S.editLcd(dev, (l) => {
         l.mode = v;
@@ -1616,7 +1619,8 @@
     const rRot = row('Rotate display', 'Match the tubes to how the cooler is installed.', [rotVal, button('Rotate display', { icon: 'rotate', small: true, onClick: () => rotateDialog(dev) })]);
     ctl.append(rMode, rUrl, rFps, rBr, rRot);
     function refresh() {
-      const l = L();
+      const l = { ...L() };
+      if (stills()) l.mode = 'liquid';
       mode.set(l.mode);
       if (document.activeElement !== url) url.value = l.url || '';
       br.set(l.brightness);
@@ -1624,7 +1628,9 @@
       rotVal.textContent = l.orientation + '°';
       rUrl.hidden = rFps.hidden = l.mode !== 'web';
       const api = Object.assign({}, API_DEFAULT, S.config && S.config.api);
-      rMode.hint(l.mode === 'liquid'
+      rMode.hint(stills()
+        ? 'The cooler draws this screen itself. It shows other pictures only from its flash memory, and camless does not write there, so web pages and frames are not offered.'
+        : l.mode === 'liquid'
         ? 'The cooler draws this screen itself, so it stays on when camless is closed.'
         : l.mode === 'web'
           ? `camless shows the page the way CAM’s Web Integration does, so pages made for CAM work. It runs in a hidden Edge window, which takes memory and CPU; the other modes need none.${dialHint(dev)}`
@@ -1635,7 +1641,7 @@
     }
     function webState() {
       const l = L(), d = S.device(dev), w = d && d.web;
-      if (l.mode !== 'web') return;
+      if (l.mode !== 'web' || stills()) return;
       const text = !S.status ? '' : !w ? 'Starting the page…' : w.error ? `<span class="cam-bad">${esc(cap(w.error))}</span>` : `On the screen at ${n1(w.fps)} fps${w.browser ? ` through ${esc(w.browser)}` : ''}${w.background_frames === 1 ? ', over a still background that the page handed over' : w.background_frames ? `, over a background of ${w.background_frames} frames that the page handed over` : ''}.`;
       rUrl.hint(text);
     }

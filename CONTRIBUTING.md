@@ -34,7 +34,7 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 
 1. **Find what CAM sends.** Start with [liquidctl](https://github.com/liquidctl/liquidctl): many NZXT devices are documented there, and its sources are the best reference. If it is not there, capture CAM (below).
 2. **Write `src/drivers/<model>.rs`.** Use `control_hub.rs` (fans and lights only) or `kraken_elite_v2.rs` (pump, stored curves, LCD) as a template:
-   - a `pub const MODEL: Model` with the USB vendor and product id, the HID interface if the device has several, a slug for the config (`kraken-x3`, `rgb-fan-controller`), and the name people know it by;
+   - a `pub const MODEL: Model` with the USB vendor and product id, the HID interface if the device has several, a slug for the config (`smart-device-v2`, `rgb-fan-controller`), and the name people know it by;
    - `describe()`: its fan channels (`pump: true` for pumps, `min_duty`, `device_curves` if it can store curves), light channels with LED counts, and the LCD;
    - `sensors()` and `poll()`: readings by the driver's own ids, such as `liquid`;
    - `set_duties()`, `set_lighting()`, and `store_curve()` / `lcd()` where the device supports them;
@@ -47,7 +47,7 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 Rules for drivers:
 - **Never write flash.** No firmware updates, no saving images or settings to flash. On the 2023/2024 Kraken Elite, flash uploads have left coolers stuck in the bootloader (liquidctl #774, #907, #927). Use streaming and runtime commands only.
 - **Fail safe.** If the device can run a curve by itself, store a curve that still speeds up when it gets hot. The Kraken driver adds a floor from 45 to 55 °C liquid.
-- **Be gentle with lighting.** Hue 2 devices drop packets sent faster than about four per half second. Use `hue2::write`, which spaces them out.
+- **Be gentle with lighting.** Hue 2 devices drop packets sent faster than about four per half second. Use `hue2::write` or `hue2::send`, which space them out.
 - **No new dependencies** without a reason. The service is meant to stay small.
 
 ## Capturing CAM

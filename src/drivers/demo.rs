@@ -109,7 +109,7 @@ impl Driver for Demo {
                 .iter()
                 .map(|l| LightChannel { id: (*l).into(), name: l.to_uppercase(), leds: 24, accessories: vec!["simulated".into()] })
                 .collect(),
-            lcd: self.lcd.then_some(LcdInfo { width: 640, height: 640, round: true }),
+            lcd: self.lcd.then_some(LcdInfo { width: 640, height: 640, round: true, frames: true }),
             ..Default::default()
         }
     }
