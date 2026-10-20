@@ -78,4 +78,4 @@ camless-gui --serve 127.0.0.1:30652 --config demo.toml --ui-dir gui/ui
 
 Run the tests before opening a pull request. A new driver needs tests for its report builders and parsers, preferably against bytes captured from CAM.
 
-CI builds the setup for every pull request, as the run's *camless-setup* artifact. A tag `vX.Y.Z` publishes it as a release, and fails unless all three `Cargo.toml` files are at that version: the app compares its own version with the latest release.
+CI builds the setup for every pull request, as the run's *camless-setup* artifact. A tag `vX.Y.Z` publishes it, and fails unless all three `Cargo.toml` files are at that version: the app compares its own version with the latest release. `vX.Y.0` is a release. A tag that changes only the last number, such as `v0.4.1`, is a beta: a pre-release, which only the app's beta channel offers. Once a beta has been tried, `gh release edit v0.4.1 --prerelease=false --latest` makes it a release.

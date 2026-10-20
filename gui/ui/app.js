@@ -285,9 +285,9 @@
       if (el.hidden) return;
       const [text, tip] = u.busy ? [`${cap(u.busy)}…`, `${cap(u.busy)} camless ${u.latest}.`]
         : u.error ? ['Update failed', `${u.error} Click to try again.`]
-        : ['Update available', `camless ${u.latest} is out; this is ${S.server.app_version}. Click to update.`];
+        : ['Update available', `camless ${u.latest}${u.beta ? ' beta' : ''} is out; this is ${S.server.app_version}. Click to update.`];
       b.textContent = text;
-      small.textContent = `camless ${u.latest}`;
+      small.textContent = `camless ${u.latest}${u.beta ? ' beta' : ''}`;
       el.dataset.tone = u.busy ? 'busy' : u.error ? 'bad' : '';
       el.title = tip;
       el.setAttribute('aria-label', `${text}: camless ${u.latest}`);
@@ -2119,8 +2119,23 @@
 
     panel('About', [
       row('camless', `Window ${esc(sv.app_version)}${S.status ? `, service ${esc(S.status.version)}` : ''}.`, null),
+      S.config ? channelRow() : null,
       updateRow(),
     ]);
+  }
+
+  // Stable offers releases only; Beta offers betas too, the versions that change only
+  // the last number until they are promoted. Switching checks again at once.
+  function channelRow() {
+    return row('Update channel', 'Beta also offers betas: new features before a release, tried by fewer people. Back on Stable, camless keeps the version it has until a newer release comes out.', select({
+      options: [{ value: 'stable', label: 'Stable' }, { value: 'beta', label: 'Beta' }],
+      value: S.config.updates === 'beta' ? 'beta' : 'stable',
+      label: 'Update channel',
+      onChange: (v) => {
+        S.edit((x) => { if (v === 'beta') x.updates = 'beta'; else delete x.updates; }, { what: 'settings' });
+        act('update/check', {});
+      },
+    }));
   }
 
   // The latest release on GitHub: what the check found, Check now, and Update when it is newer.
@@ -2131,8 +2146,8 @@
       let hint;
       if (u.busy === 'checking') hint = 'Checking GitHub for a newer camless…';
       else if (u.busy) hint = `${cap(u.busy)} camless ${esc(u.latest)}…`;
-      else if (u.available) hint = `camless ${esc(u.latest)} is out. Updating installs the app and the service together, then opens camless again.`;
-      else if (u.latest) hint = u.latest === sv.app_version ? 'This is the latest version.' : `The latest release is ${esc(u.latest)}.`;
+      else if (u.available) hint = `camless ${esc(u.latest)}${u.beta ? ' beta' : ''} is out. Updating installs the app and the service together, then opens camless again.`;
+      else if (u.latest) hint = u.latest === sv.app_version ? 'This is the latest version.' : `The latest ${u.beta ? 'beta' : 'release'} is ${esc(u.latest)}.`;
       else hint = '';
       if (!u.busy) hint += `${hint ? ' ' : ''}camless checks GitHub once each time it starts.`;
       if (u.error && !u.busy) hint += `<span class="cam-err">${esc(u.error)}</span>`;

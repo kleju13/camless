@@ -1,5 +1,8 @@
 # Pushing a tag like v0.2.0 builds camless-setup.exe, which installs camless.exe and camless-gui.exe,
 # and publishes it as a GitHub release. scripts/install.ps1 downloads and runs the latest one.
+# A version that changes only the last number, such as v0.4.1, comes out as a beta: a pre-release,
+# which only the app's beta channel offers. `gh release edit v0.4.1 --prerelease=false --latest`
+# promotes it to a release once it has been tried.
 name: Release
 
 on:
@@ -18,6 +21,11 @@ jobs:
       - run: choco install innosetup --no-progress -y
       - run: ./scripts/package.ps1 -Tag "${{ github.ref_name }}"
       - name: Publish
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/camless-setup.exe dist/camless-setup.exe.sha256 --title "camless ${{ github.ref_name }}" --generate-notes
+          TAG: ${{ github.ref_name }}
+        run: |
+          beta=--prerelease
+          if [ "${TAG##*.}" = "0" ]; then beta=; fi
+          gh release create "$TAG" dist/camless-setup.exe dist/camless-setup.exe.sha256 --title "camless $TAG" --generate-notes $beta

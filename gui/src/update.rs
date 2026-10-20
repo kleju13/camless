@@ -1,17 +1,21 @@
 //! Updates from the GitHub releases that release.yml publishes. The app asks for the
 //! latest one once at launch, and again from Settings. When it is newer, the page
-//! offers it. Installing downloads camless-setup.exe, checks it against the release's
+//! offers it. On the beta channel (`updates = "beta"` in camless.toml) betas count
+//! too, the GitHub pre-releases, and the newest version of all is offered. Installing downloads camless-setup.exe, checks it against the release's
 //! SHA-256 and quits the app, which starts the setup on its way out, once the page
 //! has saved and the tray icon is gone. The setup stops the service, replaces both
 //! exes and opens the app again, which starts the service.
 
 use crate::http;
 use anyhow::{bail, Context, Result};
+use camless_core::config::{Config, Updates};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 const LATEST: &str = "https://api.github.com/repos/kleju13/camless/releases/latest";
+/// The newest releases and betas, for the beta channel.
+const RELEASES: &str = "https://api.github.com/repos/kleju13/camless/releases?per_page=30";
 const SETUP: &str = "camless-setup.exe";
 /// Shows its progress and asks nothing; errors still show.
 const SETUP_ARGS: [&str; 2] = ["/SILENT", "/NORESTART"];
@@ -24,21 +28,57 @@ pub struct State {
     pub latest: Option<String>,
     /// The latest release is newer than this app.
     pub available: bool,
+    /// The latest release is a beta.
+    pub beta: bool,
     /// What went wrong the last time.
     pub error: Option<String>,
     #[serde(skip)]
     release: Option<Release>,
+    /// The channel the last check was asked for.
+    #[serde(skip)]
+    wanted: Updates,
 }
 
 #[derive(Clone, Debug)]
 struct Release {
     version: String,
+    beta: bool,
     page: String,
     setup: String,
     sum: String,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { busy: None, latest: None, available: false, error: None, release: None });
+/// A release as GitHub lists it.
+#[derive(Deserialize)]
+struct Found {
+    tag_name: String,
+    html_url: String,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
+    assets: Vec<Asset>,
+}
+
+#[derive(Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
+
+impl Found {
+    fn version(&self) -> &str {
+        self.tag_name.trim_start_matches('v')
+    }
+}
+
+/// The channel set in the config at `path`; stable when it does not load.
+pub fn channel(path: &Path) -> Updates {
+    Config::load(path).map(|c| c.updates).unwrap_or_default()
+}
+
+static STATE: Mutex<State> =
+    Mutex::new(State { busy: None, latest: None, available: false, beta: false, error: None, release: None, wanted: Updates::Stable });
 /// How the app quits; the window's event loop sets it, and `--serve` has none.
 static QUIT: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 /// The checked setup, for `run_ready` once the app has quit.
@@ -72,42 +112,73 @@ fn fail(e: anyhow::Error) {
     s.error = Some(format!("{e:#}"));
 }
 
-/// Asks GitHub for the latest release, in the background.
-pub fn check() -> Result<()> {
-    begin("checking")?;
-    std::thread::Builder::new().name("update".into()).spawn(|| match latest() {
-        Ok(r) => {
-            let mut s = lock();
-            s.busy = None;
-            s.available = newer(&r.version, env!("CARGO_PKG_VERSION"));
-            s.latest = Some(r.version.clone());
-            s.release = Some(r);
+/// Asks GitHub for the latest release on `channel`, in the background. A check that
+/// is running already starts again if it was for the other channel, so a release from
+/// the channel left behind is never offered.
+pub fn check(channel: Updates) -> Result<()> {
+    {
+        let mut s = lock();
+        s.wanted = channel;
+        if s.busy == Some("checking") {
+            return Ok(());
         }
-        Err(e) => fail(e),
+        if let Some(b) = s.busy {
+            bail!("camless is already {b} an update");
+        }
+        s.busy = Some("checking");
+        (s.error, s.latest, s.available, s.beta, s.release) = (None, None, false, false, None);
+    }
+    std::thread::Builder::new().name("update".into()).spawn(move || {
+        let mut channel = channel;
+        loop {
+            let found = latest(channel);
+            let mut s = lock();
+            if s.wanted != channel {
+                channel = s.wanted;
+                continue;
+            }
+            s.busy = None;
+            match found {
+                Ok(r) => {
+                    s.available = newer(&r.version, env!("CARGO_PKG_VERSION"));
+                    s.latest = Some(r.version.clone());
+                    s.beta = r.beta;
+                    s.release = Some(r);
+                }
+                Err(e) => s.error = Some(format!("{e:#}")),
+            }
+            return;
+        }
     })?;
     Ok(())
 }
 
-fn latest() -> Result<Release> {
-    #[derive(Deserialize)]
-    struct Found {
-        tag_name: String,
-        html_url: String,
-        assets: Vec<Asset>,
-    }
-    #[derive(Deserialize)]
-    struct Asset {
-        name: String,
-        browser_download_url: String,
-    }
-    let body = http::get(LATEST).context("asking GitHub for the latest release")?;
-    let found: Found = serde_json::from_slice(&body).context("reading GitHub's answer")?;
+fn latest(channel: Updates) -> Result<Release> {
+    let found = match channel {
+        Updates::Stable => {
+            let body = http::get(LATEST).context("asking GitHub for the latest release")?;
+            serde_json::from_slice::<Found>(&body).context("reading GitHub's answer")?
+        }
+        Updates::Beta => {
+            let body = http::get(RELEASES).context("asking GitHub for the latest releases")?;
+            let all: Vec<Found> = serde_json::from_slice(&body).context("reading GitHub's answer")?;
+            newest(all).context("GitHub lists no release with a setup")?
+        }
+    };
     let url = |name: &str| {
         let asset = found.assets.iter().find(|a| a.name == name);
         asset.map(|a| a.browser_download_url.clone()).with_context(|| format!("release {} has no {name}", found.tag_name))
     };
     let (setup, sum) = (url(SETUP)?, url(&format!("{SETUP}.sha256"))?);
-    Ok(Release { version: found.tag_name.trim_start_matches('v').to_string(), page: found.html_url, setup, sum })
+    Ok(Release { version: found.version().to_string(), beta: found.prerelease, page: found.html_url.clone(), setup, sum })
+}
+
+/// The newest version among the releases and betas that have a setup and its
+/// checksum; GitHub lists a release while its files are still uploading.
+fn newest(all: Vec<Found>) -> Option<Found> {
+    let has = |f: &Found, name: &str| f.assets.iter().any(|a| a.name == name);
+    let ready = all.into_iter().filter(|f| !f.draft && has(f, SETUP) && has(f, &format!("{SETUP}.sha256")));
+    ready.reduce(|best, f| if newer(f.version(), best.version()) { f } else { best })
 }
 
 /// Downloads and checks the newer release's setup in the background, then quits the app.
@@ -217,6 +288,29 @@ mod tests {
         assert!(newer("0.3.0-rc2", "0.3.0-rc1"));
         assert!(newer("0.3.0-rc1", "0.2.9"));
         assert!(!newer("0.2.0+build5", "0.2.0"));
+    }
+
+    #[test]
+    fn the_beta_channel_takes_the_newest_version_with_a_setup() {
+        let list = |json: &str| serde_json::from_str::<Vec<Found>>(json).unwrap();
+        let setup = r#"[{"name":"camless-setup.exe","browser_download_url":"https://x/s"},{"name":"camless-setup.exe.sha256","browser_download_url":"https://x/h"}]"#;
+        let all = list(&format!(
+            r#"[{{"tag_name":"v0.5.0","html_url":"https://github.com/r/5","prerelease":true,"assets":[]}},
+               {{"tag_name":"v0.4.5","html_url":"https://github.com/r/45","prerelease":true,"assets":[{{"name":"camless-setup.exe","browser_download_url":"https://x/s"}}]}},
+               {{"tag_name":"v0.4.1","html_url":"https://github.com/r/41","prerelease":true,"assets":{setup}}},
+               {{"tag_name":"v0.4.10","html_url":"https://github.com/r/410","draft":true,"assets":{setup}}},
+               {{"tag_name":"v0.4.0","html_url":"https://github.com/r/40","assets":{setup}}}]"#
+        ));
+        // 0.5.0 has no setup yet, 0.4.5 no checksum, and 0.4.10 is a draft.
+        let f = newest(all).unwrap();
+        assert_eq!((f.version(), f.prerelease), ("0.4.1", true));
+        // A release newer than every beta wins.
+        let all = list(&format!(
+            r#"[{{"tag_name":"v0.5.0","html_url":"https://github.com/r/5","assets":{setup}}},
+               {{"tag_name":"v0.4.2","html_url":"https://github.com/r/42","prerelease":true,"assets":{setup}}}]"#
+        ));
+        assert_eq!(newest(all).unwrap().version(), "0.5.0");
+        assert!(newest(Vec::new()).is_none());
     }
 
     #[test]
