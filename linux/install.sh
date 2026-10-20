@@ -77,8 +77,9 @@ if ! cmp -s "$here/71-camless.rules" "$rules"; then
 fi
 
 # The service the app started outside systemd: this user's `camless run` processes
-# other than the systemd service's. Other camless commands, such as `camless mcp`,
-# are left alone.
+# other than the systemd service's. One started by hand in a terminal counts too, as
+# two services cannot share the devices. Other camless commands, such as
+# `camless mcp`, are left alone.
 outside() {
   unit=$(systemctl --user show --property=MainPID --value camless.service 2>/dev/null || echo 0)
   for pid in $(pgrep -x -u "$me" camless || true); do
@@ -92,10 +93,15 @@ outside() {
 # systemd does: SIGTERM lets each set the fans to their safe speed first.
 stopped=$(mktemp -d)
 trap 'rm -rf "$stopped"' EXIT
+trap 'exit 1' INT HUP TERM
 stop_outside() {
   for pid in $(outside); do
-    if cat "/proc/$pid/cmdline" > "$stopped/$pid" 2>/dev/null; then
+    # One that ended meanwhile has no command line left: nothing to start again.
+    if cat "/proc/$pid/cmdline" > "$stopped/$pid" 2>/dev/null && [ -s "$stopped/$pid" ]; then
+      echo "Stopping camless $(tr '\0' '\n' < "$stopped/$pid" | tail -n +2 | tr '\n' ' ')(process $pid)."
       kill -TERM "$pid" 2>/dev/null || true
+    else
+      rm -f "$stopped/$pid"
     fi
   done
   n=0

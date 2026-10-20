@@ -98,7 +98,7 @@ Nexus has an MCP server for its cooling too, and this one was inspired by it.
 ## Web pages on the LCD
 
 `mode = "web"` shows a page the way CAM's Web Integration does, so pages made for CAM, such as [KrakenDial](https://github.com/kleju13/krakendial), work unchanged:
-- a headless Microsoft Edge (or Chrome, if there is no Edge) renders it at the screen's size, 640×640 on a Kraken Elite. On Linux it is the first of Chrome, Chromium, Edge and Brave that is installed, or Ubuntu's Chromium snap;
+- a headless Microsoft Edge (or Chrome, if there is no Edge) renders it at the screen's size, 640×640 on a Kraken Elite. On Linux it is the first of Chrome, Chromium, Edge and Brave that is installed, or Ubuntu's Chromium snap, which has not been tried yet;
 - the URL gets `?kraken=1`, which tells a page it is on the cooler;
 - `window.nzxt.v1` has `width`, `height`, `shape` and `targetFps`, and `window.nzxt.v1.onMonitoringDataUpdate` gets CAM's monitoring object every second;
 - what the page draws goes to the screen at up to `fps` frames per second, and a page that stops changing is sent again every second.

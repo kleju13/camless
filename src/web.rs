@@ -552,6 +552,10 @@ impl Browser {
                 Err(_) if !stop.load(Ordering::SeqCst) && browser.process.wait(Duration::from_secs(1)) => {
                     bail!("{name} exited at start (code {})", browser.process.exit_code().unwrap_or_default())
                 }
+                // Not yet tried: snap-confine may not pass the pipes on.
+                Err(e) if exe.starts_with("/snap/") => {
+                    Err(e.context("camless has not been tried with the Chromium snap yet; Google Chrome's .deb works"))
+                }
                 Err(e) => Err(e),
             }
         }
