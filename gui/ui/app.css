@@ -350,6 +350,21 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-gauge.hot .val { stroke: var(--alert); }
 .cam-monstats { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 24px; margin-top: 10px; font-size: 12px; color: var(--t3); }
 .cam-monstats b { color: var(--t1); font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 4px; }
+.cam-hist { margin-top: 28px; }
+.cam-hist > header .cam-choice { margin-left: auto; }
+.cam-hist-note { margin: -4px 0 12px; }
+.cam-hgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.cam-hpanel { padding: 14px 16px 10px; min-width: 0; }
+.cam-hgrid > .cam-hpanel:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.cam-hpanel > header { margin-bottom: 4px; }
+.cam-hpanel > header h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; line-height: 20px; }
+.cam-hlegend { display: flex; flex-wrap: wrap; gap: 2px 16px; min-height: 20px; }
+.cam-hpanel .cam-legend { flex-wrap: wrap; row-gap: 0; line-height: 20px; }
+.cam-hpanel .cam-legend span, .cam-hpanel .cam-legend b, .cam-hpanel .cam-legend small { white-space: nowrap; }
+.cam-hpanel .cam-legend b { font-weight: 600; color: var(--t1); }
+.cam-hpanel .cam-legend small { font-size: 11px; font-weight: 500; color: var(--t3); }
+.cam-hpanel .cam-legend small:empty { display: none; }
+.cam-hpanel canvas { width: 100%; height: 150px; display: block; }
 .cam-chart { padding: 16px 20px 14px; margin-top: 16px; }
 .cam-chart > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 8px; }
 .cam-chart > header h3 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; }
@@ -486,6 +501,10 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
   .cam-monstats { margin-top: 6px; }
   .cam-chart { padding: 12px 14px 10px; margin-top: 12px; }
   .cam-chart canvas { height: 170px; }
+  .cam-hist { margin-top: 20px; }
+  .cam-hgrid { gap: 12px; }
+  .cam-hpanel { padding: 11px 13px 8px; }
+  .cam-hpanel canvas { height: 130px; }
   .cam-devpick { gap: 8px; margin-bottom: 14px; }
   .cam-devpick button { min-width: 180px; padding: 7px 14px 7px 8px; }
   .cam-devpick canvas { width: 36px; height: 36px; }
@@ -512,7 +531,7 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
   .cam-grid2.collapse { grid-template-columns: minmax(0, 1fr); }
 }
 @container area (max-width: 639px) {
-  .cam-grid2, .cam-mon { grid-template-columns: minmax(0, 1fr); }
+  .cam-grid2, .cam-mon, .cam-hgrid { grid-template-columns: minmax(0, 1fr); }
   .cam-light, .cam-lcd { grid-template-columns: minmax(0, 1fr); }
   .cam-light-prev { border-right: 0; border-bottom: 1px solid var(--panel-line); }
   .cam-light-prev canvas { max-width: 180px; }
