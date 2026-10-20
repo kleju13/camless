@@ -1,6 +1,6 @@
 [package]
 name = "camless-core"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Config, curve engine and status types shared by the camless daemon and GUI"
 license = "AGPL-3.0-or-later"
