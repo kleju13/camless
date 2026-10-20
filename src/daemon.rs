@@ -9,6 +9,7 @@
 //! invalid one is reported in the status and the previous config keeps running.
 
 use crate::drivers::{self, Driver, Found, Reading};
+use crate::history::History;
 use crate::sensors::{Readings, Sensors};
 use crate::web;
 use camless_core::config::{self, Config, Lcd, LcdMode};
@@ -21,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const RESCAN_EVERY: Duration = Duration::from_secs(5);
 /// Duties are sent again now and then, in case a device reset without a USB event.
@@ -135,6 +136,8 @@ pub struct Daemon {
     frames: SyncSender<Event>,
     /// Web pages being rendered, by device.
     pages: HashMap<String, Rendering>,
+    /// Sensors and fan speeds over time, for the API.
+    history: Arc<Mutex<History>>,
 }
 
 struct Rendering {
@@ -151,6 +154,7 @@ impl Daemon {
         cfg_error: Option<String>,
         sensors: Sensors,
         shared: Arc<Mutex<Snapshot>>,
+        history: Arc<Mutex<History>>,
         frames: SyncSender<Event>,
         verbose: bool,
         demo: bool,
@@ -175,6 +179,7 @@ impl Daemon {
             warned: HashSet::new(),
             frames,
             pages: HashMap::new(),
+            history,
         };
         let mut daemon = daemon;
         daemon.warn_missing_sensors();
@@ -261,7 +266,25 @@ impl Daemon {
                 self.engine.duties().iter().filter_map(|(c, d)| Some(format!("{c} {} %", d.value()?))).collect();
             self.log(&format!("{} | {}", shown.join(", "), duties.join(", ")));
         }
+        self.record(&sensors);
         self.publish(readings, sensors);
+    }
+
+    /// Every sensor, and the speed and duty of every fan on a device that answers.
+    fn record(&self, sensors: &[Sensor]) {
+        let mut values: Vec<(String, f32)> = sensors.iter().filter_map(|s| Some((s.id.clone(), s.value?))).collect();
+        for s in self.slots.iter().filter(|s| s.dev.is_some() && s.reading.is_some()) {
+            for f in &s.info.fans {
+                if let Some(rpm) = f.rpm {
+                    values.push((format!("{}/{}.rpm", s.id(), f.id), rpm.into()));
+                }
+                if let Some(duty) = f.duty {
+                    values.push((format!("{}/{}.duty", s.id(), f.id), duty.into()));
+                }
+            }
+        }
+        let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        self.history.lock().unwrap_or_else(|e| e.into_inner()).record(ms, &values);
     }
 
     fn reload(&mut self) {
@@ -690,6 +713,7 @@ impl Daemon {
     fn shutdown(&mut self) {
         // Browsers close first, so no frame comes after the LCD's own screen.
         self.pages.clear();
+        self.history.lock().unwrap_or_else(|e| e.into_inner()).finish();
         let failsafe = self.cfg.failsafe_duty;
         let fixed: HashMap<String, u8> = self
             .engine

@@ -3,6 +3,7 @@ mod backdrop;
 mod cdp;
 mod daemon;
 mod drivers;
+mod history;
 mod q565;
 mod report;
 mod sensors;
@@ -384,17 +385,20 @@ fn run(path: PathBuf, verbose: bool, demo: bool, limit: Option<Duration>) -> Res
         });
     }
     let shared = Arc::new(Mutex::new(daemon::Snapshot::default()));
+    // Simulated readings stay out of the files.
+    let history_dir = path.parent().filter(|_| !demo).map(|d| d.join("history"));
+    let history = Arc::new(Mutex::new(history::History::new(history_dir)));
     // Two frames in flight at most; the API answers 429 beyond that.
     let (tx, rx) = mpsc::sync_channel(2);
     if cfg.api.enabled {
-        api::spawn(&cfg.api.listen, shared.clone(), tx.clone(), &STOP).context("starting the local API")?;
+        api::spawn(&cfg.api.listen, shared.clone(), history.clone(), tx.clone(), &STOP).context("starting the local API")?;
         eprintln!("camless: api on http://{}", cfg.api.listen);
     }
     let sensors = sensors::Sensors::open(pawnio_module(cfg.pawnio_module.as_ref()));
     if demo {
         eprintln!("camless: demo mode, simulated devices only");
     }
-    let mut d = daemon::Daemon::new(path, cfg, cfg_error, sensors, shared, tx.clone(), verbose, demo)?;
+    let mut d = daemon::Daemon::new(path, cfg, cfg_error, sensors, shared, history, tx.clone(), verbose, demo)?;
     d.run(&rx, &STOP);
     drop(tx);
     STOPPED.store(true, Ordering::SeqCst);

@@ -1619,7 +1619,7 @@
 
   /* ------------------------------------------------------------ monitoring */
 
-  const SERIES_COLORS = [['#be9fff', '#640a92'], ['#21d373', '#0f8a4c'], ['#4cc2ff', '#0a6fd6'], ['#ffb547', '#b86e00'], ['#ff6b8a', '#c2183d']];
+  const SERIES_COLORS = [['#be9fff', '#640a92'], ['#21d373', '#0f8a4c'], ['#4cc2ff', '#0a6fd6'], ['#ffb547', '#b86e00'], ['#ff6b8a', '#c2183d'], ['#2dd4bf', '#0f766e'], ['#e879f9', '#a21caf'], ['#a3e635', '#4d7c0f']];
   const seriesColor = (i) => SERIES_COLORS[i % SERIES_COLORS.length][K.prefs.theme === 'light' ? 1 : 0];
 
   function gauge(label) {
@@ -1683,73 +1683,234 @@
     track(S.on('state', tick));
     track(K.on('prefs', tick));
     tick();
-    host.appendChild(tempChart());
+    host.appendChild(historyChart());
   }
 
-  function tempChart() {
-    const el = h('<section class="cam-panel cam-chart"><header><h3>Temperatures</h3></header><canvas role="img" aria-label="Temperatures over the last 10 minutes"></canvas></section>');
-    const ids = ['cpu.temp', 'gpu.temp'].concat(S.sensors().filter((s) => S.isLiquid(s.id)).map((s) => s.id));
-    const series = ids.map((id, i) => ({ id, label: S.sourceLabel(id), i }));
-    const shown = {};
-    for (const s of series) {
-      shown[s.id] = true;
-      const b = h('<button type="button" class="cam-legend" aria-pressed="true"><i></i><span></span></button>');
-      b.lastElementChild.textContent = s.label;
-      b.addEventListener('click', () => { shown[s.id] = !shown[s.id]; b.setAttribute('aria-pressed', String(shown[s.id])); draw(); });
-      el.firstElementChild.appendChild(b);
-      const paint = () => b.firstElementChild.style.setProperty('--c', seriesColor(s.i));
-      paint();
-      track(K.on('prefs', paint));
+  /* History from the service: the last hour a second at a time, and 30 days of
+     minutes. One group of series at a time, over the range picked above it. */
+  const HIST_RANGES = [
+    { value: 600, label: '10 min' }, { value: 3600, label: '1 hour' }, { value: 86400, label: '24 hours' },
+    { value: 604800, label: '7 days' }, { value: 2592000, label: '30 days' },
+  ];
+  const HIST_GROUPS = [{ id: 'temp', label: 'Temperatures' }, { id: 'load', label: 'Load' }, { id: 'power', label: 'Power' }, { id: 'fans', label: 'Fan speeds' }];
+  const hasSensor = (id) => S.sensors().some((s) => s.id === id);
+
+  // The series a group shows, each with its reading now.
+  function histSeries(group) {
+    const sensorsOf = (pairs) => pairs.filter(([id]) => hasSensor(id)).map(([id, label]) => ({ id, label, now: () => S.value(id) }));
+    if (group === 'load') return sensorsOf([['cpu.load', 'CPU'], ['gpu.load', 'GPU'], ['ram.load', 'Memory']]);
+    if (group === 'power') return sensorsOf([['cpu.power', 'CPU'], ['gpu.power', 'GPU']]);
+    if (group === 'fans') {
+      return S.fans().filter((f) => f.hw && f.hw.connected !== false)
+        .map((f) => ({ id: `${f.id}.rpm`, label: fanLabel(f.id), now: () => { const x = S.fan(f.id); return x && x.hw ? x.hw.rpm : null; } }));
     }
-    el.firstElementChild.appendChild(h('<span class="cam-small">Last 10 minutes</span>'));
-    const cv = el.querySelector('canvas');
-    const SPAN = 600e3;
+    const ids = ['cpu.temp', 'gpu.temp'].filter(hasSensor).concat(S.sensors().filter((s) => S.isLiquid(s.id)).map((s) => s.id));
+    return ids.map((id) => ({ id, label: S.sourceLabel(id), now: () => S.value(id) }));
+  }
+
+  // [lowest, highest, step between grid lines, label] of a group's axis, given its highest value.
+  function histAxis(group, top) {
+    if (group === 'load') return [0, 100, 25, (v) => `${v}%`];
+    const [lo, least, label] = group === 'power' ? [0, 50, (v) => `${v} W`]
+      : group === 'fans' ? [0, 1000, (v) => K.rpm(v)]
+      : [20, 60, (v) => `${Math.round(K.toUnit(v))}°`];
+    const want = Math.max(least, group === 'temp' ? top + 5 : top * 1.1);
+    const step = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000].find((k) => (want - lo) / k <= 5) || 10000;
+    return [lo, lo + Math.ceil((want - lo) / step) * step, step, label];
+  }
+
+  function histValue(group, id, v) {
+    if (v == null) return 'N/A';
+    if (group === 'fans') return `${K.rpm(v)} RPM`;
+    return reading(id, v);
+  }
+
+  function historyChart() {
+    const el = h('<section class="cam-panel cam-chart"><header><h3>History</h3></header><div class="cam-chart-bar"></div><div class="cam-chart-plot"><canvas role="img"></canvas><div class="cam-chart-tip" hidden></div><p class="cam-chart-note" hidden></p></div></section>');
+    const head = el.firstElementChild, bar = el.querySelector('.cam-chart-bar');
+    const cv = el.querySelector('canvas'), tip = el.querySelector('.cam-chart-tip'), note = el.querySelector('.cam-chart-note');
+    let span = HIST_RANGES.some((r) => r.value === K.prefs.histSpan) ? K.prefs.histSpan : 600;
+    let group = HIST_GROUPS.some((g) => g.id === K.prefs.histGroup) ? K.prefs.histGroup : 'temp';
+    let series = [], data = null, live = [], hover = null, asked = 0;
+    const hidden = new Set();
+    head.appendChild(choice({ options: HIST_RANGES, value: span, label: 'Range', onChange: (v) => { span = v; K.setPref('histSpan', v); build(); load(); } }));
+    const legend = h('<div class="cam-chart-legend"></div>');
+    bar.append(K.tabStrip(HIST_GROUPS, group, (g) => { group = g; K.setPref('histGroup', g); hidden.clear(); build(); load(); }, { sub: true, label: 'Series' }), legend);
+
+    function build() {
+      series = histSeries(group);
+      legend.textContent = '';
+      series.forEach((s, i) => {
+        const b = h('<button type="button" class="cam-legend"><i></i><span></span></button>');
+        b.lastElementChild.textContent = s.label;
+        b.setAttribute('aria-pressed', String(!hidden.has(s.id)));
+        b.firstElementChild.style.setProperty('--c', seriesColor(i));
+        b.addEventListener('click', () => {
+          if (hidden.has(s.id)) hidden.delete(s.id); else hidden.add(s.id);
+          b.setAttribute('aria-pressed', String(!hidden.has(s.id)));
+          draw();
+        });
+        legend.appendChild(b);
+      });
+      cv.setAttribute('aria-label', `${HIST_GROUPS.find((g) => g.id === group).label} over the last ${HIST_RANGES.find((r) => r.value === span).label}`);
+    }
+
+    async function load() {
+      const ask = ++asked;
+      const ids = series.map((s) => encodeURIComponent(s.id)).join(',');
+      let r = null, err = null;
+      if (ids && S.status) {
+        try { r = await S.api('GET', `history?span=${span}&ids=${ids}`); } catch (e) { err = e; }
+      }
+      if (ask !== asked) return;
+      data = r;
+      live = [];
+      const empty = r && span > 3600 && !Object.values(r.series).some((x) => x.avg.some((v) => v != null));
+      note.textContent = !ids ? 'Nothing to show here on this PC.'
+        : !S.status ? 'The service records history while it runs. It is not running now.'
+        : err ? `No history: ${err.message}`
+        : empty ? 'Nothing recorded in this range yet. The service keeps a minute-by-minute history for 30 days.' : '';
+      note.hidden = !note.textContent;
+      draw();
+    }
+
+    // [{ t (ms), v: { id: [average, highest] } }], oldest first: the service's points,
+    // then the readings since they were loaded.
+    function points() {
+      const out = [];
+      if (data) {
+        for (let i = 0; i < data.count; i++) {
+          const v = {};
+          for (const s of series) { const x = data.series[s.id]; if (x && x.avg[i] != null) v[s.id] = [x.avg[i], x.max[i]]; }
+          out.push({ t: (data.from + i * data.step) * 1000, v });
+        }
+      }
+      const after = out.length ? out[out.length - 1].t + data.step * 1000 : 0;
+      return out.concat(live.filter((p) => p.t >= after));
+    }
+
     function draw() {
       if (!cv.isConnected) return;
       const { ctx, w, h: hh } = D.fit(cv);
       ctx.clearRect(0, 0, w, hh);
       const css = getComputedStyle(cv);
-      const grid = css.getPropertyValue('--ce-grid').trim(), text = css.getPropertyValue('--t4').trim();
-      const pl = 40, pr = 8, pt = 8, pb = 22;
-      const now = Date.now(), lo = 20, hi = 100;
-      const X = (t) => pl + (1 - (now - t) / SPAN) * (w - pl - pr);
-      const Y = (v) => pt + (1 - (v - lo) / (hi - lo)) * (hh - pt - pb);
+      const grid = css.getPropertyValue('--ce-grid').trim(), text = css.getPropertyValue('--t4').trim(), ink = css.getPropertyValue('--t3').trim();
+      const pl = 52, pr = 8, pt = 8, pb = 22;
+      const now = Date.now(), t0 = now - span * 1000;
+      const pts = points().filter((p) => p.t >= t0 - (data ? data.step * 1000 : 0));
+      const shown = series.filter((s) => !hidden.has(s.id));
+      const color = (s) => seriesColor(series.indexOf(s));
+      let top = 0;
+      for (const p of pts) for (const s of shown) if (p.v[s.id]) top = Math.max(top, p.v[s.id][0]);
+      const [lo, hi, every, label] = histAxis(group, top);
+      const X = (t) => pl + ((t - t0) / (span * 1000)) * (w - pl - pr);
+      const Y = (v) => pt + (1 - (clamp(v, lo, hi) - lo) / (hi - lo)) * (hh - pt - pb);
       ctx.font = `500 10.5px ${FONT}`;
       ctx.textAlign = 'right';
-      for (let v = 20; v <= 100; v += 20) {
+      for (let v = lo; v <= hi + 1e-6; v += every) {
         ctx.strokeStyle = grid; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(pl, Math.round(Y(v)) + 0.5); ctx.lineTo(w - pr, Math.round(Y(v)) + 0.5); ctx.stroke();
-        ctx.fillStyle = text; ctx.fillText(Math.round(K.toUnit(v)) + '°', pl - 8, Y(v) + 3.5);
+        ctx.fillStyle = text; ctx.fillText(label(v), pl - 8, Y(v) + 3.5);
       }
       ctx.textAlign = 'center';
-      for (let m = 10; m >= 0; m -= 2) ctx.fillText(m ? `-${m} min` : 'now', clamp(X(now - m * 60e3), pl + 16, w - pr - 14), hh - 5);
-      const hist = S.history.filter((p) => now - p.t <= SPAN);
-      for (const s of series) {
-        if (!shown[s.id]) continue;
-        ctx.strokeStyle = seriesColor(s.i);
+      for (const [t, s] of histTicks(span, now)) ctx.fillText(s, clamp(X(t), pl + 18, w - pr - 18), hh - 5);
+      // A gap in the readings, such as the service being off, breaks the line.
+      const gap = Math.max(3e3, (data ? data.step : 1) * 2000);
+      for (const s of shown) {
+        ctx.strokeStyle = color(s);
         ctx.lineWidth = 1.8;
         ctx.lineJoin = 'round';
         ctx.beginPath();
         let pen = false, last = 0;
-        for (const p of hist) {
+        for (const p of pts) {
           const v = p.v[s.id];
-          // A gap in the readings, or a reading missing, breaks the line.
-          if (v == null || p.t - last > 10e3) pen = false;
+          if (!v || p.t - last > gap) pen = false;
+          if (!v) continue;
           last = p.t;
-          if (v == null) continue;
-          const x = X(p.t), y = Y(clamp(v, lo, hi));
+          const x = X(p.t), y = Y(v[0]);
           if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
         }
         ctx.stroke();
       }
+      tip.hidden = true;
+      if (hover == null || !pts.length) return;
+      const t = t0 + ((hover - pl) / (w - pl - pr)) * span * 1000;
+      let best = null;
+      for (const p of pts) if (!best || Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+      const on = shown.filter((s) => best.v[s.id]);
+      const x = X(best.t);
+      if (!on.length || x < pl || x > w - pr) return;
+      ctx.strokeStyle = ink; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, pt); ctx.lineTo(Math.round(x) + 0.5, hh - pb); ctx.stroke();
+      for (const s of on) { ctx.fillStyle = color(s); ctx.beginPath(); ctx.arc(x, Y(best.v[s.id][0]), 3, 0, TAU); ctx.fill(); }
+      // A point that stands for several samples also says how high it went.
+      const many = data && data.step > 1 && best.t < (data.from + data.count * data.step) * 1000;
+      tip.innerHTML = `<time>${esc(histTime(best.t, span))}</time>` + on.map((s) => {
+        const [avg, max] = best.v[s.id];
+        const peak = many && max != null && histValue(group, s.id, max) !== histValue(group, s.id, avg) ? `<small>max ${esc(histValue(group, s.id, max))}</small>` : '';
+        return `<div><i style="--c:${color(s)}"></i><span>${esc(s.label)}</span><b>${esc(histValue(group, s.id, avg))}</b>${peak}</div>`;
+      }).join('');
+      tip.hidden = false;
+      const flip = x + 14 + tip.offsetWidth > w;
+      tip.style.left = `${flip ? x - 14 - tip.offsetWidth : x + 14}px`;
     }
-    track(S.on('state', draw));
-    track(K.on('prefs', draw));
-    const ro = new ResizeObserver(draw);
+
+    cv.addEventListener('pointermove', (e) => { hover = e.clientX - cv.getBoundingClientRect().left; draw(); });
+    cv.addEventListener('pointerleave', () => { hover = null; draw(); });
+    // The last hour moves with every reading; every range loads again each minute.
+    track(S.on('state', () => {
+      if (!S.status) return draw();
+      if (!data && note.textContent.startsWith('The service')) { load(); return; }
+      if (span <= 3600) {
+        const v = {};
+        for (const s of series) { const x = s.now(); if (x != null) v[s.id] = [x, x]; }
+        live.push({ t: Date.now(), v });
+        while (live.length && live[0].t < Date.now() - span * 1000) live.shift();
+      }
+      draw();
+    }));
+    const timer = setInterval(() => { if (!document.hidden) load(); }, 60e3);
+    track(() => clearInterval(timer));
+    track(K.on('prefs', (k) => { if (k === 'theme') build(); draw(); }));
+    const ro = new ResizeObserver(() => draw());
     ro.observe(cv);
     track(() => ro.disconnect());
-    requestAnimationFrame(draw);
+    build();
+    load();
     return el;
+  }
+
+  // Where the time axis is labelled: [ms, text].
+  function histTicks(span, now) {
+    const out = [];
+    if (span <= 3600) {
+      const every = span <= 600 ? 120 : 600;
+      for (let s = 0; s <= span; s += every) out.push([now - s * 1000, s ? `-${s / 60} min` : 'now']);
+      return out;
+    }
+    if (span <= 86400) {
+      const hour = new Date(now);
+      hour.setMinutes(0, 0, 0);
+      for (let t = hour.getTime(); t > now - span * 1000; t -= 3600e3) {
+        const d = new Date(t);
+        if (d.getHours() % 4 === 0) out.push([t, d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })]);
+      }
+      return out;
+    }
+    const week = span <= 604800;
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    for (let i = 0; d.getTime() > now - span * 1000; d.setDate(d.getDate() - 1), i++) {
+      if (!week && i % 5) continue;
+      out.push([d.getTime(), d.toLocaleDateString(undefined, week ? { weekday: 'short' } : { month: 'short', day: 'numeric' })]);
+    }
+    return out;
+  }
+
+  function histTime(t, span) {
+    const d = new Date(t);
+    if (span <= 3600) return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   }
 
   /* -------------------------------------------------------------- settings */

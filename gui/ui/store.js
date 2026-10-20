@@ -44,7 +44,6 @@
 
   /* ----------------------------------------------------------------- state */
 
-  const HISTORY_SECONDS = 600;
   const st = {
     server: null,
     status: null,
@@ -58,7 +57,6 @@
     failed: null,
     saveError: null,
     linkDown: 0,
-    history: [],
   };
 
   let polling = 0;
@@ -95,16 +93,7 @@
       st.dirty = false;
       emit('config', 'replace');
     }
-    record(s.status);
     emit('state');
-  }
-
-  function record(status) {
-    if (!status) return;
-    const sample = { t: Date.now(), v: {} };
-    for (const x of status.sensors || []) sample.v[x.id] = x.value;
-    st.history.push(sample);
-    if (st.history.length > HISTORY_SECONDS) st.history.shift();
   }
 
   /* ------------------------------------------------------------------ edit */
@@ -674,7 +663,6 @@
     get config() { return st.config; },
     get status() { return st.status; },
     get server() { return st.server; },
-    get history() { return st.history; },
     on, off, emit, schedule, api, action, edit, save, poll,
     util: { clamp, lerp, clone, same, smoothstep },
     curveMath: { dutyAt, dutyAtExact, normalize, dragPoint, addPoint, removePoint, safetyFloor },
