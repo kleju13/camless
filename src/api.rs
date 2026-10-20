@@ -6,7 +6,8 @@
 //! keeps working. `POST /v1/lcd/frame` takes one frame for the LCD in frames mode, raw
 //! RGBA or RGB565 big-endian at the screen's size (640×640 on a Kraken Elite).
 //! `POST /v1/stop` ends the service the way Ctrl+C does; the app uses it to restart it.
-//! `GET /v1/history?span=<seconds>&ids=<id>,<id>` is sensor and fan history for charts.
+//! `GET /v1/history?span=<seconds>&ids=<id>,<id>` is sensor and fan history for charts;
+//! `from=<unix s>&to=<unix s>` in place of `span` asks for a window of its own.
 //! `GET /v1/games` is the game sessions kept, newest first.
 
 use crate::daemon::{Event, Snapshot};
@@ -72,12 +73,12 @@ fn handle(
         (Method::Get, "/v1/monitoring") => respond_json(req, &monitoring(&snapshot())),
         (Method::Get, "/v1/status") => respond_json(req, &serde_json::to_value(&snapshot().status)?),
         (Method::Get, "/v1/history") => {
-            let (span, ids) = match history_query(query) {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let (from, to, ids) = match history_query(query, now) {
                 Ok(q) => q,
                 Err(msg) => return Ok(req.respond(Response::from_string(msg).with_status_code(400))?),
             };
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-            let range = history::query(history, now, span, ids.as_deref());
+            let range = history::query(history, now, from, to, ids.as_deref());
             respond_json(req, &serde_json::to_value(&range)?)
         }
         (Method::Get, "/v1/games") => {
@@ -144,18 +145,28 @@ pub fn get(addr: &str, path: &str) -> Result<String> {
     Ok(body.to_string())
 }
 
-/// `span` in seconds, 600 by default, and `ids`, a comma-separated list of series.
-fn history_query(query: &str) -> std::result::Result<(i64, Option<Vec<String>>), String> {
-    let (mut span, mut ids) = (600, None);
+/// The window a history query asks for, as (from, to, ids): the last `span` seconds,
+/// 600 by default, or `from` to `to` (Unix seconds, `to` now by default). `ids` is a
+/// comma-separated list of series.
+fn history_query(query: &str, now: i64) -> std::result::Result<(i64, i64, Option<Vec<String>>), String> {
+    let (mut span, mut from, mut to, mut ids) = (600, None, now, None);
+    let secs = |k: &str, v: &str| v.parse::<i64>().map_err(|_| format!("{k} {v:?} is not a number of seconds"));
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         match k {
-            "span" => span = v.parse().map_err(|_| format!("span {v:?} is not a number of seconds"))?,
+            "span" => span = secs(k, v)?,
+            "from" => from = Some(secs(k, v)?),
+            "to" => to = secs(k, v)?,
             "ids" => ids = Some(percent_decode(v).split(',').filter(|s| !s.is_empty()).map(String::from).collect()),
             _ => {}
         }
     }
-    Ok((span, ids))
+    let (from, to) = match from {
+        Some(from) if from >= to => return Err(format!("from {from} is not before to {to}")),
+        Some(from) => (from, to),
+        None => (now - span.clamp(60, history::KEEP_DAYS * 86_400), now),
+    };
+    Ok((from, to, ids))
 }
 
 /// `%2F` and the like, for ids a client encoded; anything malformed stays as it is.
@@ -236,11 +247,17 @@ mod tests {
 
     #[test]
     fn history_queries_parse() {
-        assert_eq!(history_query(""), Ok((600, None)));
-        let (span, ids) = history_query("span=86400&ids=cpu.temp,control-hub%2Ffan1.rpm").unwrap();
-        assert_eq!(span, 86400);
+        let now = 1_800_000_000;
+        assert_eq!(history_query("", now), Ok((now - 600, now, None)));
+        let (from, to, ids) = history_query("span=86400&ids=cpu.temp,control-hub%2Ffan1.rpm", now).unwrap();
+        assert_eq!((from, to), (now - 86400, now));
         assert_eq!(ids.unwrap(), ["cpu.temp", "control-hub/fan1.rpm"]);
-        assert!(history_query("span=day").is_err());
+        assert!(history_query("span=day", now).is_err());
+        assert_eq!(history_query("span=1", now), Ok((now - 60, now, None)));
+        // A window of its own: a game session's.
+        assert_eq!(history_query("from=1700000000&to=1700003600", now), Ok((1_700_000_000, 1_700_003_600, None)));
+        assert_eq!(history_query("from=1799999000", now), Ok((1_799_999_000, now, None)));
+        assert!(history_query("from=1700003600&to=1700000000", now).is_err());
         assert_eq!(percent_decode("a%2"), "a%2");
     }
 }

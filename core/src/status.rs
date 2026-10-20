@@ -39,6 +39,9 @@ pub struct Game {
     pub name: String,
     /// The program's file name.
     pub exe: String,
+    /// The Steam app id, for a game in a Steam library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steam: Option<u32>,
     /// When the session started, in Unix milliseconds.
     pub start: i64,
     /// Seconds in front so far.

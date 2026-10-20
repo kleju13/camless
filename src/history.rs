@@ -193,24 +193,26 @@ impl History {
     }
 }
 
-/// History over the last `span` seconds up to `now` (Unix seconds), at most
-/// [`MAX_POINTS`] points a series. The last hour comes from memory, longer spans
+/// History from `from` to `to` (Unix seconds), at most [`MAX_POINTS`] points a
+/// series. A range within the last hour before `now` comes from memory, an older one
 /// from the minute files. `ids` limits the series; without it all are returned.
-pub fn query(h: &std::sync::Mutex<History>, now: i64, span: i64, ids: Option<&[String]>) -> Range {
-    let span = span.clamp(60, KEEP_DAYS * 86_400);
+pub fn query(h: &std::sync::Mutex<History>, now: i64, from: i64, to: i64, ids: Option<&[String]>) -> Range {
+    let to = to.min(now);
+    let from = from.max(now - KEEP_DAYS * 86_400).min(to - 60);
+    let span = to - from;
     let wanted = |name: &str| ids.is_none_or(|ids| ids.iter().any(|i| i == name));
     let lock = || h.lock().unwrap_or_else(|e| e.into_inner());
-    if span <= LIVE_SPAN_S {
+    if from >= now - LIVE_SPAN_S {
         let step = (span + MAX_POINTS - 1) / MAX_POINTS;
-        let (from, count) = buckets(now, span, step);
-        return lock().live_range(from, step, count, &wanted);
+        let (first, count) = buckets(from, to, step);
+        return lock().live_range(first, step, count, &wanted);
     }
     // Whole minutes, so every bucket holds the same number of them.
     let step = ((span + MAX_POINTS - 1) / MAX_POINTS + 59) / 60 * 60;
-    let (from, count) = buckets(now, span, step);
-    let Some(dir) = lock().dir.clone() else { return Buckets::new(from, step, count).finish() };
-    let mut b = Buckets::new(from, step, count);
-    for day in from.div_euclid(86_400)..=now.div_euclid(86_400) {
+    let (first, count) = buckets(from, to, step);
+    let Some(dir) = lock().dir.clone() else { return Buckets::new(first, step, count).finish() };
+    let mut b = Buckets::new(first, step, count);
+    for day in first.div_euclid(86_400)..=to.div_euclid(86_400) {
         if let Ok(f) = std::fs::File::open(dir.join(day_file(day))) {
             read_day(std::io::BufReader::new(f), &mut b, &wanted);
         }
@@ -219,10 +221,10 @@ pub fn query(h: &std::sync::Mutex<History>, now: i64, span: i64, ids: Option<&[S
 }
 
 /// The first bucket's start, aligned to `step` so points stay put between queries,
-/// and how many buckets it takes to reach `now`.
-fn buckets(now: i64, span: i64, step: i64) -> (i64, usize) {
-    let from = (now - span).div_euclid(step) * step;
-    (from, ((now - from).div_euclid(step) + 1) as usize)
+/// and how many buckets it takes to reach `to`.
+fn buckets(from: i64, to: i64, step: i64) -> (i64, usize) {
+    let first = from.div_euclid(step) * step;
+    (first, ((to - first).div_euclid(step) + 1) as usize)
 }
 
 struct Buckets {
@@ -472,7 +474,7 @@ mod tests {
             ]
         );
         // Two hours at a point a minute.
-        let r = query(&h, t0 + 7200, 7200, None);
+        let r = query(&h, t0 + 7200, t0, t0 + 7200, None);
         assert_eq!((r.from, r.step, r.count), (t0, 60, 121));
         let at = |t: i64| ((t - r.from) / r.step) as usize;
         let cpu = &r.series["cpu.temp"];
@@ -481,8 +483,18 @@ mod tests {
         assert_eq!(cpu.avg[at(t0 + 180)], None);
         assert_eq!(r.series["control-hub/fan1.rpm"].avg[at(t0)], None);
         // Only what was asked for.
-        let r = query(&h, t0 + 7200, 7200, Some(&["cpu.temp".to_string()]));
+        let r = query(&h, t0 + 7200, t0, t0 + 7200, Some(&["cpu.temp".to_string()]));
         assert_eq!(r.series.keys().collect::<Vec<_>>(), ["cpu.temp"]);
+        // A window of its own, such as a game session's.
+        let r = query(&h, t0 + 7200, t0 + 60, t0 + 180, None);
+        assert_eq!((r.from, r.step, r.count), (t0 + 60, 60, 3));
+        assert_eq!(r.series["cpu.temp"].avg, [Some(50.5), Some(50.5), None]);
+        // One that ends before it starts is a minute up to its end.
+        let r = query(&h, t0 + 7200, t0 + 600, t0 + 120, None);
+        assert_eq!((r.from, r.count), (t0 + 60, 2));
+        // One older than what is kept is answered, not a panic.
+        let r = query(&h, t0 + 40 * 86_400, t0, t0 + 120, None);
+        assert_eq!((r.from, r.count), (t0 + 60, 2));
     }
 
     #[test]
@@ -512,7 +524,7 @@ mod tests {
         }
         let text = std::fs::read_to_string(dir.join("2026-10-20.csv")).unwrap();
         assert!(text.ends_with(&format!("{},4\n#t,cpu.temp\n{},50,50\n", t0 + 60, t0 + 120)), "{text}");
-        let r = query(&h, t0 + 7200, 7200, None);
+        let r = query(&h, t0 + 7200, t0, t0 + 7200, None);
         let cpu = &r.series["cpu.temp"];
         assert_eq!(cpu.avg[0], Some(40.0));
         assert_eq!(cpu.avg[1], None);
@@ -532,17 +544,22 @@ mod tests {
             }
         }
         let now = t0 + 3999;
-        let r = query(&h, now, 600, None);
+        let r = query(&h, now, now - 600, now, None);
         assert_eq!((r.step, r.count), (1, 601));
         let g = &r.series["gpu.temp"];
         assert_eq!(g.avg.last().copied().flatten(), Some(3999.0));
         assert_eq!(g.avg[0], Some(3399.0));
         // An hour in five-second buckets; samples older than an hour are gone.
-        let r = query(&h, now, 3600, None);
+        let r = query(&h, now, now - 3600, now, None);
         assert_eq!((r.step, r.count), (5, 721));
         let g = &r.series["gpu.temp"];
         assert_eq!(g.max.last().copied().flatten(), Some(3999.0));
         assert!(g.avg.iter().flatten().all(|&x| x >= 399.0));
+        // A window within the hour, a second a point.
+        let r = query(&h, now, now - 1000, now - 400, None);
+        assert_eq!((r.from, r.step, r.count), (now - 1000, 1, 601));
+        let g = &r.series["gpu.temp"];
+        assert_eq!((g.avg[0], g.avg[600]), (Some(2999.0), Some(3599.0)));
     }
 
     #[test]

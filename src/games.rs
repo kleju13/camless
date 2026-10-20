@@ -65,6 +65,17 @@ pub struct Session {
     /// Each temperature while in front, by sensor id.
     #[serde(default)]
     pub temps: BTreeMap<String, Stat>,
+    /// The Steam app id, for a game in a Steam library; the app finds its cover by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steam: Option<u32>,
+}
+
+/// A game, as its store knows it.
+#[derive(Clone, Debug, PartialEq)]
+struct Title {
+    name: String,
+    /// The Steam app id, for a game in a Steam library.
+    steam: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -197,6 +208,7 @@ struct Open {
     process: Option<Process>,
     game: String,
     exe: String,
+    steam: Option<u32>,
     start: i64,
     last_seen: i64,
     played: f64,
@@ -226,6 +238,7 @@ impl Open {
             low1: self.frames.low(0.01),
             low01: self.frames.low(0.001),
             temps,
+            steam: self.steam,
         }
     }
 }
@@ -245,11 +258,11 @@ pub struct Games {
     epic: Vec<(String, String)>,
     epic_read: Option<Instant>,
     lists: config::Games,
-    /// The process in front, and the game it is: (name, file name).
-    front: (u32, Option<(String, String)>),
+    /// The process in front, and the game it is, with its file name.
+    front: (u32, Option<(Title, String)>),
     /// The game each program is, by path, so each is looked up once. Not by process
     /// id: Windows soon gives a closed game's id to another program.
-    known: HashMap<String, Option<String>>,
+    known: HashMap<String, Option<Title>>,
     open: Option<Open>,
     notes: Vec<String>,
 }
@@ -312,18 +325,19 @@ impl Games {
             self.front = (pid, game);
         }
         let new_game = self.front.1.clone().filter(|_| self.open.as_ref().is_none_or(|o| o.pid != pid));
-        if let Some((game, exe)) = new_game {
+        if let Some((title, exe)) = new_game {
             let process = Process::open(pid);
             // A game that just closed can be in front a moment longer.
             if !process.as_ref().is_some_and(Process::exited) {
                 self.close();
                 let now = unix_ms();
-                self.notes.push(format!("game: {game} ({exe})"));
+                self.notes.push(format!("game: {} ({exe})", title.name));
                 self.open = Some(Open {
                     pid,
                     process,
-                    game,
+                    game: title.name,
                     exe,
+                    steam: title.steam,
                     start: now,
                     last_seen: now,
                     played: 0.0,
@@ -401,7 +415,7 @@ impl Games {
     }
 
     /// The game that the program at `path` is, if it is one.
-    fn game_at(&mut self, path: &str) -> Option<String> {
+    fn game_at(&mut self, path: &str) -> Option<Title> {
         if let Some(game) = self.known.get(path) {
             return game.clone();
         }
@@ -413,7 +427,7 @@ impl Games {
         game
     }
 
-    fn identify(&mut self, path: &str) -> Option<String> {
+    fn identify(&mut self, path: &str) -> Option<Title> {
         if listed(&self.lists.skip, path) {
             return None;
         }
@@ -421,7 +435,8 @@ impl Games {
             self.epic = epic_installs();
             self.epic_read = Some(Instant::now());
         }
-        store_game(path, &self.epic).or_else(|| listed(&self.lists.add, path).then(|| stem(path).to_string()))
+        store_game(path, &self.epic)
+            .or_else(|| listed(&self.lists.add, path).then(|| Title { name: stem(path).to_string(), steam: None }))
     }
 
     /// The session being played, for the status.
@@ -430,6 +445,7 @@ impl Games {
         Some(Game {
             name: o.game.clone(),
             exe: o.exe.clone(),
+            steam: o.steam,
             start: o.start,
             played: o.played as u32,
             in_front: o.away.is_none(),
@@ -511,15 +527,18 @@ fn listed(list: &[String], path: &str) -> bool {
 
 /// The game a program is, by where it runs: a Steam library, an Xbox games folder, or
 /// an Epic Games install, given as (folder in lower case, name).
-fn store_game(path: &str, epic: &[(String, String)]) -> Option<String> {
+fn store_game(path: &str, epic: &[(String, String)]) -> Option<Title> {
     let lower = path.to_ascii_lowercase().replace('/', "\\");
     if let Some((i, folder)) = folder_after(path, &lower, r"\steamapps\common\") {
-        return Some(steam_name(Path::new(&path[..i]), folder).unwrap_or_else(|| folder.to_string()));
+        let app = steam_app(Path::new(&path[..i]), folder);
+        let steam = app.as_ref().and_then(|a| a.appid);
+        let name = app.and_then(|a| a.name).unwrap_or_else(|| folder.to_string());
+        return Some(Title { name, steam });
     }
     if let Some((_, folder)) = folder_after(path, &lower, r"\xboxgames\") {
-        return Some(folder.to_string());
+        return Some(Title { name: folder.to_string(), steam: None });
     }
-    epic.iter().find(|(folder, _)| in_folder(&lower, folder)).map(|(_, name)| name.clone())
+    epic.iter().find(|(folder, _)| in_folder(&lower, folder)).map(|(_, name)| Title { name: name.clone(), steam: None })
 }
 
 /// Where `marker` is in `path`, found in its lower case `lower`, and the folder after
@@ -531,35 +550,43 @@ fn folder_after<'a>(path: &'a str, lower: &str, marker: &str) -> Option<(usize, 
     (!folder.is_empty()).then_some((i, folder))
 }
 
-/// The name in the Steam library at `library` for the game in `steamapps\common\<folder>`.
-fn steam_name(library: &Path, folder: &str) -> Option<String> {
+/// What a Steam app manifest says about a game.
+#[derive(Debug, Default, PartialEq)]
+struct Manifest {
+    appid: Option<u32>,
+    name: Option<String>,
+    installdir: Option<String>,
+}
+
+/// The manifest in the Steam library at `library` for the game in
+/// `steamapps\common\<folder>`. A manifest without an `appid` has it in its file name.
+fn steam_app(library: &Path, folder: &str) -> Option<Manifest> {
     for entry in std::fs::read_dir(library.join("steamapps")).ok()?.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !(name.starts_with("appmanifest_") && name.ends_with(".acf")) {
-            continue;
-        }
+        let Some(id) = name.strip_prefix("appmanifest_").and_then(|n| n.strip_suffix(".acf")) else { continue };
         let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
-        let (game, dir) = acf_name_and_folder(&text);
-        if dir.is_some_and(|d| d.eq_ignore_ascii_case(folder)) {
-            return game;
+        let m = manifest(&text);
+        if m.installdir.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(folder)) {
+            return Some(Manifest { appid: m.appid.or_else(|| id.parse().ok()), ..m });
         }
     }
     None
 }
 
-/// `name` and `installdir` from a Steam app manifest.
-fn acf_name_and_folder(text: &str) -> (Option<String>, Option<String>) {
-    let (mut name, mut dir) = (None, None);
+/// `appid`, `name` and `installdir` from a Steam app manifest.
+fn manifest(text: &str) -> Manifest {
+    let mut m = Manifest::default();
     for line in text.lines() {
         let q = quoted(line);
         match (q.first().map(|k| k.to_ascii_lowercase()).as_deref(), q.get(1)) {
-            (Some("name"), Some(v)) if name.is_none() => name = Some(v.clone()),
-            (Some("installdir"), Some(v)) if dir.is_none() => dir = Some(v.clone()),
+            (Some("appid"), Some(v)) if m.appid.is_none() => m.appid = v.parse().ok(),
+            (Some("name"), Some(v)) if m.name.is_none() => m.name = Some(v.clone()),
+            (Some("installdir"), Some(v)) if m.installdir.is_none() => m.installdir = Some(v.clone()),
             _ => {}
         }
     }
-    (name, dir)
+    m
 }
 
 /// The quoted strings on a line of a Steam `.acf` file, with `\"` and `\\` undone.
@@ -634,6 +661,7 @@ impl Demo {
                 ("demo-cooler.liquid".to_string(), Stat { avg: 33.5, max: 35.1 }),
             ]
             .into(),
+            steam: None,
         };
         vec![
             s("Demo racer", "racer.exe", base + 19 * 3_600_000, 94, 118.4, 86.2, 71.0, 74.0, 68.0),
@@ -652,6 +680,7 @@ impl Demo {
             process: None,
             game: "Demo game".into(),
             exe: "demo.exe".into(),
+            steam: None,
             start: unix_ms(),
             last_seen: unix_ms(),
             played: 0.0,
@@ -705,22 +734,27 @@ mod tests {
     #[test]
     fn stores_tell_the_game_by_its_folder() {
         let epic = [(normalize(r"D:\Epic Games\Fortnite"), "Fortnite".to_string())];
-        assert_eq!(store_game(r"D:\Gry\SteamLibrary\steamapps\common\No Such Game\bin\game.exe", &epic).as_deref(), Some("No Such Game"));
-        assert_eq!(store_game(r"C:\XboxGames\Forza Horizon 5\Content\ForzaHorizon5.exe", &epic).as_deref(), Some("Forza Horizon 5"));
-        assert_eq!(store_game(r"d:\epic games\fortnite\FortniteGame\Binaries\Win64\x.exe", &epic).as_deref(), Some("Fortnite"));
+        let name = |path| store_game(path, &epic).map(|t| t.name);
+        assert_eq!(name(r"D:\Gry\SteamLibrary\steamapps\common\No Such Game\bin\game.exe").as_deref(), Some("No Such Game"));
+        assert_eq!(name(r"C:\XboxGames\Forza Horizon 5\Content\ForzaHorizon5.exe").as_deref(), Some("Forza Horizon 5"));
+        assert_eq!(name(r"d:\epic games\fortnite\FortniteGame\Binaries\Win64\x.exe").as_deref(), Some("Fortnite"));
         assert_eq!(store_game(r"D:\Epic Games\FortniteOther\x.exe", &epic), None);
         assert_eq!(store_game(r"C:\Program Files (x86)\Steam\steam.exe", &epic), None);
         assert_eq!(store_game(r"C:\Windows\explorer.exe", &epic), None);
     }
 
     #[test]
-    fn steam_names_come_from_the_app_manifest() {
+    fn steam_names_and_ids_come_from_the_app_manifest() {
         let lib = std::env::temp_dir().join(format!("camless-steam-{}", std::process::id()));
         std::fs::create_dir_all(lib.join("steamapps")).unwrap();
-        let acf = "\"AppState\"\n{\n\t\"appid\"\t\t\"1\"\n\t\"name\"\t\t\"A \\\"Quoted\\\" Game\"\n\t\"installdir\"\t\t\"AQG\"\n}\n";
-        std::fs::write(lib.join(r"steamapps\appmanifest_1.acf"), acf).unwrap();
-        let exe = lib.join(r"steamapps\common\aqg\Game.exe");
-        assert_eq!(store_game(&exe.to_string_lossy(), &[]).as_deref(), Some("A \"Quoted\" Game"));
+        let acf = "\"AppState\"\n{\n\t\"appid\"\t\t\"1091500\"\n\t\"name\"\t\t\"A \\\"Quoted\\\" Game\"\n\t\"installdir\"\t\t\"AQG\"\n}\n";
+        std::fs::write(lib.join(r"steamapps\appmanifest_1091500.acf"), acf).unwrap();
+        // Without an appid line, the file name has it.
+        std::fs::write(lib.join(r"steamapps\appmanifest_730.acf"), "\"AppState\"\n{\n\t\"installdir\"\t\t\"Other\"\n}\n").unwrap();
+        let game = |dir: &str| store_game(&lib.join(format!(r"steamapps\common\{dir}\Game.exe")).to_string_lossy(), &[]);
+        assert_eq!(game("aqg"), Some(Title { name: "A \"Quoted\" Game".into(), steam: Some(1_091_500) }));
+        assert_eq!(game("Other"), Some(Title { name: "Other".into(), steam: Some(730) }));
+        assert_eq!(game("Gone"), Some(Title { name: "Gone".into(), steam: None }));
         std::fs::remove_dir_all(&lib).unwrap();
     }
 
@@ -748,6 +782,7 @@ mod tests {
             process: None,
             game: "Game".into(),
             exe: "game.exe".into(),
+            steam: Some(1),
             start: 1,
             last_seen: 2,
             played,

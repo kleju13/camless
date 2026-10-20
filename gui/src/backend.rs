@@ -7,7 +7,7 @@
 //! each saved change by itself, so closing the app never stops fan control.
 
 use crate::service::{self, Action};
-use crate::{assets, client, report, task, tray, update};
+use crate::{art, assets, client, report, task, tray, update};
 use anyhow::{anyhow, Context, Result};
 use camless_core::cam_import;
 use camless_core::config::{self, Config, LcdMode, Setup};
@@ -118,6 +118,7 @@ impl Backend {
             ("GET", "state") => Ok(self.state()),
             ("GET", "history") => self.history(query),
             ("GET", "games") => self.from_service("/v1/games", "game sessions"),
+            ("GET", "game-art") => return game_art(query),
             ("PUT", "config") => self.put_config(body),
             ("POST", "profiles/switch") => self.switch_profile(body),
             ("POST", "profiles/save-current") => self.save_current(body),
@@ -473,21 +474,38 @@ fn bail_refused(msg: impl Into<String>) -> std::result::Result<(), Refused> {
     Err(Refused(409, msg.into()))
 }
 
-/// The service's history request for the page's: only `span`, a number, and `ids`,
-/// series ids, go through, so nothing else reaches the request line.
+/// The service's history request for the page's: only `span`, `from` and `to`,
+/// numbers, and `ids`, series ids, go through, so nothing else reaches the request
+/// line.
 fn history_path(query: &str) -> std::result::Result<String, String> {
-    let mut path = String::from("/v1/history?span=");
-    let mut span = "600";
+    let mut path = String::from("/v1/history?");
+    let (mut span, mut from, mut to) = ("600", None, None);
     let mut ids = None;
+    let secs = |v: &str| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v.len() < 12;
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         match pair.split_once('=').unwrap_or((pair, "")) {
-            ("span", v) if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v.len() < 10 => span = v,
-            ("span", v) => return Err(format!("span {v:?} is not a number of seconds")),
+            ("span", v) if secs(v) && v.len() < 10 => span = v,
+            ("from", v) if secs(v) => from = Some(v),
+            ("to", v) if secs(v) => to = Some(v),
+            (k @ ("span" | "from" | "to"), v) => return Err(format!("{k} {v:?} is not a number of seconds")),
             ("ids", v) => ids = Some(v),
             _ => {}
         }
     }
-    path.push_str(span);
+    match from {
+        Some(from) => {
+            path.push_str("from=");
+            path.push_str(from);
+            if let Some(to) = to {
+                path.push_str("&to=");
+                path.push_str(to);
+            }
+        }
+        None => {
+            path.push_str("span=");
+            path.push_str(span);
+        }
+    }
     if let Some(ids) = ids {
         path.push_str("&ids=");
         for b in ids.bytes() {
@@ -500,6 +518,16 @@ fn history_path(query: &str) -> std::result::Result<String, String> {
         }
     }
     Ok(path)
+}
+
+/// `game-art?steam=<app id>`: the game's cover from Steam's cache on this PC.
+fn game_art(query: &str) -> Reply {
+    let id = query.split('&').find_map(|p| p.strip_prefix("steam=")).and_then(|v| v.parse::<u32>().ok());
+    let Some(id) = id else { return Reply::error(400, "game-art needs steam=<app id>") };
+    match art::steam(id) {
+        Some((content_type, body)) => Reply { status: 200, content_type, body },
+        None => Reply::empty(404),
+    }
 }
 
 /// The config and its profile; a file that is not there yet is an empty config.
@@ -572,8 +600,14 @@ mod tests {
         );
         assert_eq!(history_path("ids=a b<x>").unwrap(), "/v1/history?span=600&ids=a%20b%3Cx%3E");
         assert!(history_path("span=-1").is_err());
+        assert_eq!(history_path("from=1700000000&to=1700003600&ids=fps").unwrap(), "/v1/history?from=1700000000&to=1700003600&ids=fps");
+        assert_eq!(history_path("from=1700000000&span=60").unwrap(), "/v1/history?from=1700000000");
+        assert!(history_path("from=1700000000&to=now").is_err());
+        assert!(history_path("from=1e9").is_err());
         let (b, _) = fixture("camless-gui-history");
         assert_eq!(call(&b, "GET", "/api/history?span=day", Value::Null).0, 400);
+        assert_eq!(call(&b, "GET", "/api/game-art?steam=..%2Fx", Value::Null).0, 400);
+        assert_eq!(b.handle("GET", "/api/game-art?steam=4294967295", None, &[]).status, 404);
     }
 
     #[test]
