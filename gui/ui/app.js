@@ -138,9 +138,10 @@
   /* The devices camless drives that hardware/verified.toml does not list. The sidebar
      asks how they work until the person says they submitted a report about this setup. */
   const unverified = () => S.devices().filter((d) => !d.verified);
-  // Experimental: unverified, and no other app drives it the way camless does.
+  // Experimental: unverified, and no other app drives it the way camless does, or the
+  // one it follows calls its own support experimental.
   const verifyTitle = (list) => (list.some((d) => d.experimental) ? 'Experimental hardware' : 'Unverified hardware');
-  const EXPERIMENTAL = 'Experimental: no other app drives this model the way camless does, and its driver follows liquidctl alone.';
+  const EXPERIMENTAL = 'Experimental: the driver follows liquidctl alone, or another app’s support that is experimental itself.';
   const setupKey = (list) => list.map((d) => `${d.id}@${d.firmware || ''}`).sort().join(',');
   const UNVERIFIED = 'We’ve detected that your hardware configuration hasn’t been verified yet.';
 
@@ -157,7 +158,7 @@
         const rows = h('<div class="cam-rows cam-box"></div>');
         for (const d of list) rows.appendChild(row(d.name, `Firmware ${esc(d.firmware || 'unknown')}${d.experimental ? '. Experimental' : ''}`, null));
         body.appendChild(rows);
-        const exp = list.some((d) => d.experimental) ? ' An experimental driver goes further: no other app drives that model the way camless does, and the driver follows liquidctl alone.' : '';
+        const exp = list.some((d) => d.experimental) ? ' An experimental driver goes further: it follows liquidctl alone, or another app’s support that is experimental itself.' : '';
         body.appendChild(h(`<p class="cam-hint">camless drives ${list.length > 1 ? 'these devices' : 'this device'} from other projects’ notes and captures of CAM, not from a test on the same hardware, so something may be off.${exp} Tell us how it goes. Either button gathers a hardware report and opens a GitHub issue with it filled in. You check it there before you submit; nothing is sent from here.</p>`));
         body.appendChild(note);
       },
@@ -2595,8 +2596,17 @@
     const devRows = S.devices().map((d) => row(d.name, `Firmware ${esc(d.firmware || 'unknown')}. ${d.verified ? 'Verified: reported working on this model.' : `${d.experimental ? EXPERIMENTAL : 'Not verified yet: this driver follows other projects’ notes and captures of CAM.'} <button type="button" class="cam-link" data-a="verify">Tell us how it works</button>`}`, deviceStatus(d.id)));
     for (const r of devRows) r.addEventListener('click', (e) => { if (e.target.closest('[data-a=verify]')) verifyDialog(); });
     const unsupported = ((S.status && S.status.unsupported) || []).map((u) => row(u.product || 'NZXT device', `No camless driver yet (${usbId(u)}).`, null));
+    // Off by default: other brands' own apps drive these hubs too.
+    const brands = S.config && row('Other brands', 'camless also drives the fans on other brands’ hubs it has a driver for: Lian Li Uni Hubs, experimental. Never keyboards, mice or other input devices. While the brand’s own app runs, such as L-Connect, camless leaves the hub to it.', toggle({
+      checked: !!(S.config.devices && S.config.devices.other_brands), label: 'Other brands',
+      onChange: async (v) => {
+        if (v && !(await confirmBox({ title: 'Drive other brands’ hubs', text: 'camless then sets the fans on Lian Li Uni Hubs that you give a curve, and leaves the other ports as they are. Nexus calls its own support for these hubs experimental, and nobody has reported camless working on one yet. Turning this off hands the ports camless set back to the motherboard’s fan header.', ok: 'Turn on' }))) { go(); return; }
+        editCfg((x) => { if (v) x.devices = Object.assign({}, x.devices, { other_brands: true }); else delete x.devices; });
+      },
+    }));
     panel('Devices', devRows.concat(unsupported, [
       !devRows.length && !unsupported.length ? row(S.status ? 'No devices found' : 'The service is not running', null, null) : null,
+      brands,
       row('Hardware report', 'A device camless does not drive yet, a wrong reading, or an LCD that stays dark: a report opens a GitHub issue with what a fix needs. You see all of it first.', button('Create report', { small: true, onClick: reportDialog })),
       row('Firmware updates', 'camless shows firmware versions but does not install updates. To update, open NZXT CAM once.', null),
     ]));

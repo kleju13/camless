@@ -41,6 +41,8 @@ pub struct Config {
     pub api: Api,
     #[serde(default, skip_serializing_if = "Games::is_default")]
     pub games: Games,
+    #[serde(default, skip_serializing_if = "Devices::is_default")]
+    pub devices: Devices,
     #[serde(default, rename = "curve", skip_serializing_if = "Vec::is_empty")]
     pub curves: Vec<CurveSpec>,
     #[serde(default, rename = "fan", skip_serializing_if = "Vec::is_empty")]
@@ -61,6 +63,7 @@ impl Default for Config {
             updates: Updates::Stable,
             api: Api::default(),
             games: Games::default(),
+            devices: Devices::default(),
             curves: Vec::new(),
             fans: Vec::new(),
             lights: Vec::new(),
@@ -163,6 +166,24 @@ pub struct Games {
 impl Games {
     fn is_default(&self) -> bool {
         *self == Games::default()
+    }
+}
+
+/// Which devices camless opens besides NZXT's.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Devices {
+    /// Fan and lighting hubs of other brands that camless has a driver for. Off
+    /// unless turned on: their own apps drive them too. camless never opens
+    /// keyboards, mice or other input devices, and leaves a device alone while its
+    /// brand's app runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub other_brands: bool,
+}
+
+impl Devices {
+    fn is_default(&self) -> bool {
+        *self == Devices::default()
     }
 }
 
@@ -877,6 +898,16 @@ url = "http://127.0.0.1:30640/lcd"
     fn points_at_old_configs() {
         let err = Config::parse("[pump]\nsource = \"cpu\"\n").unwrap_err();
         assert!(format!("{err:#}").contains("import-cam"));
+    }
+
+    #[test]
+    fn other_brands_are_off_unless_turned_on() {
+        let c = Config::default();
+        assert!(!c.devices.other_brands && !c.to_toml().unwrap().contains("[devices]"));
+        let on = Config::parse("[devices]\nother_brands = true\n").unwrap();
+        assert!(on.devices.other_brands);
+        assert_eq!(Config::parse(&on.to_toml().unwrap()).unwrap(), on);
+        assert!(Config::parse("[devices]\nkeyboards = true\n").is_err());
     }
 
     #[test]

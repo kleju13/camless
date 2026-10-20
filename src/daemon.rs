@@ -320,6 +320,10 @@ impl Daemon {
                     _ => self.log("config changed, applying it"),
                 }
                 self.engine = Engine::new(&cfg);
+                if cfg.devices != self.cfg.devices {
+                    // Other brands' devices come and go with the setting at once.
+                    self.next_scan = Instant::now();
+                }
                 self.cfg = cfg;
                 self.cfg_error = None;
                 for s in &mut self.slots {
@@ -346,7 +350,7 @@ impl Daemon {
             None => (drivers::demo::found(), Vec::new()),
             Some(api) => {
                 let _ = api.refresh_devices();
-                drivers::scan(api)
+                drivers::scan(api, self.cfg.devices.other_brands)
             }
         };
         for f in found {
@@ -365,6 +369,40 @@ impl Daemon {
             }
         }
         self.unsupported = unsupported;
+        self.yield_other_brands();
+    }
+
+    /// Lets go of other brands' devices while their brand's app runs, which would
+    /// fight camless over them, and for good with `other_brands` off. They go back to
+    /// how they run without camless. `Found::open` keeps them closed while the app
+    /// runs.
+    fn yield_other_brands(&mut self) {
+        if !self.slots.iter().any(|s| s.found.model.vendor.is_some()) {
+            return;
+        }
+        let on = self.cfg.devices.other_brands;
+        let running = if on { drivers::vendor::running_processes() } else { HashSet::new() };
+        let mut notes = Vec::new();
+        for s in &mut self.slots {
+            let Some(vendor) = s.found.model.vendor else { continue };
+            let why = if on { vendor.busy(&running) } else { Some("other brands are off".to_string()) };
+            let (Some(why), Some(dev)) = (why, s.dev.as_mut()) else { continue };
+            let released = match dev.release() {
+                Ok(()) => "handed back".to_string(),
+                Err(e) => format!("not handed back ({e:#})"),
+            };
+            notes.push(format!("{}: {why}; {released}", s.found.id));
+            s.dev = None;
+            s.reading = None;
+            s.last_error = Some(why);
+            s.next_try = Instant::now() + RESCAN_EVERY;
+        }
+        if !on {
+            self.slots.retain(|s| s.found.model.vendor.is_none());
+        }
+        for n in notes {
+            self.log(&n);
+        }
     }
 
     fn open_devices(&mut self) {

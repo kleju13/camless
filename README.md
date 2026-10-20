@@ -54,6 +54,12 @@ Experimental: Nexus leaves these out, so the driver follows liquidctl alone, and
 | Kraken M22 | `1e71:1715` | pump ring and logo |
 | Kraken X31, X41, X61 (and X40, X60) | `2433:b200` | pump and fan duties, logo; needs WinUSB bound to it with [Zadig](https://zadig.akeo.ie) |
 
+Other brands, off unless you turn on *Settings → Devices → Other brands*: camless never drives keyboards or mice, and leaves a hub alone while its brand's app runs ([how it works](docs/how-it-works.md#other-brands)). Nexus calls its own support for these experimental, and so does camless:
+
+| Device | USB id | What camless drives |
+|---|---|---|
+| Lian Li Uni Hub, SL, AL, SL-Infinity, SL v2, AL v2 | `0cf2:7750`, `0cf2:a100` to `a106` | fan duties and speeds on the four ports; the lighting stays as L-Connect left it |
+
 [hardware/verified.toml](hardware/verified.toml) lists the hardware camless was reported working on. With any other device camless drives, the app shows *Unverified hardware* in the sidebar, or *Experimental hardware* for the devices above. *It works* or *Something is wrong* there opens a GitHub issue with a hardware report filled in. Once you submit it there, *I submitted it* hides the prompt for that setup, and a works report adds the device to the list.
 
 The app lists other NZXT devices as "no driver yet". If you have one, *Settings → Devices → Create report* opens a GitHub issue with what a driver needs filled in, and shows you all of it first. A driver is one Rust file, and [CONTRIBUTING.md](CONTRIBUTING.md) shows how to write one.
@@ -82,6 +88,7 @@ CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed
 ## Not done yet
 
 - Drivers for other NZXT devices: the Smart Device V2 and the RGB & Fan Controller.
+- Other brands: the Lian Li hubs' lighting, Lian Li's TL, Strimer and wireless controllers, and Corsair's iCUE LINK hub, which would have to yield to iCUE.
 
 ## Credits
 

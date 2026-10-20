@@ -67,7 +67,7 @@ pub struct Device {
     /// documentation or captures of CAM.
     pub verified: bool,
     /// Not verified, and no other program drives it the way camless does: its driver
-    /// follows liquidctl alone.
+    /// follows liquidctl alone, or a program that calls its own support experimental.
     #[serde(default)]
     pub experimental: bool,
     pub connected: bool,

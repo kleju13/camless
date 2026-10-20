@@ -14,6 +14,7 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 | `src/drivers/<model>.rs` | one device: its protocol and a `Driver` |
 | `src/drivers/mod.rs` | the `Driver` and `Lcd` traits, `MODELS`, bus scanning |
 | `src/drivers/hid.rs`, `hue2.rs` | shared HID I/O and the Hue 2 lighting protocol |
+| `src/drivers/usb.rs`, `winhid.rs`, `vendor.rs` | WinUSB transfers, HID calls hidapi lacks, and other brands' apps |
 | `src/daemon.rs` | the service loop: curves, duties, reloads, failsafes |
 | `src/web.rs`, `src/cdp.rs` | web pages on an LCD: a headless browser driven over the DevTools protocol |
 | `src/backdrop.rs` | a moving background a page hands over, which camless plays under the page |
@@ -34,7 +35,7 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 
 1. **Find what CAM sends.** Start with [liquidctl](https://github.com/liquidctl/liquidctl): many NZXT devices are documented there, and its sources are the best reference. If it is not there, capture CAM (below).
 2. **Write `src/drivers/<model>.rs`.** Use `control_hub.rs` (fans and lights only) or `kraken_elite_v2.rs` (pump, stored curves, LCD) as a template:
-   - a `pub const MODEL: Model`, from `Model::hid(vid, pid, slug, name, open)`: the USB vendor and product id, a slug for the config (`smart-device-v2`, `rgb-fan-controller`), and the name people know it by. Set `interface` if the device has several HID interfaces. `Model::usb` is for a device that is not HID, which camless reaches through WinUSB (`usb.rs`). Set `experimental: true` when no other program drives the device the way the driver does, for example when Nexus leaves it out and the driver follows liquidctl alone;
+   - a `pub const MODEL: Model`, from `Model::hid(vid, pid, slug, name, open)`: the USB vendor and product id, a slug for the config (`smart-device-v2`, `rgb-fan-controller`), and the name people know it by. Set `interface` if the device has several HID interfaces. `Model::usb` is for a device that is not HID, which camless reaches through WinUSB (`usb.rs`). Set `experimental: true` when no other program drives the device the way the driver does, for example when Nexus leaves it out and the driver follows liquidctl alone, or when the program it follows calls its own support experimental. Another brand's device also needs `vendor`, with the app camless leaves it to, and `usage`: its vendor-defined HID collection (usage page `FF00` and up), so that no keyboard or mouse of that brand ever matches (`lianli.rs`);
    - `describe()`: its fan channels (`pump: true` for pumps, `min_duty`, `device_curves` if it can store curves), light channels with LED counts (and `modes` if they take fewer than the Hue 2 effects), and the LCD;
    - `sensors()` and `poll()`: readings by the driver's own ids, such as `liquid`;
    - `set_duties()`, `set_lighting()`, and `store_curve()` / `lcd()` where the device supports them;

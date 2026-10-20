@@ -24,10 +24,15 @@ png = "0.18"
 # Packs the frames of a background a page hands over; png uses the same version.
 miniz_oxide = "0.8"
 windows-sys = { version = "0.61", features = [
+    # Lian Li hubs: input reports on request, which hidapi's Windows backend lacks.
+    "Win32_Devices_HumanInterfaceDevice",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_Etw",
+    # Other brands' apps, which camless leaves their devices to.
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",

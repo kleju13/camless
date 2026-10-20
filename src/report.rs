@@ -1,7 +1,8 @@
 //! `camless report`: what an issue about hardware needs, for a device camless does
 //! not drive yet or drives wrong. It lists the NZXT devices, and Asetek's, which
 //! made the older Krakens, with their USB and HID descriptors, and asks the running
-//! service for firmware versions and errors.
+//! service for firmware versions and errors. With `[devices] other_brands` on it
+//! lists the other brands' hubs camless drives too, and no other device of theirs.
 //!
 //! Read only: standard USB descriptor reads, no commands sent to the devices. Serial
 //! numbers, device paths and the user's and the PC's names stay out; `scrub` takes
@@ -80,13 +81,13 @@ struct Hid {
     descriptor: std::result::Result<Vec<u8>, String>,
 }
 
-pub fn collect(api_addr: Option<&str>) -> Report {
+pub fn collect(api_addr: Option<&str>, other_brands: bool) -> Report {
     let mut secrets = Vec::new();
-    let usb = usb_devices(&mut secrets);
+    let usb = usb_devices(&mut secrets, other_brands);
     let (found, hid) = match HidApi::new() {
         Ok(api) => {
-            let found = crate::drivers::scan(&api).0.into_iter().map(|f| (f.id, f.model)).collect();
-            (found, Ok(hid_collections(&api, &mut secrets)))
+            let found = crate::drivers::scan(&api, other_brands).0.into_iter().map(|f| (f.id, f.model)).collect();
+            (found, Ok(hid_collections(&api, &mut secrets, other_brands)))
         }
         Err(e) => (Vec::new(), Err(e.to_string())),
     };
@@ -119,8 +120,9 @@ fn fetch_status(addr: &str) -> std::result::Result<Status, String> {
     get().map_err(|e| format!("not reachable at {addr} ({e:#})"))
 }
 
-fn usb_devices(secrets: &mut Vec<String>) -> std::result::Result<Vec<Usb>, String> {
-    let mut list: Vec<_> = nusb::list_devices().map_err(|e| e.to_string())?.filter(|d| is_ours(d.vendor_id())).collect();
+fn usb_devices(secrets: &mut Vec<String>, other_brands: bool) -> std::result::Result<Vec<Usb>, String> {
+    let mut list: Vec<_> =
+        nusb::list_devices().map_err(|e| e.to_string())?.filter(|d| listed(d.vendor_id(), d.product_id(), other_brands)).collect();
     list.sort_by_key(|d| (d.vendor_id(), d.product_id()));
     let mut out: Vec<Usb> = Vec::new();
     for d in list {
@@ -169,8 +171,8 @@ fn interfaces(d: &nusb::DeviceInfo) -> std::result::Result<Vec<Interface>, Strin
 
 /// Opening a HID device sends it nothing; Windows rebuilds the report descriptor
 /// from what it parsed when the device was plugged in.
-fn hid_collections(api: &HidApi, secrets: &mut Vec<String>) -> Vec<Hid> {
-    let mut list: Vec<_> = api.device_list().filter(|d| is_ours(d.vendor_id())).collect();
+fn hid_collections(api: &HidApi, secrets: &mut Vec<String>, other_brands: bool) -> Vec<Hid> {
+    let mut list: Vec<_> = api.device_list().filter(|d| listed(d.vendor_id(), d.product_id(), other_brands)).collect();
     list.sort_by_key(|d| d.path().to_owned());
     let mut out: Vec<Hid> = Vec::new();
     for d in list {
@@ -202,6 +204,11 @@ fn hid_collections(api: &HidApi, secrets: &mut Vec<String>) -> Vec<Hid> {
 
 fn is_ours(vid: u16) -> bool {
     vid == NZXT_VID || vid == ASETEK_VID
+}
+
+/// NZXT's and Asetek's devices, and other brands' that camless drives.
+fn listed(vid: u16, pid: u16, other_brands: bool) -> bool {
+    is_ours(vid) || other_brands && model(vid, pid).is_some_and(|m| m.vendor.is_some())
 }
 
 fn model(vid: u16, pid: u16) -> Option<&'static Model> {
@@ -262,8 +269,16 @@ fn render(f: &Facts) -> String {
     match &f.service {
         Ok(st) if !st.devices.is_empty() => {
             for d in &st.devices {
+                // Two product ids can share a slug; the device found has the right one.
                 let slug = d.id.split('#').next().unwrap_or_default();
-                let ids = MODELS.iter().find(|m| m.slug == slug).map(|m| format!(" `{:04x}:{:04x}`", m.vid, m.pid)).unwrap_or_default();
+                let ids = f
+                    .found
+                    .iter()
+                    .find(|(id, _)| *id == d.id)
+                    .map(|(_, m)| *m)
+                    .or_else(|| MODELS.iter().find(|m| m.slug == slug))
+                    .map(|m| format!(" `{:04x}:{:04x}`", m.vid, m.pid))
+                    .unwrap_or_default();
                 let firmware = d.firmware.as_deref().unwrap_or("unknown");
                 let tested = match (d.verified, d.experimental) {
                     (true, _) => "verified",

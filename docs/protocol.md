@@ -5,6 +5,7 @@ Sources:
 - the Linux `nzxt-kraken3` driver;
 - liquidctl's `kraken2.py` and `asetek.py` with their guides, and the Linux `nzxt-kraken2` driver, for the Kraken X2, the M22 and the Asetek-made Krakens, which Nexus leaves out;
 - [Nexus](https://github.com/hello-nexus/nexus) (`KrakenModel.cs`, `KrakenProtocol.cs`, `KrakenHub.cs`), for the Krakens camless has not run on. Nexus says only its Elite 2024 rows were run on hardware;
+- Nexus's `Peripherals/LianLi`, `Cooling/LianLiCoolingProvider.cs` and `Conflicts/ConflictAppDefinitions.cs`, which follow FanControl.LianLi and L-Connect 3, for the Lian Li Uni Hubs;
 - strings and tables in CAM 4.76.6's `@nzxt/cam-core` 71.9.3 (`index.node`, a napi-rs Rust addon), `service.exe` and the Electron bundles, inspected statically with [rea](https://github.com/morluto/rea) and plain string extraction;
 - CAM's own profile files.
 
@@ -83,6 +84,17 @@ Sources:
 - Periodic `67 02` reports: fan mode at `[16+i]`, rpm LE at `[24+2i]`, duty at `[40+i]`, noise at `[56]`.
 - Duties: `62 01 <mask> d1..d5`.
 - LED ports 1..5 are channel bytes `02 01 04 08 10`.
+
+**Lian Li Uni Hubs** (`0cf2:7750`, `a100` to `a106`; experimental, with `[devices] other_brands` on)
+- Four fan ports. camless opens only the vendor collection on interface 1: usage page `FF72`, usage `A1`. Every command is a feature report, id `E0`, 7 bytes, which Windows pads to the hub's feature report length. Nexus calls its Lian Li support experimental and ran the SL-Infinity (`a102`) and SL (`a100`) hubs only; the other rows come from its table.
+- Per hub: SL (`7750`, `a100`, the Redragon OEM `a106`) mode register `31`, speeds from byte 1; AL (`a101`) register `42`, speeds from byte 1; SL-Infinity (`a102`) register `62`, speeds from byte 1; SL v2 (`a103`, `a105`) and AL v2 (`a104`) register `62`, speeds from byte 2. The SL-Infinity and v2 hubs send duty 0 as 1 and 1..9 as 10, below which their fans stall; the others take 0..100.
+- Manual mode: `E0 10 <register> <10 << port>`. Back to the motherboard's PWM input: `E0 10 <register> <11 << port>`. Duty: `E0 <20 | port> 00 <duty>`. The firmware drops a duty that comes within 200 ms of manual mode, and entering manual mode again resets the fan to its default, so camless enters it once per port and then sends only duties. Nexus sends the duties again with every poll, and so does camless.
+- Speeds: feature report `E0 50 00`, then input report `E0` read with `HidD_GetInputReport` (65 bytes): one BE speed per port from byte 1 or 2. Above 6000 is no speed, and camless keeps the last one.
+- Firmware: `E0 50 01`, then the input report: `E0 50` again at `[1]`, the family id at `[4]`, the version at `[5]`, in a different code per family (`firmware_number` in `lianli.rs`, after Nexus). A hub that just attached can answer it empty; camless asks three times when it opens the hub.
+- After sleep the hub is out of manual mode (Nexus re-enters it on resume). camless takes a gap of over 30 s between polls for a wake-up and enters manual mode again.
+- L-Connect: Nexus leaves the hubs alone while `L-Connect 3`, `L-Connect`, `LConnect3` or `LConnect` runs, by process name. camless does the same, checks every 5 s, and sends the ports it drives back to the motherboard before it lets go. Nexus does not count L-Connect's service (`LConnectService`) as the app running, and neither does camless; nobody has checked whether it drives the fans with the app closed.
+- Not done: lighting, which goes in 353-byte output reports, over `HidD_SetOutputReport` on the SL-Infinity and the interrupt pipe on the SL; the TL, Strimer and wireless controllers, which Nexus drives with other handlers.
+- hidapi's native Windows backend has no `get_input_report`, and it trims output reports to the feature report length. `winhid.rs` makes these calls itself.
 
 **Hue 2 accessories** (the Krakens since the X3, and the Control Hub)
 - `20 03` → `21 03`: the channel count at `[14]`, then six accessory ids per channel from `[15]`; `00` ends a channel.
