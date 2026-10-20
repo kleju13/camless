@@ -262,6 +262,9 @@
   const navShown = (id) => { const n = NAV.find((x) => x.id === id); return !!n && (!n.shown || n.shown()); };
   const PAGES = { monitoring, games, cooling, lighting, settings };
   let root = null, main = null, content = null, dispose = null, page = null, built = null;
+  // The session open on the Games page, by its start, or 'now' for the game being
+  // played. It stays open while the page is built again, until another page opens.
+  let gameOpen = null;
 
   /* What the pages are built from. When it changes, say after a profile switch or
      once the service answers, the page is built again. */
@@ -389,6 +392,7 @@
     // the config loads, Games stays where it is.
     if (!PAGES[id] || (S.config && !navShown(id))) id = 'cooling';
     if (K.prefs.page !== id) K.setPref('page', id);
+    if (id !== page) gameOpen = null;
     const top = main.scrollTop;
     if (dispose) dispose();
     K.closeOverlays();
@@ -1874,17 +1878,28 @@
     return reading(id, v, kind === 'temp' ? 1 : 0);
   }
 
-  function historyCharts() {
-    const el = h('<section class="cam-section cam-hist"><header><h2 class="cam-h2">History</h2><span class="grow"></span></header><p class="cam-hint cam-hist-note" hidden></p><div class="cam-hgrid"></div></section>');
+  /* The charts over the range picked above them, or over a window of their own, `win`:
+     { from, to, panels }, a game session's in ms. A window without an end goes on to
+     now and loads again every few seconds, for the game being played. A session's
+     charts are only those with readings. */
+  function historyCharts(win) {
+    const el = h('<section class="cam-section cam-hist"><header><h2 class="cam-h2"></h2><span class="grow"></span></header><p class="cam-hint cam-hist-note" hidden></p><div class="cam-hgrid"></div></section>');
+    el.querySelector('h2').textContent = win ? 'During the session' : 'History';
     const grid = el.querySelector('.cam-hgrid'), note = el.querySelector('.cam-hist-note');
     let span = HIST_RANGES.some((r) => r.value === K.prefs.histSpan) ? K.prefs.histSpan : 600;
     let panels = [], key = '', data = null, live = [], hoverT = null, asked = 0;
-    const hidden = new Set(K.prefs.histHidden || []);
-    el.firstElementChild.appendChild(choice({ options: HIST_RANGES, value: span, label: 'Range', onChange: (v) => { span = v; K.setPref('histSpan', v); load(); } }));
+    // What the legends switched off; a session's are not kept.
+    const hidden = new Set(win ? [] : K.prefs.histHidden || []);
+    if (!win) el.firstElementChild.appendChild(choice({ options: HIST_RANGES, value: span, label: 'Range', onChange: (v) => { span = v; K.setPref('histSpan', v); load(); } }));
+    // The time the charts cover, in ms.
+    const range = () => { const now = Date.now(); return win ? [win.from, win.to ?? now] : [now - span * 1000, now]; };
+    const during = () => (win ? 'during the session' : `over the last ${HIST_RANGES.find((r) => r.value === span).label}`);
+    const keyOf = (list) => list.map((p) => `${p.id}:${p.series.map((s) => s.id).join(',')}`).join('|');
+    const has = (id) => !!data && !!data.series[id] && data.series[id].avg.some((v) => v != null);
+    const wanted = () => (win ? win.panels.map((p) => ({ ...p, series: p.series.filter((s) => has(s.id)) })).filter((p) => p.series.length) : histPanels());
 
-    function build() {
-      const list = histPanels();
-      key = list.map((p) => `${p.id}:${p.series.map((s) => s.id).join(',')}`).join('|');
+    function build(list) {
+      key = keyOf(list);
       grid.textContent = '';
       panels = list.map((p) => {
         const box = h(`<section class="cam-panel cam-hpanel"><header><h3></h3><div class="cam-hlegend"></div></header><div class="cam-chart-plot"><canvas role="img"></canvas><div class="cam-chart-tip" hidden></div><p class="cam-chart-note" hidden>No readings in this range.</p></div></section>`);
@@ -1897,7 +1912,7 @@
           b.setAttribute('aria-pressed', String(!hidden.has(s.id)));
           b.addEventListener('click', () => {
             if (hidden.has(s.id)) hidden.delete(s.id); else hidden.add(s.id);
-            K.setPref('histHidden', [...hidden]);
+            if (!win) K.setPref('histHidden', [...hidden]);
             b.setAttribute('aria-pressed', String(!hidden.has(s.id)));
             drawAll();
           });
@@ -1914,18 +1929,23 @@
 
     async function load() {
       const ask = ++asked;
-      const ids = [...new Set(panels.flatMap((p) => p.series.map((s) => s.id)))].map(encodeURIComponent).join(',');
+      const ids = [...new Set((win ? win.panels : panels).flatMap((p) => p.series.map((s) => s.id)))].map(encodeURIComponent).join(',');
+      const [t0, t1] = range();
+      const window_ = win ? `from=${Math.floor(t0 / 1000)}&to=${Math.ceil(t1 / 1000)}` : `span=${span}`;
       let r = null, err = null;
       if (ids && S.status) {
-        try { r = await S.api('GET', `history?span=${span}&ids=${ids}`); } catch (e) { err = e; }
+        try { r = await S.api('GET', `history?${window_}&ids=${ids}`); } catch (e) { err = e; }
       }
       if (ask !== asked) return;
       data = r;
       live = [];
-      note.textContent = !panels.length ? 'Nothing to show here on this PC.'
-        : !S.status ? 'The service records history while it runs. It is not running now.'
+      if (win && keyOf(wanted()) !== key) build(wanted());
+      const step = data ? data.step : 0;
+      note.textContent = !S.status ? (win ? 'The service is not running, so the readings of the session cannot be read now.' : 'The service records history while it runs. It is not running now.')
         : err ? `No history: ${err.message}`
-        : span > 3600 ? 'Every point stands for several minutes: the line is their average, and the shade above it how high they went.' : '';
+        : !panels.length ? (win ? 'No readings were kept for this session: camless keeps them for 30 days, while the service runs.' : 'Nothing to show here on this PC.')
+        : win && step >= 60 ? `Every point stands for ${step === 60 ? 'a minute' : `${step / 60} minutes`}: the line is the average, and the shade above it how high the readings went.`
+        : !win && span > 3600 ? 'Every point stands for several minutes: the line is their average, and the shade above it how high they went.' : '';
       note.hidden = !note.textContent;
       drawAll();
     }
@@ -1947,12 +1967,12 @@
     }
 
     function drawAll() {
-      const now = Date.now(), t0 = now - span * 1000;
+      const [t0, t1] = range();
       const pts = points().filter((p) => p.t >= t0 - (data ? data.step * 1000 : 0));
-      for (const p of panels) drawPanel(p, pts, t0, now);
+      for (const p of panels) drawPanel(p, pts, t0, t1);
     }
 
-    function drawPanel(p, pts, t0, now) {
+    function drawPanel(p, pts, t0, t1) {
       const { cv } = p;
       if (!cv.isConnected) return;
       const conv = histConv(p.kind);
@@ -1968,9 +1988,9 @@
           if (!v) continue;
           mn = Math.min(mn, v[0]); mx = Math.max(mx, v[1] ?? v[0]); sum += v[0]; n++;
         }
-        it.now.textContent = histValue(p.kind, it.s.id, it.s.now());
+        it.now.textContent = it.s.now ? histValue(p.kind, it.s.id, it.s.now()) : '';
         it.stat.textContent = n && p.series.length <= 3 ? `avg ${histValue(p.kind, it.s.id, sum / n)}, max ${histValue(p.kind, it.s.id, mx)}` : '';
-        it.b.title = n ? `${it.s.label} over the last ${HIST_RANGES.find((r) => r.value === span).label}: lowest ${histValue(p.kind, it.s.id, mn)}, average ${histValue(p.kind, it.s.id, sum / n)}, highest ${histValue(p.kind, it.s.id, mx)}` : it.s.label;
+        it.b.title = n ? `${it.s.label} ${during()}: lowest ${histValue(p.kind, it.s.id, mn)}, average ${histValue(p.kind, it.s.id, sum / n)}, highest ${histValue(p.kind, it.s.id, mx)}` : it.s.label;
         if (n) has = true;
         if (n && !hidden.has(it.s.id)) { any = true; lo0 = Math.min(lo0 ?? Infinity, conv(mn)); hi0 = Math.max(hi0 ?? -Infinity, conv(mx)); }
       }
@@ -1981,9 +2001,9 @@
       const gridC = css.getPropertyValue('--ce-grid').trim(), text = css.getPropertyValue('--t4').trim(), ink = css.getPropertyValue('--t3').trim();
       const ax = histAxis(p.kind, lo0, hi0);
       const pl = 46, pr = 8, pt = 8, pb = 20;
-      const X = (t) => pl + ((t - t0) / (span * 1000)) * (w - pl - pr);
+      const X = (t) => pl + ((t - t0) / (t1 - t0)) * (w - pl - pr);
       const Y = (v) => pt + (1 - (clamp(conv(v), ax.lo, ax.hi) - ax.lo) / (ax.hi - ax.lo)) * (hh - pt - pb);
-      p.tAt = (x) => (x < pl || x > w - pr ? null : t0 + ((x - pl) / (w - pl - pr)) * span * 1000);
+      p.tAt = (x) => (x < pl || x > w - pr ? null : t0 + ((x - pl) / (w - pl - pr)) * (t1 - t0));
       ctx.font = `500 10.5px ${FONT}`;
       ctx.textAlign = 'right';
       for (let v = ax.lo; v <= ax.hi + 1e-6; v += ax.step) {
@@ -1995,7 +2015,8 @@
       // Time labels from the right, leaving out those that would touch the one before.
       ctx.textAlign = 'center';
       let room = Infinity;
-      for (const [x, s] of histTicks(span, now).map(([t, s]) => [clamp(X(t), pl + 18, w - pr - 18), s]).sort((a, b) => b[0] - a[0])) {
+      const ticks = win ? clockTicks(t0, t1) : histTicks(span, t1);
+      for (const [x, s] of ticks.map(([t, s]) => [clamp(X(t), pl + 18, w - pr - 18), s]).sort((a, b) => b[0] - a[0])) {
         const half = ctx.measureText(s).width / 2;
         if (x + half > room - 8) continue;
         ctx.fillText(s, x, hh - 5);
@@ -2055,7 +2076,7 @@
           if (r.length === 1) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(r[0][0], r[0][1], 2, 0, TAU); ctx.fill(); }
         }
       }
-      cv.setAttribute('aria-label', `${p.title} over the last ${HIST_RANGES.find((r) => r.value === span).label}`);
+      cv.setAttribute('aria-label', `${p.title} ${during()}`);
       p.tip.hidden = true;
       if (hoverT == null || !pts.length) return;
       let best = null;
@@ -2068,7 +2089,7 @@
       for (const s of on) { ctx.fillStyle = color(s); ctx.beginPath(); ctx.arc(x, Y(best.v[s.id][0]), 3, 0, TAU); ctx.fill(); }
       // A point that stands for several samples also says how high it went.
       const many = data && data.step > 1 && best.t < (data.from + data.count * data.step) * 1000;
-      p.tip.innerHTML = `<time>${esc(histTime(best.t, span))}</time>` + on.map((s) => {
+      p.tip.innerHTML = `<time>${esc(histTime(best.t, (t1 - t0) / 1000))}</time>` + on.map((s) => {
         const [avg, max] = best.v[s.id];
         const peak = many && max != null && histValue(p.kind, s.id, max) !== histValue(p.kind, s.id, avg) ? `<small>max ${esc(histValue(p.kind, s.id, max))}</small>` : '';
         return `<div><i style="--c:${color(s)}"></i><span>${esc(s.label)}</span><b>${esc(histValue(p.kind, s.id, avg))}</b>${peak}</div>`;
@@ -2078,12 +2099,14 @@
       p.tip.style.left = `${flip ? x - 14 - p.tip.offsetWidth : x + 14}px`;
     }
 
-    // The last hour moves with every reading; every range loads again each minute.
+    // The last hour moves with every reading; every range loads again each minute, and
+    // the session being played every few seconds.
     track(S.on('state', () => {
       if (!S.status) return drawAll();
-      const k = histPanels().map((p) => `${p.id}:${p.series.map((s) => s.id).join(',')}`).join('|');
-      if (k !== key) { build(); load(); return; }
       if (!data && note.textContent.startsWith('The service')) { load(); return; }
+      if (win) return drawAll();
+      const k = keyOf(histPanels());
+      if (k !== key) { build(histPanels()); load(); return; }
       if (span <= 3600) {
         const v = {};
         for (const p of panels) for (const s of p.series) { const x = s.now(); if (x != null) v[s.id] = [x, x]; }
@@ -2092,15 +2115,29 @@
       }
       drawAll();
     }));
-    const timer = setInterval(() => { if (!document.hidden) load(); }, 60e3);
+    const timer = setInterval(() => { if (!document.hidden && (!win || win.to == null)) load(); }, win ? 10e3 : 60e3);
     track(() => clearInterval(timer));
-    track(K.on('prefs', (k) => { if (k === 'theme') build(); drawAll(); }));
+    track(K.on('prefs', (k) => { if (k === 'theme') build(win ? wanted() : histPanels()); drawAll(); }));
     const ro = new ResizeObserver(() => drawAll());
     ro.observe(grid);
     track(() => ro.disconnect());
-    build();
+    if (!win) build(histPanels());
     load();
     return el;
+  }
+
+  // Clock times across a window, about five of them: [ms, text].
+  function clockTicks(t0, t1) {
+    const every = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440].find((m) => (t1 - t0) / 60e3 / m <= 5) || 2880;
+    const d = new Date(t0);
+    d.setSeconds(0, 0);
+    if (every < 60) d.setMinutes(Math.floor(d.getMinutes() / every) * every);
+    else d.setHours(Math.floor(d.getHours() / (every / 60)) * (every / 60), 0);
+    const out = [];
+    for (let t = d.getTime(); t <= t1; t += every * 60e3) {
+      if (t >= t0) out.push([t, new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })]);
+    }
+    return out;
   }
 
   // Where the time axis is labelled: [ms, text].
@@ -2144,13 +2181,187 @@
     return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`;
   }
   const fpsText = (v) => (v == null ? 'N/A' : String(Math.round(v)));
-  // The highest temperature of a session among the sensors `pick` takes.
+  // The highest temperature of a session among the sensors `pick` takes, or null.
   function sessionPeak(s, pick) {
     let top = null;
     for (const [id, t] of Object.entries(s.temps || {})) if (pick(id) && (top == null || t.max > top)) top = t.max;
-    return top == null ? 'N/A' : K.temp(top, 0);
+    return top;
   }
-  const when = (ms) => new Date(ms).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const PEAKS = [['CPU max', (id) => id === 'cpu.temp'], ['GPU max', (id) => id === 'gpu.temp'], ['Liquid max', S.isLiquid]];
+  const clock = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const shortDay = (ms) => new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
+  // Today, Yesterday, or the date.
+  function dayLabel(ms) {
+    const d = new Date(ms), today = new Date();
+    d.setHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
+    if (d.getTime() === today.getTime()) return 'Today';
+    today.setDate(today.getDate() - 1);
+    if (d.getTime() === today.getTime()) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+  }
+
+  // Each game's sessions, play time and frames, when it was last played and its Steam
+  // app id. The average weighs each session by its frames, and so does the 1 % low,
+  // which is the sessions' lows averaged, not the low of all the frames together.
+  function byGame(sessions) {
+    const m = new Map();
+    for (const s of sessions) {
+      const g = m.get(s.game) || { game: s.game, n: 0, played: 0, frames: 0, secs: 0, lows: 0, lowFrames: 0, last: 0, steam: null };
+      g.n++;
+      g.played += s.played;
+      g.last = Math.max(g.last, s.end);
+      g.steam = g.steam || s.steam || null;
+      if (s.fps) { g.frames += s.frames; g.secs += s.frames / s.fps; }
+      if (s.low1 && s.frames) { g.lows += s.low1 * s.frames; g.lowFrames += s.frames; }
+      m.set(s.game, g);
+    }
+    return [...m.values()].sort((a, b) => b.last - a.last);
+  }
+  const avgFps = (g) => (g.secs ? g.frames / g.secs : null);
+
+  // A game's initials on a colour of its own, under its cover from Steam's cache on
+  // this PC when there is one. Nothing is downloaded.
+  function cover(name, steam, cls) {
+    const el = h(`<div class="cam-cover${cls ? ` ${cls}` : ''}" aria-hidden="true"><span></span></div>`);
+    let hash = 7;
+    for (const c of name) hash = (hash * 31 + c.codePointAt(0)) >>> 0;
+    el.style.setProperty('--hue', String(hash % 360));
+    el.firstElementChild.textContent = name.split(/[\s:_\-–.]+/).filter(Boolean).slice(0, 2).map((w) => [...w][0]).join('').toUpperCase();
+    if (steam) {
+      const img = new Image();
+      img.alt = '';
+      img.addEventListener('load', () => { el.classList.add('art'); el.appendChild(img); });
+      img.src = `/api/game-art?steam=${encodeURIComponent(steam)}`;
+    }
+    return el;
+  }
+
+  // A card for each game; picking one shows only its sessions.
+  function gameCards(list, picked, pick) {
+    const el = h('<div class="cam-gcards"></div>');
+    for (const g of list) {
+      const b = h('<button type="button" class="cam-panel cam-gcard"><div class="body"><h3></h3><p class="fps"></p><p class="meta"></p></div></button>');
+      b.prepend(cover(g.game, g.steam));
+      b.querySelector('h3').textContent = g.game;
+      const avg = avgFps(g), fps = b.querySelector('.fps');
+      if (avg == null) fps.innerHTML = '<span>No frame rates</span>';
+      else {
+        fps.innerHTML = `<b class="num">${fpsText(avg)}</b><span>avg FPS</span>${g.lowFrames ? `<small class="num">1% low ${fpsText(g.lows / g.lowFrames)}</small>` : ''}`;
+        if (g.lowFrames) fps.title = 'The 1% lows of its sessions, averaged over their frames.';
+      }
+      b.querySelector('.meta').textContent = `${playTime(g.played)} · ${plural(g.n, 'session')} · ${shortDay(g.last)}`;
+      b.setAttribute('aria-pressed', String(picked === g.game));
+      b.addEventListener('click', () => pick(picked === g.game ? null : g.game));
+      el.appendChild(b);
+    }
+    return el;
+  }
+
+  // Sessions under a heading for each day, newest first; each opens its own view.
+  function sessionList(list, open) {
+    const el = h('<div class="cam-slist"></div>');
+    let day = null, box = null;
+    for (const s of list) {
+      const d = dayLabel(s.start);
+      if (d !== day) {
+        day = d;
+        const head = h('<h3 class="cam-sday"></h3>');
+        head.textContent = d;
+        box = h('<div class="cam-panel cam-sbox"></div>');
+        el.append(head, box);
+      }
+      const b = h('<button type="button" class="cam-srow"><span class="what"><b></b><small></small></span></button>');
+      b.prepend(cover(s.game, s.steam, 'small'));
+      b.querySelector('.what b').textContent = s.game;
+      b.querySelector('.what small').textContent = `${clock(s.start)} – ${clock(s.end)} · ${playTime(s.played)}`;
+      const stats = [['avg FPS', fpsText(s.fps)], ['1% low', fpsText(s.low1)], ...PEAKS.map(([label, pick]) => {
+        const v = sessionPeak(s, pick);
+        return [label, v == null ? 'N/A' : K.temp(v, 0), 'temp'];
+      })];
+      for (const [label, v, cls] of stats) {
+        const st = h(`<span class="st${cls ? ` ${cls}` : ''}"><b class="num"></b><small></small></span>`);
+        st.firstElementChild.textContent = v;
+        st.lastElementChild.textContent = label;
+        b.appendChild(st);
+      }
+      b.insertAdjacentHTML('beforeend', `<span class="go">${I.chevron}</span>`);
+      b.addEventListener('click', () => open(s));
+      box.appendChild(b);
+    }
+    return el;
+  }
+
+  // The charts of a session: the frame rate, then what it may have held it back.
+  function sessionPanels(s) {
+    const liquids = [...new Set([...Object.keys(s.temps || {}), ...S.sensors().map((x) => x.id)])].filter(S.isLiquid);
+    const liquid = liquids.map((id) => { const d = S.device(id.split('.')[0]); return { id, label: d ? d.name : id.split('.')[0] }; });
+    return [
+      { id: 'fps', title: 'Frame rate', kind: 'fps', area: true, series: [{ id: 'fps', label: 'FPS' }] },
+      { id: 'temp', title: 'CPU and GPU temperature', kind: 'temp', series: [{ id: 'cpu.temp', label: 'CPU' }, { id: 'gpu.temp', label: 'GPU' }] },
+      { id: 'liquid', title: 'Liquid temperature', kind: 'temp', area: true, mark: 55, series: liquid },
+      { id: 'load', title: 'Load', kind: 'load', series: [{ id: 'cpu.load', label: 'CPU' }, { id: 'gpu.load', label: 'GPU' }] },
+    ].filter((p) => p.series.length);
+  }
+
+  /* One session: what it came to, and the readings over it from the history. `s` is a
+     kept session, or { live: true, ... } for the game being played, which goes on
+     until it closes. `others` are the game's other sessions, to compare with. */
+  function sessionView(host, s, others, back) {
+    const bar = h('<div class="cam-sback"></div>');
+    bar.appendChild(button('All sessions', { small: true, onClick: back }));
+    const hero = h('<section class="cam-panel cam-shero"><div class="info"><h2></h2><p class="when"></p><div class="cam-stiles"></div></div></section>');
+    hero.prepend(cover(s.game, s.steam, 'big'));
+    hero.querySelector('h2').textContent = s.game;
+    const whenEl = hero.querySelector('.when'), tiles = hero.querySelector('.cam-stiles');
+    const tile = (label) => {
+      const t = h('<div><small></small><b class="num"></b><span></span></div>');
+      t.firstElementChild.textContent = label;
+      tiles.appendChild(t);
+      return t;
+    };
+    const set = (t, v, sub) => { t.children[1].textContent = v; t.children[2].textContent = sub || ''; };
+    const [played, avg, low1, low01] = ['Played', 'Average FPS', '1% low', '0.1% low'].map(tile);
+    host.append(bar, hero);
+    // How this session's frame rate compares with the game's others.
+    const usual = avgFps(byGame(others)[0] || {});
+    const versus = (fps) => {
+      if (fps == null || usual == null) return '';
+      const d = Math.round(((fps - usual) / usual) * 100);
+      return d === 0 ? 'as usual for this game' : `${d > 0 ? '+' : ''}${d}% vs its other sessions`;
+    };
+    const win = { from: s.start, to: s.live ? null : s.end, panels: sessionPanels(s) };
+    function fill() {
+      const g = s.live && S.status && S.status.game;
+      if (s.live && g && g.start === s.start) Object.assign(s, { played: g.played, fps: g.avg_fps, low1: g.low1 });
+      else if (s.live && win.to == null) win.to = Date.now();
+      const end = win.to == null ? 'now' : clock(win.to);
+      whenEl.textContent = `${dayLabel(s.start)}, ${clock(s.start)} – ${end}${s.exe ? ` · ${s.exe}` : ''}${s.live && win.to != null ? ' · the game has closed' : ''}`;
+      set(played, playTime(s.played));
+      set(avg, fpsText(s.fps), versus(s.fps));
+      set(low1, fpsText(s.low1));
+      set(low01, fpsText(s.low01));
+    }
+    for (const [label, pick] of PEAKS) {
+      const v = sessionPeak(s, pick);
+      if (v != null) set(tile(label), K.temp(v, 0));
+    }
+    fill();
+    if (s.live) track(S.on('state', fill));
+    host.appendChild(historyCharts(win));
+    // Every temperature the session kept, also once the history of it is gone.
+    const temps = Object.entries(s.temps || {});
+    if (temps.length) {
+      const order = (id) => (id === 'cpu.temp' ? 0 : id === 'gpu.temp' ? 1 : S.isLiquid(id) ? 2 : 3);
+      temps.sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b));
+      K.section(host, 'Temperatures while in front').appendChild(table([
+        { label: 'Sensor', value: ([id]) => S.sourceLabel(id) },
+        { label: 'Average', num: true, value: ([, t]) => K.temp(t.avg, 1) },
+        { label: 'Highest', num: true, value: ([, t]) => K.temp(t.max, 1) },
+      ], temps));
+    }
+  }
 
   // A table of `rows`, a column for each of `cols`: { label, value(row), num }.
   function table(cols, rows) {
@@ -2165,97 +2376,125 @@
     return el;
   }
 
-  // Each game's sessions, play time and frames, and when it was last played. The
-  // average weighs each session by its frames.
-  function byGame(sessions) {
-    const m = new Map();
-    for (const s of sessions) {
-      const g = m.get(s.game) || { game: s.game, n: 0, played: 0, frames: 0, secs: 0, last: 0 };
-      g.n++;
-      g.played += s.played;
-      g.last = Math.max(g.last, s.end);
-      if (s.fps) { g.frames += s.frames; g.secs += s.frames / s.fps; }
-      m.set(s.game, g);
-    }
-    return [...m.values()].sort((a, b) => b.last - a.last);
-  }
-
   function games(host) {
     K.pageHead(host, 'Games');
-    const off = h('<div class="cam-panel cam-gamenote" hidden></div>');
-    const now = h('<section class="cam-panel cam-moncard cam-game"><header><h3></h3><span></span></header><div class="cam-monstats"></div><p class="cam-muted"></p></section>');
-    host.append(off, now);
-    const stats = now.querySelector('.cam-monstats'), idle = now.querySelector('p');
-    const stat = (label) => { const s = h('<span></span>'); s.textContent = label; const b = h('<b></b>'); s.appendChild(b); stats.appendChild(s); return b; };
-    const [fpsB, avgB, lowB, playedB] = ['FPS', 'Average', '1% low', 'Played'].map(stat);
-    const lists = h('<div></div>');
-    const hint = h('<p class="cam-hint cam-gamehint"></p>');
-    hint.innerHTML = 'Games from Steam, Epic Games and Xbox are found on their own. For another one, add its program or folder to <code>[games] add</code> in camless.toml; <code>[games] skip</code> leaves one out. A session ends when the game closes or after 3 minutes in the background. Sessions under a minute are not kept.';
-    host.append(lists, hint);
-    let sessions = null, err = null, all = false, had = false, asked = 0;
+    const body = h('<div></div>');
+    host.appendChild(body);
+    const draw = K.region(body);
+    let sessions = null, err = null, all = false, picked = null, had = false, asked = 0, shown = '';
 
-    function live() {
-      const g = S.status && S.status.game, info = S.status && S.status.service, why = info && info.fps_error;
-      off.hidden = !why;
-      off.textContent = !why ? '' : why === 'needs administrator rights'
-        ? 'Frame rates need the service to run as administrator. Play time and temperatures are still recorded.'
-        : `No frame rates: ${why}. Play time and temperatures are still recorded.`;
-      now.querySelector('h3').textContent = g ? g.name : 'Now playing';
-      now.querySelector('header span').textContent = g ? (g.in_front ? g.exe : `${g.exe}, in the background`) : '';
-      stats.hidden = !g;
-      idle.hidden = !!g;
-      idle.textContent = S.status ? 'No game is running.' : 'Games show up here while the camless service runs.';
-      if (g) {
-        fpsB.textContent = fpsText(g.fps);
-        avgB.textContent = fpsText(g.avg_fps);
-        lowB.textContent = fpsText(g.low1);
-        playedB.textContent = playTime(g.played);
+    const open = (s) => { gameOpen = s === 'now' ? 'now' : s.start; show(); main.scrollTop = 0; };
+    // A game's Steam app id from any of its sessions, for those kept before camless
+    // recorded it.
+    const steamOf = (game) => { const x = (sessions || []).find((y) => y.game === game && y.steam); return x ? x.steam : null; };
+    const back = () => { gameOpen = null; show(); };
+
+    // The list, or the session that is open.
+    function show() {
+      const g = S.status && S.status.game;
+      if (gameOpen === 'now' && g) {
+        const s = { live: true, game: g.name, exe: g.exe, steam: g.steam || steamOf(g.name), start: g.start, end: null, played: g.played, fps: g.avg_fps, low1: g.low1, low01: null, temps: {} };
+        shown = 'now';
+        draw((el) => sessionView(el, s, (sessions || []).filter((x) => x.game === g.name), back));
+        return;
       }
-      // A session that just ended is in the list now, and so is a service that came back.
-      if ((had && !g) || (S.status && !sessions && !err && !asked)) load();
-      had = !!g;
+      const s = gameOpen != null && sessions && sessions.find((x) => x.start === gameOpen);
+      if (s) {
+        s.steam = s.steam || steamOf(s.game);
+        shown = `s${s.start}`;
+        draw((el) => sessionView(el, s, sessions.filter((x) => x.game === s.game && x !== s), back));
+        return;
+      }
+      // Until the sessions load, the one asked for.
+      if (gameOpen !== 'now' && gameOpen != null && !sessions && !err && S.status) return;
+      gameOpen = null;
+      shown = 'list';
+      draw(list);
     }
 
-    function render() {
-      lists.textContent = '';
-      if (err) { emptyState(lists, `The sessions could not be loaded: ${esc(err.message)}`); return; }
-      if (!sessions) return;
-      if (!sessions.length) { emptyState(lists, 'No sessions yet. A game played for a minute or more shows up here.'); return; }
-      K.section(lists, 'By game').appendChild(table([
-        { label: 'Game', value: (r) => r.game },
-        { label: 'Sessions', num: true, value: (r) => String(r.n) },
-        { label: 'Played', num: true, value: (r) => playTime(r.played) },
-        { label: 'Average FPS', num: true, value: (r) => (r.secs ? fpsText(r.frames / r.secs) : 'N/A') },
-        { label: 'Last played', value: (r) => when(r.last) },
-      ], byGame(sessions)));
-      const shown = all ? sessions : sessions.slice(0, 20);
-      const more = sessions.length > shown.length ? button(`Show all ${sessions.length}`, { small: true, onClick: () => { all = true; render(); } }) : null;
-      K.section(lists, 'Sessions', more ? [more] : []).appendChild(table([
-        { label: 'Game', value: (r) => r.game },
-        { label: 'Started', value: (r) => when(r.start) },
-        { label: 'Played', num: true, value: (r) => playTime(r.played) },
-        { label: 'Average', num: true, value: (r) => fpsText(r.fps) },
-        { label: '1% low', num: true, value: (r) => fpsText(r.low1) },
-        { label: '0.1% low', num: true, value: (r) => fpsText(r.low01) },
-        { label: 'CPU max', num: true, value: (r) => sessionPeak(r, (id) => id === 'cpu.temp') },
-        { label: 'GPU max', num: true, value: (r) => sessionPeak(r, (id) => id === 'gpu.temp') },
-        { label: 'Liquid max', num: true, value: (r) => sessionPeak(r, (id) => id.endsWith('.liquid')) },
-      ], shown));
+    function list(el) {
+      const off = h('<div class="cam-panel cam-gamenote" hidden></div>');
+      const now = h('<section class="cam-panel cam-moncard cam-game"><header><h3></h3><span></span><span class="grow"></span></header><div class="cam-monstats"></div><p class="cam-muted"></p></section>');
+      el.append(off, now);
+      const head = now.querySelector('header'), stats = now.querySelector('.cam-monstats'), idle = now.querySelector('p');
+      const stat = (label) => { const x = h('<span></span>'); x.textContent = label; const b = h('<b></b>'); x.appendChild(b); stats.appendChild(x); return b; };
+      const [fpsB, avgB, lowB, playedB] = ['FPS', 'Average', '1% low', 'Played'].map(stat);
+      const charts = button('Open session', { small: true, onClick: () => open('now') });
+      head.appendChild(charts);
+      let art = null;
+      const lists = h('<div></div>');
+      const hint = h('<p class="cam-hint cam-gamehint"></p>');
+      hint.innerHTML = 'Games from Steam, Epic Games and Xbox are found on their own. For another one, add its program or folder to <code>[games] add</code> in camless.toml; <code>[games] skip</code> leaves one out. A session ends when the game closes or after 3 minutes in the background. Sessions under a minute are not kept. Covers come from Steam\'s own cache on this PC; camless downloads none.';
+      el.append(lists, hint);
+
+      function live() {
+        const g = S.status && S.status.game, info = S.status && S.status.service, why = info && info.fps_error;
+        off.hidden = !why;
+        off.textContent = !why ? '' : why === 'needs administrator rights'
+          ? 'Frame rates need the service to run as administrator. Play time and temperatures are still recorded.'
+          : `No frame rates: ${why}. Play time and temperatures are still recorded.`;
+        now.querySelector('h3').textContent = g ? g.name : 'Now playing';
+        head.children[1].textContent = g ? (g.in_front ? g.exe : `${g.exe}, in the background`) : '';
+        charts.hidden = !g;
+        const want = g ? `${g.name}|${g.steam || steamOf(g.name) || ''}` : '';
+        if ((art ? art.dataset.key : '') !== want) {
+          if (art) art.remove();
+          art = g ? cover(g.name, g.steam || steamOf(g.name), 'small') : null;
+          if (art) { art.dataset.key = want; now.prepend(art); }
+          now.classList.toggle('has-art', !!art);
+        }
+        stats.hidden = !g;
+        idle.hidden = !!g;
+        idle.textContent = S.status ? 'No game is running.' : 'Games show up here while the camless service runs.';
+        if (g) {
+          fpsB.textContent = fpsText(g.fps);
+          avgB.textContent = fpsText(g.avg_fps);
+          lowB.textContent = fpsText(g.low1);
+          playedB.textContent = playTime(g.played);
+        }
+      }
+
+      function render() {
+        lists.textContent = '';
+        if (err) { emptyState(lists, `The sessions could not be loaded: ${esc(err.message)}`); return; }
+        if (!sessions) return;
+        if (!sessions.length) { emptyState(lists, 'No sessions yet. A game played for a minute or more shows up here.'); return; }
+        for (const x of sessions) x.steam = x.steam || steamOf(x.game);
+        const gamesList = byGame(sessions);
+        if (picked && !gamesList.some((g) => g.game === picked)) picked = null;
+        K.section(lists, 'Your games').appendChild(gameCards(gamesList, picked, (g) => { picked = g; all = false; render(); }));
+        const mine = picked ? sessions.filter((s) => s.game === picked) : sessions;
+        const shownList = all ? mine : mine.slice(0, 20);
+        const extra = [];
+        if (picked) extra.push(button('All games', { small: true, onClick: () => { picked = null; render(); } }));
+        if (mine.length > shownList.length) extra.push(button(`Show all ${mine.length}`, { small: true, onClick: () => { all = true; render(); } }));
+        K.section(lists, picked ? `Sessions of ${picked}` : 'Sessions', extra).appendChild(sessionList(shownList, open));
+      }
+      track(S.on('state', live));
+      track(K.on('prefs', (k) => { if (k === 'unit') render(); }));
+      live();
+      render();
     }
 
     async function load() {
       const ask = ++asked;
       let r = null, e = null;
       try { r = await S.api('GET', 'games'); } catch (x) { e = x; }
-      if (ask !== asked || !lists.isConnected) return;
+      if (ask !== asked || !body.isConnected) return;
       sessions = r ? r.sessions : null;
       err = e;
-      render();
+      // A session that just ended is in the list now; the open one stays as it is.
+      if (shown === 'list' || shown === '') show();
     }
 
-    track(S.on('state', live));
-    track(K.on('prefs', (k) => { if (k === 'unit') render(); }));
-    live();
+    track(S.on('state', () => {
+      const g = S.status && S.status.game;
+      // A session that just ended is in the list now, and so is a service that came back.
+      if ((had && !g) || (S.status && !sessions && !err && !asked)) load();
+      had = !!g;
+    }));
+    show();
+    if (S.status) load();
   }
 
   /* -------------------------------------------------------------- settings */

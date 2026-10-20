@@ -397,6 +397,52 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-table tbody tr:first-child td { border-top: 0; }
 .cam-table .num { text-align: right; }
 .cam-table td.name { width: 100%; white-space: normal; min-width: 140px; font-weight: 600; color: var(--t1); }
+
+/* Games: covers, a card for each game, the sessions, and one session. */
+.cam-cover { position: relative; overflow: hidden; display: grid; place-items: center; aspect-ratio: 460 / 215; border-radius: calc(var(--radius) - 1px); background: linear-gradient(135deg, hsl(var(--hue) 42% 36%), hsl(calc(var(--hue) + 50) 48% 17%)); color: rgba(255, 255, 255, .88); font-size: 24px; font-weight: 700; letter-spacing: .04em; user-select: none; }
+.cam-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cam-cover.art > span { visibility: hidden; }
+.cam-cover.small { flex: none; width: 92px; font-size: 13px; }
+.cam-cover.big { width: 100%; font-size: 44px; }
+.cam-game.has-art { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: 16px; align-items: start; }
+.cam-game.has-art > .cam-cover { grid-row: span 3; width: 112px; }
+.cam-game > header .cam-btn { align-self: center; }
+.cam-gcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.cam-gcard { display: flex; flex-direction: column; min-width: 0; padding: 0; overflow: hidden; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.cam-gcard > .cam-cover { border-radius: 0; }
+.cam-gcard .body { padding: 10px 14px 12px; min-width: 0; }
+.cam-gcard h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--t1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cam-gcard p { margin: 0; font-size: 12px; color: var(--t3); }
+.cam-gcard .fps { display: flex; align-items: baseline; gap: 6px; margin: 6px 0 3px; min-height: 28px; }
+.cam-gcard .fps b { font-size: 22px; font-weight: 650; color: var(--t1); line-height: 1; }
+.cam-gcard .fps small { margin-left: auto; font-size: 12px; color: var(--t2); white-space: nowrap; }
+.cam-gcard .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cam-gcard:hover { border-color: var(--t4); }
+.cam-gcard[aria-pressed=true] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.cam-gcard:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cam-sday { margin: 16px 0 6px; font-size: 12px; font-weight: 600; color: var(--t3); }
+.cam-slist > .cam-sday:first-child { margin-top: 0; }
+.cam-sbox { overflow: hidden; }
+.cam-srow { display: grid; grid-template-columns: 92px minmax(120px, 1fr) repeat(5, 76px) 18px; align-items: center; gap: 14px; width: 100%; padding: 8px 12px 8px 8px; border: 0; border-top: 1px solid var(--panel-line); background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.cam-sbox > .cam-srow:first-child { border-top: 0; }
+.cam-srow:hover { background: var(--accent-soft); }
+.cam-srow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cam-srow .what { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cam-srow .what b { font-size: 13px; font-weight: 600; color: var(--t1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cam-srow .what small, .cam-srow .st small { font-size: 11.5px; color: var(--t3); white-space: nowrap; }
+.cam-srow .st { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.cam-srow .st b { font-size: 14px; font-weight: 600; color: var(--t1); }
+.cam-srow .go svg { width: 16px; height: 16px; transform: rotate(-90deg); color: var(--t4); }
+.cam-sback { margin-bottom: 12px; }
+.cam-shero { display: grid; grid-template-columns: minmax(200px, 340px) minmax(0, 1fr); gap: 20px; padding: 16px; align-items: start; }
+.cam-shero h2 { margin: 2px 0 4px; font-size: 20px; font-weight: 650; }
+.cam-shero .when { margin: 0 0 14px; font-size: 13px; color: var(--t3); }
+.cam-stiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 12px 16px; }
+.cam-stiles > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cam-stiles small { font-size: 12px; color: var(--t3); }
+.cam-stiles b { font-size: 20px; font-weight: 650; color: var(--t1); }
+.cam-stiles span { font-size: 11.5px; color: var(--t3); }
+.cam-stiles span:empty { display: none; }
 .cam-chart-note { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: 0 24px; text-align: center; font-size: 12px; color: var(--t3); }
 
 /* ------------------------------------------------------------ app parts */
@@ -529,6 +575,12 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 /* Two cooling cards side by side while each still fits CAM's four presets. */
 @container area (max-width: 719px) {
   .cam-grid2.collapse { grid-template-columns: minmax(0, 1fr); }
+}
+@container area (max-width: 759px) {
+  .cam-srow { grid-template-columns: 92px minmax(120px, 1fr) repeat(2, 64px) 18px; }
+  .cam-srow .st.temp { display: none; }
+  .cam-shero { grid-template-columns: minmax(0, 1fr); }
+  .cam-shero > .cam-cover { max-width: 340px; }
 }
 @container area (max-width: 639px) {
   .cam-grid2, .cam-mon, .cam-hgrid { grid-template-columns: minmax(0, 1fr); }

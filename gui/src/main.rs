@@ -9,6 +9,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod art;
 mod assets;
 mod backend;
 mod client;
