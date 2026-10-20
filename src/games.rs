@@ -415,10 +415,11 @@ impl Games {
     }
 
     /// The game that runs, which counts as in front: the open one while it runs, else
-    /// the first program that is a game.
+    /// the first program that is a game. One opened without a process had already
+    /// ended; the search lets `AWAY` close it.
     #[cfg(target_os = "linux")]
     fn in_front(&mut self) -> u32 {
-        if let Some(o) = self.open.as_ref().filter(|o| !o.process.as_ref().is_some_and(Process::exited)) {
+        if let Some(o) = self.open.as_ref().filter(|o| o.process.as_ref().is_some_and(|p| !p.exited())) {
             return o.pid;
         }
         linux::processes().into_iter().find(|(_, path)| self.game_at(path).is_some()).map_or(0, |(pid, _)| pid)
@@ -783,6 +784,33 @@ mod tests {
         near(f.low(0.001), 20.0);
         assert_eq!(Frames::new().fps(), None);
         assert_eq!(Frames::new().low(0.01), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_session_without_its_process_is_not_kept_in_front() {
+        let mut g = Games::new(None, false, false);
+        let me = std::process::id();
+        let open = |process| Open {
+            pid: me,
+            process,
+            game: "Test".into(),
+            exe: "test".into(),
+            steam: None,
+            start: 0,
+            last_seen: 0,
+            played: 0.0,
+            away: None,
+            meter: Meter::default(),
+            frames: Frames::new(),
+            fps: None,
+            temps: BTreeMap::new(),
+        };
+        g.open = Some(open(Process::open(me)));
+        assert_eq!(g.in_front(), me);
+        // This test is no game, so the search does not find it.
+        g.open = Some(open(None));
+        assert_ne!(g.in_front(), me);
     }
 
     #[test]
