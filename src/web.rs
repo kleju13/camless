@@ -465,7 +465,10 @@ fn find_browser() -> Option<Installed> {
 /// Ubuntu's `chromium-browser` package holds only a script that starts the snap.
 #[cfg(not(windows))]
 fn snap_launcher(exe: &Path) -> bool {
-    let head = std::fs::read(exe).map(|b| b[..b.len().min(4096)].to_vec()).unwrap_or_default();
+    use std::io::Read;
+    // Only the start: a browser's own program is some 200 MB.
+    let mut head = Vec::new();
+    let _ = std::fs::File::open(exe).and_then(|f| f.take(4096).read_to_end(&mut head));
     head.starts_with(b"#!") && head.windows(6).any(|w| w == b"/snap/")
 }
 
@@ -932,6 +935,25 @@ mod tests {
         assert_eq!(lcd_url("http://x/?kraken=1&a=b"), "http://x/?kraken=1&a=b");
         assert_eq!(lcd_url("http://x/page#top"), "http://x/page?kraken=1#top");
         assert_eq!(lcd_url("http://x/?"), "http://x/?kraken=1");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_script_that_starts_the_snap_is_not_a_browser() {
+        let dir = std::env::temp_dir().join(format!("camless-snap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        assert!(snap_launcher(&file("launcher", b"#!/bin/sh\nexec /snap/bin/chromium \"$@\"\n")));
+        assert!(!snap_launcher(&file("script", b"#!/bin/sh\nexec /opt/google/chrome/chrome \"$@\"\n")));
+        assert!(!snap_launcher(&file("program", b"\x7fELF /snap/ in its data")));
+        // Only the first 4 KB are read.
+        assert!(!snap_launcher(&file("long", &[b"#!/bin/sh\n".as_slice(), &[b'#'; 5000], b"/snap/"].concat())));
+        assert!(!snap_launcher(&dir.join("missing")));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
