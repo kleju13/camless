@@ -13,6 +13,7 @@ A light replacement for NZXT CAM. It handles fan and pump curves, lighting and t
 - **Lighting.** CAM's effects on the Kraken ring and on fans behind a Control Hub.
 - **The Kraken LCD.** Liquid temperature, frames from your own program, or a web page made for CAM, such as [KrakenDial](https://github.com/kleju13/krakendial).
 - **History.** Temperatures, loads, power and fan speeds over the last 10 minutes up to 30 days.
+- **Games and FPS.** Every game session with its play time, average frame rate, 1 % low and temperatures. Steam, Epic and Xbox games are found on their own.
 - **Profiles.** Each one is a whole setup. *Import from NZXT CAM* makes one from what CAM is set to.
 - **A tray app.** It updates itself from GitHub releases. Closing it never stops fan control.
 
@@ -53,7 +54,7 @@ CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed
 ## Documentation
 
 - [Configuration](docs/config.md): `camless.toml`, profiles, curve kinds and the command line.
-- [How it works](docs/how-it-works.md): the service and the app, fan control and safeguards, web pages on the LCD, the local API, and updates.
+- [How it works](docs/how-it-works.md): the service and the app, fan control and safeguards, history and games, web pages on the LCD, the local API, and updates.
 - [Protocol notes](docs/protocol.md) for each device.
 - [Contributing](CONTRIBUTING.md): building, testing and adding a device.
 
@@ -63,7 +64,7 @@ CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed
 
 ## Credits
 
-Most of what camless knows about NZXT devices comes from [liquidctl](https://github.com/liquidctl/liquidctl): its drivers, issues and pull requests. The Linux `nzxt-kraken3` driver helped too. Frames for the Kraken LCD are [Q565](https://github.com/seritools/q565), by seritools. How CAM streams them to the Kraken Elite was worked out from captures of CAM. The [protocol notes](docs/protocol.md) list the sources for each device. The history on the Monitoring page was inspired by [Nexus](https://github.com/hello-nexus/nexus).
+Most of what camless knows about NZXT devices comes from [liquidctl](https://github.com/liquidctl/liquidctl): its drivers, issues and pull requests. The Linux `nzxt-kraken3` driver helped too. Frames for the Kraken LCD are [Q565](https://github.com/seritools/q565), by seritools. How CAM streams them to the Kraken Elite was worked out from captures of CAM. The [protocol notes](docs/protocol.md) list the sources for each device. The history, the game sessions and the FPS counter were inspired by [Nexus](https://github.com/hello-nexus/nexus), which counts frames the same way.
 
 ## License
 

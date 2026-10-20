@@ -367,6 +367,19 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-chart-tip span { flex: 1; color: var(--t2); }
 .cam-chart-tip b { font-weight: 600; font-variant-numeric: tabular-nums; }
 .cam-chart-tip small { color: var(--t3); margin-left: 6px; font-variant-numeric: tabular-nums; }
+.cam-game { margin-bottom: 16px; }
+.cam-game .cam-monstats { justify-content: flex-start; gap: 6px 32px; margin-top: 4px; font-size: 13px; }
+.cam-game .cam-monstats b { font-size: 15px; }
+.cam-game > p { margin: 4px 0 0; font-size: 13px; }
+.cam-gamehint { margin-top: 16px; }
+.cam-gamenote { margin-bottom: 16px; padding: 12px 16px; font-size: 13px; color: var(--t2); border-color: rgba(245, 165, 36, .5); }
+.cam-tablewrap { overflow-x: auto; }
+.cam-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cam-table th { padding: 10px 14px; text-align: left; font-size: 12px; font-weight: 600; color: var(--t3); white-space: nowrap; border-bottom: 1px solid var(--panel-line); }
+.cam-table td { padding: 9px 14px; color: var(--t2); white-space: nowrap; font-variant-numeric: tabular-nums; border-top: 1px solid var(--panel-line); }
+.cam-table tbody tr:first-child td { border-top: 0; }
+.cam-table .num { text-align: right; }
+.cam-table td.name { width: 100%; white-space: normal; min-width: 140px; font-weight: 600; color: var(--t1); }
 .cam-chart-note { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: 0 24px; text-align: center; font-size: 12px; color: var(--t3); }
 
 /* ------------------------------------------------------------ app parts */

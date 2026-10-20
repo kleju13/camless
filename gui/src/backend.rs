@@ -117,6 +117,7 @@ impl Backend {
         let answer = match (method, route) {
             ("GET", "state") => Ok(self.state()),
             ("GET", "history") => self.history(query),
+            ("GET", "games") => self.from_service("/v1/games", "game sessions"),
             ("PUT", "config") => self.put_config(body),
             ("POST", "profiles/switch") => self.switch_profile(body),
             ("POST", "profiles/save-current") => self.save_current(body),
@@ -213,10 +214,15 @@ impl Backend {
     /// Sensor and fan history from the service, for the charts.
     fn history(&self, query: &str) -> Answer {
         let path = history_path(query).map_err(|e| Refused(400, e))?;
+        self.from_service(&path, "history")
+    }
+
+    /// The service's answer to a GET of `path`, as it is.
+    fn from_service(&self, path: &str, what: &str) -> Answer {
         let addr = self.lock().link.as_ref().map(|l| l.lock().unwrap_or_else(|e| e.into_inner()).addr.clone());
         let addr = addr.unwrap_or_else(|| camless_core::DEFAULT_API.to_string());
-        let body = client::get(&addr, &path).map_err(|e| Refused(502, format!("{e:#}")))?;
-        serde_json::from_str(&body).map_err(|e| Refused(502, format!("the service's history: {e}")))
+        let body = client::get(&addr, path).map_err(|e| Refused(502, format!("{e:#}")))?;
+        serde_json::from_str(&body).map_err(|e| Refused(502, format!("the service's {what}: {e}")))
     }
 
     /// The config on disk, to change. A file with a mistake stays as it is: the page

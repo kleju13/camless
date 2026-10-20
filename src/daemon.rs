@@ -9,6 +9,7 @@
 //! invalid one is reported in the status and the previous config keeps running.
 
 use crate::drivers::{self, Driver, Found, Reading};
+use crate::games::Games;
 use crate::history::History;
 use crate::sensors::{Readings, Sensors};
 use crate::web;
@@ -138,6 +139,8 @@ pub struct Daemon {
     pages: HashMap<String, Rendering>,
     /// Sensors and fan speeds over time, for the API.
     history: Arc<Mutex<History>>,
+    /// The game in front and its frame rate.
+    games: Games,
 }
 
 struct Rendering {
@@ -155,6 +158,7 @@ impl Daemon {
         sensors: Sensors,
         shared: Arc<Mutex<Snapshot>>,
         history: Arc<Mutex<History>>,
+        games: Games,
         frames: SyncSender<Event>,
         verbose: bool,
         demo: bool,
@@ -180,6 +184,7 @@ impl Daemon {
             frames,
             pages: HashMap::new(),
             history,
+            games,
         };
         let mut daemon = daemon;
         daemon.warn_missing_sensors();
@@ -266,13 +271,19 @@ impl Daemon {
                 self.engine.duties().iter().filter_map(|(c, d)| Some(format!("{c} {} %", d.value()?))).collect();
             self.log(&format!("{} | {}", shown.join(", "), duties.join(", ")));
         }
-        self.record(&sensors);
+        let fps = self.games.tick(dt, &sensors, &self.cfg.games);
+        for n in self.games.notes() {
+            self.log(&n);
+        }
+        self.record(&sensors, fps);
         self.publish(readings, sensors);
     }
 
-    /// Every sensor, and the speed and duty of every fan on a device that answers.
-    fn record(&self, sensors: &[Sensor]) {
+    /// Every sensor, the speed and duty of every fan on a device that answers, and the
+    /// frame rate of the game in front.
+    fn record(&self, sensors: &[Sensor], fps: Option<f32>) {
         let mut values: Vec<(String, f32)> = sensors.iter().filter_map(|s| Some((s.id.clone(), s.value?))).collect();
+        values.extend(fps.map(|f| ("fps".to_string(), f)));
         for s in self.slots.iter().filter(|s| s.dev.is_some() && s.reading.is_some()) {
             for f in &s.info.fans {
                 if let Some(rpm) = f.rpm {
@@ -691,7 +702,9 @@ impl Daemon {
                 pid: std::process::id(),
                 elevated: self.elevated,
                 cpu_sensor_error: self.sensors.cpu_error.clone(),
+                fps_error: self.games.error(),
             }),
+            game: self.games.now(),
         };
         let frame_target = self.cfg.lcds.iter().filter(|c| c.mode == LcdMode::Frames).find_map(|c| {
             let s = self.slots.iter().find(|s| s.found.id == c.device && s.dev.is_some())?;
@@ -713,6 +726,10 @@ impl Daemon {
     fn shutdown(&mut self) {
         // Browsers close first, so no frame comes after the LCD's own screen.
         self.pages.clear();
+        self.games.finish();
+        for n in self.games.notes() {
+            self.log(&n);
+        }
         self.history.lock().unwrap_or_else(|e| e.into_inner()).finish();
         let failsafe = self.cfg.failsafe_duty;
         let fixed: HashMap<String, u8> = self

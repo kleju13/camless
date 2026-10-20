@@ -3,6 +3,8 @@ mod backdrop;
 mod cdp;
 mod daemon;
 mod drivers;
+mod fps;
+mod games;
 mod history;
 mod q565;
 mod report;
@@ -29,6 +31,8 @@ Usage:
   camless watch [seconds]      Listen to input reports without sending anything
                                (default 10 s; CAM must not hold the devices)
   camless sensors              Read CPU, GPU and memory sensors once
+  camless fps [seconds]        Print the frame rate of the program in front once a
+                               second (default 10 s; needs administrator rights)
   camless report [config]      Print a hardware report for a GitHub issue: the NZXT
                                devices with their USB descriptors, and what the
                                service knows; read only, no commands are sent
@@ -90,6 +94,10 @@ fn main() -> Result<()> {
             watch(Duration::from_secs(secs.unwrap_or(10)), flag("--raw"))
         }
         Some("sensors") => sensors(),
+        Some("fps") => {
+            let secs = positional.first().map(|s| s.parse()).transpose().context("fps takes seconds")?;
+            fps_watch(Duration::from_secs(secs.unwrap_or(10)))
+        }
         Some("report") => report(&config_path(), flag("--json")),
         Some("import-cam") => {
             let dir = positional.first().map(PathBuf::from).unwrap_or_else(cam_import::default_dir);
@@ -387,20 +395,49 @@ fn run(path: PathBuf, verbose: bool, demo: bool, limit: Option<Duration>) -> Res
     let shared = Arc::new(Mutex::new(daemon::Snapshot::default()));
     // Simulated readings stay out of the files.
     let history_dir = path.parent().filter(|_| !demo).map(|d| d.join("history"));
+    let games = games::Games::new(history_dir.as_deref(), web::is_elevated(), demo);
     let history = Arc::new(Mutex::new(history::History::new(history_dir)));
     // Two frames in flight at most; the API answers 429 beyond that.
     let (tx, rx) = mpsc::sync_channel(2);
     if cfg.api.enabled {
-        api::spawn(&cfg.api.listen, shared.clone(), history.clone(), tx.clone(), &STOP).context("starting the local API")?;
+        api::spawn(&cfg.api.listen, shared.clone(), history.clone(), games.log(), tx.clone(), &STOP)
+            .context("starting the local API")?;
         eprintln!("camless: api on http://{}", cfg.api.listen);
     }
     let sensors = sensors::Sensors::open(pawnio_module(cfg.pawnio_module.as_ref()));
     if demo {
         eprintln!("camless: demo mode, simulated devices only");
     }
-    let mut d = daemon::Daemon::new(path, cfg, cfg_error, sensors, shared, history, tx.clone(), verbose, demo)?;
+    let mut d = daemon::Daemon::new(path, cfg, cfg_error, sensors, shared, history, games, tx.clone(), verbose, demo)?;
     d.run(&rx, &STOP);
     drop(tx);
+    STOPPED.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Prints the frame rate of the program in front once a second, counted the way
+/// game sessions count it.
+fn fps_watch(duration: Duration) -> Result<()> {
+    let capture = fps::Capture::start("camless-fps-check").context("starting the ETW session")?;
+    // Ctrl+C stops the session instead of leaving it running.
+    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(on_console_event), 1) };
+    eprintln!("frames of the program in front, counted 2 s late, for {} s", duration.as_secs());
+    let (mut pid, mut meter) = (0, fps::Meter::default());
+    let start = Instant::now();
+    while start.elapsed() < duration && !STOP.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_secs(1));
+        let front = games::foreground();
+        if front != pid {
+            (pid, meter) = (front, fps::Meter::default());
+            capture.follow(pid);
+        }
+        meter.add(&capture.take());
+        let (mut n, mut total) = (0u32, 0i64);
+        meter.settle(fps::now(), |t| (n, total) = (n + 1, total + t));
+        let program = games::program(pid).unwrap_or_else(|| format!("process {pid}"));
+        let times = if n > 0 { format!(", frames of {:.1} ms on average", total as f64 / f64::from(n) / 1e4) } else { String::new() };
+        println!("{program}: {} fps{times}", meter.fps());
+    }
     STOPPED.store(true, Ordering::SeqCst);
     Ok(())
 }

@@ -95,6 +95,16 @@ orientation = 0
 
 `camless import-cam` builds this from CAM's files in `%APPDATA%\NZXT CAM\DataStorage\latest\user`: the active profile's curves (identical ones shared), fan nicknames, lighting and the LCD mode.
 
+## Games
+
+Games from Steam, Epic Games and Xbox are found by where they run. `[games]` adds others and leaves some out, by a program's file name or by a folder:
+
+```toml
+[games]
+add = ["javaw.exe", 'D:\Emulators']   # count these as games too
+skip = ["wallpaper64.exe"]            # never these, even from a store
+```
+
 ## Commands
 
 `camless.exe` is also a command-line tool:
@@ -104,6 +114,7 @@ camless status               open every supported device and print its channels,
 camless list                 NZXT HID devices that are connected
 camless watch [seconds]      listen to input reports without sending anything (--raw for hex)
 camless sensors              read CPU, GPU and memory sensors once
+camless fps [seconds]        print the frame rate of the program in front once a second (needs administrator rights)
 camless import-cam [dir]     print a camless.toml built from CAM's active profiles (-o FILE to write it)
 camless check [config]       validate a config and show what each fan follows, without opening a device
 camless run [config]         apply the config and keep fans on their curves (--verbose, --demo, --for SECONDS)

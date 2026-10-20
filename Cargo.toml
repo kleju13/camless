@@ -28,10 +28,13 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Console",
+    "Win32_System_Diagnostics_Etw",
     "Win32_System_JobObjects",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    # ETW's log file struct holds a time zone.
+    "Win32_System_Time",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

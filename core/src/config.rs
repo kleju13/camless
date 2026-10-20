@@ -36,6 +36,8 @@ pub struct Config {
     pub pawnio_module: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Api::is_default")]
     pub api: Api,
+    #[serde(default, skip_serializing_if = "Games::is_default")]
+    pub games: Games,
     #[serde(default, rename = "curve", skip_serializing_if = "Vec::is_empty")]
     pub curves: Vec<CurveSpec>,
     #[serde(default, rename = "fan", skip_serializing_if = "Vec::is_empty")]
@@ -54,6 +56,7 @@ impl Default for Config {
             profile: None,
             pawnio_module: None,
             api: Api::default(),
+            games: Games::default(),
             curves: Vec::new(),
             fans: Vec::new(),
             lights: Vec::new(),
@@ -117,6 +120,24 @@ impl Default for Api {
 impl Api {
     fn is_default(&self) -> bool {
         *self == Api::default()
+    }
+}
+
+/// Programs that count as games besides those from Steam, Epic Games and Xbox, and
+/// programs that never do. An entry is a program's file name, `javaw.exe`, or a
+/// folder, `D:\Emulators`, for everything in it.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Games {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip: Vec<String>,
+}
+
+impl Games {
+    fn is_default(&self) -> bool {
+        *self == Games::default()
     }
 }
 
@@ -457,6 +478,9 @@ impl Config {
         }
         if let Some(name) = &self.profile {
             check_profile_name(name)?;
+        }
+        if self.games.add.iter().chain(&self.games.skip).any(|e| e.trim().is_empty()) {
+            bail!("an entry in [games] is empty");
         }
         Ok(())
     }
@@ -824,6 +848,15 @@ url = "http://127.0.0.1:30640/lcd"
     fn points_at_old_configs() {
         let err = Config::parse("[pump]\nsource = \"cpu\"\n").unwrap_err();
         assert!(format!("{err:#}").contains("import-cam"));
+    }
+
+    #[test]
+    fn games_lists_round_trip_and_refuse_empty_entries() {
+        let c = Config::parse("[games]\nadd = [\"javaw.exe\", 'D:\\Emulators']\nskip = [\"wallpaper64.exe\"]\n").unwrap();
+        assert_eq!(c.games.add, ["javaw.exe", r"D:\Emulators"]);
+        assert_eq!(Config::parse(&c.to_toml().unwrap()).unwrap(), c);
+        assert!(!Config::default().to_toml().unwrap().contains("games"));
+        assert!(Config::parse("[games]\nskip = [\" \"]\n").is_err());
     }
 
     #[test]

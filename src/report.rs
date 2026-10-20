@@ -722,7 +722,7 @@ about the table"
         let status = Status {
             version: "0.3.0".into(),
             devices: vec![kraken],
-            service: Some(ServiceInfo { pid: 1, elevated: true, cpu_sensor_error: None }),
+            service: Some(ServiceInfo { pid: 1, elevated: true, ..Default::default() }),
             ..Default::default()
         };
         let hid = |pid, interface, hex: &str| Hid {
