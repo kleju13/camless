@@ -187,14 +187,17 @@
 
   /* ----------------------------------------------------------------- shell */
 
+  // Games is experimental: in the bar only once it is turned on in Settings.
+  const gamesOn = () => !!(S.config && S.config.games && S.config.games.enabled);
   const NAV = [
     { id: 'monitoring', label: 'Monitoring', icon: 'monitoring' },
-    { id: 'games', label: 'Games', icon: 'games' },
     { id: 'cooling', label: 'Cooling', icon: 'cooling' },
     { id: 'lighting', label: 'Lighting', icon: 'lighting' },
+    { id: 'games', label: 'Games', icon: 'games', shown: gamesOn },
     { spacer: true },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
+  const navShown = (id) => { const n = NAV.find((x) => x.id === id); return !!n && (!n.shown || n.shown()); };
   const PAGES = { monitoring, games, cooling, lighting, settings };
   let root = null, main = null, content = null, dispose = null, page = null, built = null;
 
@@ -208,6 +211,7 @@
       S.fans().map((f) => f.id + (f.hw && f.hw.connected === false && !S.fanCfg(f.id) ? '-' : '')),
       S.lights().map((l) => l.id),
       S.screens().map((s) => s.id),
+      gamesOn(),
     ]);
   }
   // Not while something is dragged or a dialog or menu is open.
@@ -226,6 +230,9 @@
       : `<a href="#${n.id}" data-id="${n.id}" title="${esc(n.label)}">${I[n.icon]}<span class="lbl">${esc(n.label)}</span></a>`)).join('');
     nav.appendChild(serviceBadge());
     nav.appendChild(updateBadge());
+    const navItems = () => nav.querySelectorAll('a[data-id]').forEach((a) => { a.hidden = !navShown(a.dataset.id); });
+    S.on('config', navItems);
+    navItems();
     K.on('prefs', (k) => {
       if (k !== 'theme') return;
       root.dataset.theme = K.prefs.theme;
@@ -300,7 +307,9 @@
   function go() {
     built = layoutKey();
     let id = decodeURIComponent(location.hash.slice(1)) || K.prefs.page || 'cooling';
-    if (!PAGES[id]) id = 'cooling';
+    // A page that is not in the bar, such as Games while it is off, opens Cooling. Until
+    // the config loads, Games stays where it is.
+    if (!PAGES[id] || (S.config && !navShown(id))) id = 'cooling';
     if (K.prefs.page !== id) K.setPref('page', id);
     const top = main.scrollTop;
     if (dispose) dispose();
@@ -1742,7 +1751,10 @@
     const hidden = new Set();
     head.appendChild(choice({ options: HIST_RANGES, value: span, label: 'Range', onChange: (v) => { span = v; K.setPref('histSpan', v); build(); load(); } }));
     const legend = h('<div class="cam-chart-legend"></div>');
-    bar.append(K.tabStrip(HIST_GROUPS, group, (g) => { group = g; K.setPref('histGroup', g); hidden.clear(); build(); load(); }, { sub: true, label: 'Series' }), legend);
+    // Frame rates are recorded only while Games is on.
+    const groups = HIST_GROUPS.filter((g) => g.id !== 'fps' || gamesOn());
+    if (!groups.some((g) => g.id === group)) group = 'temp';
+    bar.append(K.tabStrip(groups, group, (g) => { group = g; K.setPref('histGroup', g); hidden.clear(); build(); load(); }, { sub: true, label: 'Series' }), legend);
 
     function build() {
       series = histSeries(group);
@@ -2100,6 +2112,18 @@
         })),
         row('Address', null, h(`<code>http://${esc(api.listen)}</code>`)),
       ]);
+    }
+
+    if (S.config) {
+      const gamesRow = row('Games', '', toggle({
+        checked: gamesOn(), label: 'Games',
+        onChange: (v) => {
+          editCfg((x) => { x.games = Object.assign({}, x.games, { enabled: v }); if (!v) delete x.games.enabled; if (!Object.keys(x.games).length) delete x.games; });
+          toast(v ? 'Games is at the bottom of the sidebar now.' : 'Games is off. Sessions recorded so far stay on this PC.');
+        },
+      }));
+      gamesRow.hint('New, and off until you turn it on. The service then watches which program is in front and keeps each game session: play time, frame rates and temperatures. Frame rates need the service to run as administrator. Sessions stay on this PC.');
+      panel('Experimental', [gamesRow]);
     }
 
     panel('Profiles and backup', [

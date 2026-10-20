@@ -145,12 +145,15 @@ impl Updates {
     }
 }
 
-/// Programs that count as games besides those from Steam, Epic Games and Xbox, and
-/// programs that never do. An entry is a program's file name, `javaw.exe`, or a
-/// folder, `D:\Emulators`, for everything in it.
+/// Game sessions, off until turned on: the service then follows the program in front.
+/// `add` lists programs that count as games besides those from Steam, Epic Games and
+/// Xbox, and `skip` programs that never do. An entry is a program's file name,
+/// `javaw.exe`, or a folder, `D:\Emulators`, for everything in it.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Games {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub add: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -879,6 +882,14 @@ url = "http://127.0.0.1:30640/lcd"
         assert_eq!(Config::parse(&c.to_toml().unwrap()).unwrap(), c);
         assert!(!Config::default().to_toml().unwrap().contains("games"));
         assert!(Config::parse("[games]\nskip = [\" \"]\n").is_err());
+    }
+
+    #[test]
+    fn games_are_off_until_turned_on() {
+        assert!(!Config::default().games.enabled);
+        let c = Config::parse("[games]\nenabled = true\n").unwrap();
+        assert!(c.games.enabled);
+        assert!(c.to_toml().unwrap().contains("enabled = true"));
     }
 
     #[test]
