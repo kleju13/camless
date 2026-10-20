@@ -1,7 +1,8 @@
 //! The Krakens before the Elite 2024, on the same command set: the Kraken X3 (X53,
-//! X63, X73), the Kraken Z3 (Z53, Z63, Z73), the Kraken 2023 and the Kraken Elite
-//! 2023. Curves are stored in the cooler as on the Elite 2024, under the same safety
-//! floor; the fan header, lighting and the screen differ by model.
+//! X63, X73), the Kraken Z3 (Z53, Z63, Z73), the Kraken 2023 (its USB name is
+//! "Kraken Base") and the Kraken Elite 2023. Curves are stored in the cooler as on
+//! the Elite 2024, under the same safety floor; the fan header, lighting and the
+//! screen differ by model.
 //!
 //! Sources: liquidctl `kraken3.py`, the Linux `nzxt-kraken3` driver, and Nexus
 //! (`KrakenModel.cs`, `KrakenProtocol.cs`, `KrakenHub.cs`). docs/protocol.md says
@@ -21,7 +22,7 @@ pub const X3: Model = Model::hid(NZXT_VID, 0x2007, "kraken-x3", "Kraken X3", ope
 /// A later X3; liquidctl and the Linux driver treat it as the same cooler.
 pub const X3_2014: Model = Model::hid(NZXT_VID, 0x2014, "kraken-x3-2014", "Kraken X3", open);
 pub const Z3: Model = Model::hid(NZXT_VID, 0x3008, "kraken-z3", "Kraken Z3", open);
-pub const KRAKEN_2023: Model = Model::hid(NZXT_VID, 0x300e, "kraken-2023", "Kraken (2023)", open);
+pub const KRAKEN_2023: Model = Model::hid(NZXT_VID, 0x300e, "kraken-2023", "Kraken Base (2023)", open);
 pub const ELITE_2023: Model = Model::hid(NZXT_VID, 0x300c, "kraken-elite-2023", "Kraken Elite (2023)", open);
 
 /// How a picture reaches the screen without the memory buckets, which are flash.
