@@ -85,12 +85,13 @@ struct Info {
     animation: [u8; 5],
 }
 
-/// `ParseHubInfo`: the 4-pin tach at 9, the mode at 12, the animation from 15.
-fn parse_info(reply: &[u8]) -> Option<Info> {
+/// `ParseHubInfo`: the 4-pin tach at 9, the mode at 12, the animation from 15. A
+/// reply without the animation keeps the `last` one, as Nexus does.
+fn parse_info(reply: &[u8], last: [u8; 5]) -> Option<Info> {
     if reply.len() < 14 || reply[..2] != [0xff, 0xcc] {
         return None;
     }
-    let animation = reply.get(15..20).map_or([0; 5], |a| a.try_into().unwrap_or_default());
+    let animation = reply.get(15..20).and_then(|a| a.try_into().ok()).unwrap_or(last);
     Some(Info { mode: reply[12], legacy_rpm: legacy_rpm(reply[9], reply[10]), animation })
 }
 
@@ -206,7 +207,7 @@ pub struct Np50 {
 fn open(_: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
     let mut port = Serial::open(&found.path)?;
     let info = serial::request(&mut port, &GET_INFO, INFO_LEN, INFO_TIMEOUT)?;
-    let info = parse_info(&info).context("no hub info reply; not an NP50, or it is busy")?;
+    let info = parse_info(&info, [0; 5]).context("no hub info reply; not an NP50, or it is busy")?;
     let firmware = hyte::parse_firmware(&serial::request(&mut port, &GET_FIRMWARE, FIRMWARE_LEN, REPLY_TIMEOUT)?);
     let mut np50 = Np50 {
         port,
@@ -346,7 +347,7 @@ impl Driver for Np50 {
     fn poll(&mut self) -> Result<Reading> {
         // The heartbeat: without it the hub leaves software mode in 5 s.
         let reply = serial::request(&mut self.port, &GET_INFO, INFO_LEN, INFO_TIMEOUT)?;
-        self.info = parse_info(&reply).context("no hub info reply")?;
+        self.info = parse_info(&reply, self.info.animation).context("no hub info reply")?;
         let chains = self.chains()?;
         let modules: Vec<Vec<Module>> = chains.iter().map(|c| c.iter().map(|(m, _)| *m).collect()).collect();
         if modules != self.modules {
@@ -467,9 +468,9 @@ mod tests {
         info[9..11].copy_from_slice(&[1, 50]);
         info[12] = MOTHERBOARD;
         info[15..20].copy_from_slice(&[1, 255, 0, 0, 90]);
-        assert_eq!(parse_info(&info), Some(Info { mode: 2, legacy_rpm: 1000, animation: [1, 255, 0, 0, 90] }));
-        assert_eq!(parse_info(&info[..14]).map(|i| i.animation), Some([0; 5]));
-        assert_eq!(parse_info(&[0xff, 0xdd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), None);
+        assert_eq!(parse_info(&info, [0; 5]), Some(Info { mode: 2, legacy_rpm: 1000, animation: [1, 255, 0, 0, 90] }));
+        assert_eq!(parse_info(&info[..14], [7; 5]).map(|i| i.animation), Some([7; 5]));
+        assert_eq!(parse_info(&[0xff, 0xdd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0; 5]), None);
 
         let mut reply = Vec::new();
         reply.extend_from_slice(&slot(1, FP12, 24, [12, 50]));

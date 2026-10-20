@@ -238,7 +238,7 @@ fn parse_devices(reply: &[u8]) -> Vec<(u8, u8, u8)> {
     let Some(&channels) = reply.get(6) else { return out };
     let data = &reply[7..];
     let mut pos = 0;
-    for channel in 1..=channels {
+    for channel in 1..=channels.min(MAX_CHANNELS as u8) {
         let Some(record) = data.get(pos..pos + 8) else { break };
         let serial_len = usize::from(record[7]);
         if serial_len > 0 {
@@ -600,7 +600,7 @@ impl Driver for Link {
                 .filter(|d| d.speed)
                 .map(|d| FanChannel {
                     id: d.id(),
-                    name: format!("{}, port {}", d.name, d.channel),
+                    name: format!("{}, channel {}", d.name, d.channel),
                     pump: d.pump(),
                     min_duty: d.floor(),
                     ..Default::default()
@@ -612,7 +612,7 @@ impl Driver for Link {
                 .filter(|d| d.leds > 0)
                 .map(|d| LightChannel {
                     id: d.id(),
-                    name: format!("{}, port {}", d.name, d.channel),
+                    name: format!("{}, channel {}", d.name, d.channel),
                     leds: d.leds as u16,
                     modes: vec!["off".into(), "fixed".into()],
                     ..Default::default()
@@ -628,7 +628,7 @@ impl Driver for Link {
             .filter(|d| d.temperature)
             .map(|d| {
                 let id = static_id(&format!("ch{}-temp", d.channel));
-                (id, static_id(&format!("{} probe, port {}", d.name, d.channel)), Unit::Celsius)
+                (id, static_id(&format!("{} probe, channel {}", d.name, d.channel)), Unit::Celsius)
             })
             .collect()
     }
@@ -645,7 +645,7 @@ impl Driver for Link {
         self.send_duties()?;
         self.send_colors()?;
 
-        let slot = |values: &Option<[Option<i16>; CHANNEL_SLOTS]>, ch: u8| values.and_then(|v| v[usize::from(ch)]);
+        let slot = |values: &Option<[Option<i16>; CHANNEL_SLOTS]>, ch: u8| values.and_then(|v| v.get(usize::from(ch)).copied().flatten());
         let mut reading = Reading::default();
         for d in &self.devices {
             if d.temperature {
@@ -716,6 +716,16 @@ mod tests {
         let r = reply(DEVICES_DATA, 3, &data);
         assert_eq!(parse_devices(&r), [(1, 1, 0), (3, 7, 2)]);
         assert_eq!(parse_devices(&r[..6]), []);
+    }
+
+    #[test]
+    fn the_device_list_stops_at_the_last_channel() {
+        // A count past 24 would index past every per-channel table.
+        let data: Vec<u8> = (0..40).flat_map(|_| [0, 0, 1, 0, 0, 0, 0, 1, b'A']).collect();
+        let r = reply(DEVICES_DATA, 40, &data);
+        let devices = parse_devices(&r);
+        assert_eq!(devices.len(), MAX_CHANNELS);
+        assert_eq!(devices.last().map(|d| d.0), Some(MAX_CHANNELS as u8));
     }
 
     #[test]
