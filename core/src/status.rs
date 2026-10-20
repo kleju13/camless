@@ -119,6 +119,14 @@ pub struct LcdInfo {
     pub width: u16,
     pub height: u16,
     pub round: bool,
+    /// Takes streamed pictures: web pages and frames. Some coolers take pictures only
+    /// into flash memory, which camless does not write; they keep their own display.
+    #[serde(default = "yes")]
+    pub frames: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]

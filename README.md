@@ -36,6 +36,16 @@ camless is not affiliated with or endorsed by NZXT. NZXT, CAM and Kraken are tra
 | Kraken Elite 2024 (Kraken Elite V2) | `1e71:3012` | pump and fan curves, lighting, LCD |
 | Control Hub (H9 Flow RGB+ and other recent cases) | `1e71:2022` | fan duties, lighting |
 
+These follow liquidctl, the Linux driver and Nexus, and nobody has run camless on them yet:
+
+| Device | USB id | What camless drives |
+|---|---|---|
+| Kraken Plus 2024 | `1e71:3014` | pump and fan curves, lighting the cooler reports, LCD at the size it reports |
+| Kraken Elite 2023 | `1e71:300c` | pump and fan curves; LCD from firmware 2 |
+| Kraken 2023 | `1e71:300e` | pump and fan curves; LCD on firmware 2 |
+| Kraken Z3 (Z53, Z63, Z73) | `1e71:3008` | pump and fan curves, RGB header; the LCD shows only its own display |
+| Kraken X3 (X53, X63, X73) | `1e71:2007`, `1e71:2014` | pump curve, pump ring, logo and RGB header |
+
 [hardware/verified.toml](hardware/verified.toml) lists the hardware camless was reported working on. With any other device camless drives, the app shows *Unverified hardware* in the sidebar. *It works* or *Something is wrong* there opens a GitHub issue with a hardware report filled in. Once you submit it there, *I submitted it* hides the prompt for that setup, and a works report adds the device to the list.
 
 The app lists other NZXT devices as "no driver yet". If you have one, *Settings → Devices → Create report* opens a GitHub issue with what a driver needs filled in, and shows you all of it first. A driver is one Rust file, and [CONTRIBUTING.md](CONTRIBUTING.md) shows how to write one.
@@ -63,11 +73,11 @@ CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed
 
 ## Not done yet
 
-- Drivers for other NZXT devices.
+- Drivers for other NZXT devices: the Smart Device V2, the RGB & Fan Controller and the older Krakens.
 
 ## Credits
 
-Most of what camless knows about NZXT devices comes from [liquidctl](https://github.com/liquidctl/liquidctl): its drivers, issues and pull requests. The Linux `nzxt-kraken3` driver helped too. Frames for the Kraken LCD are [Q565](https://github.com/seritools/q565), by seritools. How CAM streams them to the Kraken Elite was worked out from captures of CAM. The [protocol notes](docs/protocol.md) list the sources for each device. The history, the game sessions, the FPS counter and the MCP server were inspired by [Nexus](https://github.com/hello-nexus/nexus), which counts frames the same way.
+Most of what camless knows about NZXT devices comes from [liquidctl](https://github.com/liquidctl/liquidctl): its drivers, issues and pull requests. The Linux `nzxt-kraken3` driver helped too, and so did Nexus for the Krakens camless has not run on. Frames for the Kraken LCD are [Q565](https://github.com/seritools/q565), by seritools. How CAM streams them to the Kraken Elite was worked out from captures of CAM. The [protocol notes](docs/protocol.md) list the sources for each device. The history, the game sessions, the FPS counter and the MCP server were inspired by [Nexus](https://github.com/hello-nexus/nexus), which counts frames the same way.
 
 ## License
 

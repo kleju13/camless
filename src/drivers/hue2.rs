@@ -1,6 +1,7 @@
-//! Lighting in NZXT's Hue 2 family, which the Kraken 2023/2024 coolers and the
-//! Control Hub share: static colors (`26 04` + `26 06`), effects (`2A 04`) and the
-//! accessory report (`20 03` → `21 03`).
+//! Lighting in NZXT's Hue 2 family, which the Krakens since the X3 and the Control
+//! Hub share: static colors (`26 04` + `26 06`), effects (`2A 04`) and the accessory
+//! report (`20 03` → `21 03`). The Kraken X3 and Z3 take static colors as `2A 04`
+//! too, see `packets_2a`.
 //!
 //! Sources: liquidctl (`kraken3.py`, `control_hub.py`, `util.py`) and captures of
 //! NZXT CAM 4.76.6 driving a Kraken Elite 2024 and a Control Hub.
@@ -61,6 +62,11 @@ impl ChannelAccessories {
             .iter()
             .map(|&id| accessory(id).0.map_or_else(|| format!("accessory {id:#04x}"), String::from))
             .collect()
+    }
+
+    /// What the first accessory on the channel is called, if camless knows it.
+    pub fn name(&self) -> Option<&'static str> {
+        self.ids.first().and_then(|&id| accessory(id).0)
     }
 
     /// The sum over known accessories; CAM's 24 when nothing on the channel is known.
@@ -174,10 +180,38 @@ pub fn packets(channel: u8, lighting: &Lighting, leds: u16) -> Vec<Vec<u8>> {
     }
 }
 
+/// One color in the `2A 04` layout, liquidctl's `fixed` mode: mode 00, its speed
+/// table 0, one color slot. Its `off` is the same in black.
+pub fn fixed(channel: u8, color: &Rgb, leds: u16) -> Vec<u8> {
+    let mut msg = vec![0x2a, 0x04, channel, channel, 0x00];
+    msg.extend_from_slice(&SPEED_VALUE[0][2]);
+    msg.extend_from_slice(&grb(color));
+    msg.extend_from_slice(&[0; 15 * 3]);
+    msg.extend_from_slice(&[0x00, 1, 0x00, leds.min(255) as u8, 0x03]);
+    msg
+}
+
+/// Lighting for the Kraken X3 and Z3, all in the `2A 04` layout as liquidctl sends
+/// it; the `26 04` static colors came with the later coolers. `leds` goes where
+/// liquidctl puts its per-channel `_STATIC_VALUE`.
+pub fn packets_2a(channel: u8, lighting: &Lighting, leds: u16) -> Vec<Vec<u8>> {
+    match lighting {
+        Lighting::Off => vec![fixed(channel, &[0, 0, 0], leds)],
+        Lighting::Fixed(c) => vec![fixed(channel, c, leds)],
+        Lighting::Effect { effect: e, colors, speed, backward } => {
+            vec![effect(channel, *e, colors, speed.index(), *backward, leds)]
+        }
+    }
+}
+
+pub fn write(dev: &HidDevice, channel: u8, lighting: &Lighting, leds: u16) -> Result<()> {
+    send(dev, packets(channel, lighting, leds))
+}
+
 /// The devices throttle lighting: more than about four packets in half a second are
 /// dropped, not queued (camera measurements in liquidctl#882). Space them out.
-pub fn write(dev: &HidDevice, channel: u8, lighting: &Lighting, leds: u16) -> Result<()> {
-    for p in packets(channel, lighting, leds) {
+pub fn send(dev: &HidDevice, packets: Vec<Vec<u8>>) -> Result<()> {
+    for p in packets {
         hid::write(dev, &p)?;
         std::thread::sleep(Duration::from_millis(150));
     }
@@ -215,6 +249,17 @@ mod tests {
         let m = effect(0x02, Effect::SpectrumWave, &[[1, 2, 3]], Speed::Fastest.index(), true, 24);
         assert_eq!(&m[5..7], &[0x50, 0x00]);
         assert_eq!(&m[55..57], &[0x02, 1]);
+    }
+
+    #[test]
+    fn fixed_in_the_2a_layout_matches_liquidctl() {
+        // liquidctl KrakenX3 set_color('ring', 'fixed', [[0xff, 0x10, 0x20]]): ring 0b010,
+        // mode 00, speed 32 00, one GRB slot, footer 00 01 00 <static 8> 03.
+        let m = fixed(0b010, &[0xff, 0x10, 0x20], 8);
+        assert_eq!(&m[..10], &[0x2a, 0x04, 0x02, 0x02, 0x00, 0x32, 0x00, 0x10, 0xff, 0x20]);
+        assert!(m[10..55].iter().all(|&b| b == 0));
+        assert_eq!(&m[55..], &[0x00, 1, 0x00, 8, 0x03]);
+        assert_eq!(packets_2a(0b001, &Lighting::Off, 40), vec![fixed(0b001, &[0, 0, 0], 40)]);
     }
 
     #[test]
