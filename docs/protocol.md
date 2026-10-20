@@ -6,6 +6,7 @@ Sources:
 - liquidctl's `kraken2.py` and `asetek.py` with their guides, and the Linux `nzxt-kraken2` driver, for the Kraken X2, the M22 and the Asetek-made Krakens, which Nexus leaves out;
 - [Nexus](https://github.com/hello-nexus/nexus) (`KrakenModel.cs`, `KrakenProtocol.cs`, `KrakenHub.cs`), for the Krakens camless has not run on. Nexus says only its Elite 2024 rows were run on hardware;
 - Nexus's `Peripherals/LianLi`, `Cooling/LianLiCoolingProvider.cs` and `Conflicts/ConflictAppDefinitions.cs`, which follow FanControl.LianLi and L-Connect 3, for the Lian Li Uni Hubs;
+- Nexus's `Peripherals` and `Lighting` handlers for the other brands' hubs: `LianLiTl`, `Strimer`, `AsiahorseUmbra`, `Nollie`, `CorsairLink` and `Hyte`. Each section below names its files;
 - strings and tables in CAM 4.76.6's `@nzxt/cam-core` 71.9.3 (`index.node`, a napi-rs Rust addon), `service.exe` and the Electron bundles, inspected statically with [rea](https://github.com/morluto/rea) and plain string extraction;
 - CAM's own profile files.
 
@@ -18,6 +19,7 @@ Sources:
 - The device files belong to root. `linux/71-camless.rules` tags the hidraw and USB nodes of the drivers' models, and no others, with `uaccess`, as liquidctl's `71-liquidctl.rules` does: systemd then gives them to the user at the seat. liquidctl's file notes that a hidraw node can keep its old rights until the device is plugged in again or the PC restarts, so `install.sh` says so.
 - `camless report` reads the configuration descriptor from sysfs (`descriptors`) and the report descriptor from `/sys/class/hidraw/<node>/device/report_descriptor`, which need no access to the device.
 - Kernel drivers: `nzxt-kraken3` and `nzxt-kraken2` bind to the Krakens as hwmon drivers and start them with `HID_CONNECT_HIDRAW`, so the hidraw node stays, and camless reaches the device beside them.
+- The HYTE and iBUYPOWER hubs are USB serial ports (`cdc_acm`, `/dev/ttyACM*`). camless finds them under `/sys/class/tty` by the USB ids above each port's `device`, as Nexus's `LinuxSerialDiscovery` does, and opens them exclusively (`TIOCEXCL`) in raw mode. The udev rule for them also sets `ID_MM_DEVICE_IGNORE`, so ModemManager does not probe them with modem commands.
 
 **Kraken Elite V2**
 - Init: `70 02 01 B8 01`, then `70 01`.
@@ -98,9 +100,92 @@ Sources:
 - Speeds: feature report `E0 50 00`, then input report `E0` read with `HidD_GetInputReport` (65 bytes): one BE speed per port from byte 1 or 2. Above 6000 is no speed, and camless keeps the last one.
 - Firmware: `E0 50 01`, then the input report: `E0 50` again at `[1]`, the family id at `[4]`, the version at `[5]`, in a different code per family (`firmware_number` in `lianli.rs`, after Nexus). A hub that just attached can answer it empty; camless asks three times when it opens the hub.
 - After sleep the hub is out of manual mode (Nexus re-enters it on resume). camless takes a gap of over 30 s between polls for a wake-up and enters manual mode again.
-- L-Connect: Nexus leaves the hubs alone while `L-Connect 3`, `L-Connect`, `LConnect3` or `LConnect` runs, by process name. camless does the same, checks every 5 s, and sends the ports it drives back to the motherboard before it lets go. Nexus does not count L-Connect's service (`LConnectService`) as the app running, and neither does camless; nobody has checked whether it drives the fans with the app closed.
-- Not done: lighting, which goes in 353-byte output reports, over `HidD_SetOutputReport` on the SL-Infinity and the interrupt pipe on the SL; the TL, Strimer and wireless controllers, which Nexus drives with other handlers.
+- L-Connect: Nexus leaves the hubs alone while `L-Connect 3`, `L-Connect`, `LConnect3` or `LConnect` runs, by process name. camless does the same, checks every 5 s, and sends the ports it drives back to the motherboard before it lets go, and when the service stops, which Nexus does not. Nexus does not count L-Connect's service (`LConnectService`) as the app running, and neither does camless; nobody has checked whether it drives the fans with the app closed.
+- Lighting (Nexus `LianLiLightingFrameWriter.cs` and `LianLiUniHubLightingProfile`), off or one colour per port:
+  - Colours go in a 353-byte output report, `E0 <30 | channel>` and R, B, G per LED, over the interrupt pipe on the SL hubs (`7750` is not one: it takes `HidD_SetOutputReport`, as the SL-Infinity and v2 hubs do). A colour whose R + G + B passes 460 is scaled down to that, Nexus's limit on the hub's current.
+  - Then `E0 <10 | channel> 01 00 00 <brightness> 00` as a feature report: the static effect, brightness `00` for full and `08` for off. After every port, `E0 60 00 <latch> 00 00 00`: latch `01`, `04` on the v2 hubs.
+  - Each port's fan count goes first, in the quantity register: `E0 10 <register> <port << 4 | fans> 00 00 00` packed on the SL and v2 hubs, `E0 10 <register> <port + 1> <fans> 00 00` on the others. camless does not know the fans on a port and sends the most the hub takes, 4 or 6, which is the same for one colour.
+  - The SL-Infinity hubs have two channels per port, the inner ring (8 LEDs a fan, channel 2p) and the outer (12, channel 2p + 1), and take the fan count again before each frame. The SL hubs take 16 LEDs a fan on one channel.
+  - The ARGB merge goes off first (`E0 10 34 00 00 00 00`, then 20 ms): once on the SL hubs, before every frame on the SL-Infinity (`a102`).
+  - The hub keeps its colours when camless lets go. Nexus also sends a sync with the motherboard's ARGB (`E0 10 <argb register> <on>`) when the user asks for it; camless never does.
+- Not done: the L-Wireless controllers (`0416:8040`). Nexus sends a fan's duty in its RF bind frames, through a pairing state machine that addresses the master and each fan by MAC over WinUSB. Its `RfSaveCfg` (`15`) stores the setup in the fans' flash, and the fans need a clock-sync heartbeat. camless leaves them out until someone with the hardware can test it.
 - hidapi's native Windows backend has no `get_input_report`, and it trims output reports to the feature report length. `winhid.rs` makes these calls itself. On Linux, `hidraw.rs` sends the 7-byte feature report as it is (`HIDIOCSFEATURE`) and reads the speeds with `HIDIOCGINPUT`, as Nexus's `LinuxHidDevice.cs` does.
+
+**Lian Li Uni Fan TL controller** (`0416:7372`; experimental, with `[devices] other_brands` on)
+- Nexus `Peripherals/LianLiTl`, `Peripherals/LianLiCp` and `Lighting/TlLightingFrameWriter.cs`, from L-Connect and FanControl.LianLi. Nexus calls it untested, pending verification.
+- No source names the HID collection: Nexus picks the interface with 64-byte output and input reports, and so does camless, on a vendor page only (`Usage::Vendor`).
+- Every command is a 64-byte report, `01 <command> 00 00 00 <payload length> <payload>`, and every one is answered. camless drops what is waiting (1 ms reads) before each one.
+- Handshake `A1`: one record per fan from byte 6, three bytes: `<detected 80 | port << 4 | fan>` and the rpm, BE. camless takes the fans found at open; above 6000 rpm is no reading. A reply whose command byte is not `A1` is a late one to another command, and lists no fans (Nexus does not check).
+- Duty: `AA <port << 4 | fan> <duty>`, 12..100, with 0 sent as 1. Off the motherboard's sync: `B1 <address>`; back on it: `B1 <address | 80>`. camless takes a fan off the sync when a curve first takes it, and puts it back when camless lets go or the service stops. Nexus never puts a fan back on the sync.
+- Lighting, per fan: `A3` with 20 bytes: `<port << 4> <address> <mode> <brightness> <speed>` and the colour from byte 5. Static: mode `03`, brightness 4, speed 2, a colour count of 1 at byte 19. Off: mode `00` and byte 18 set.
+
+**Lian Li Strimer Plus V2** (`0cf2:a200`; experimental, with `[devices] other_brands` on)
+- Nexus `Peripherals/Strimer` and `Lighting/StrimerLightingFrameWriter.cs`, from OpenRGB's `LianLiStrimerLConnectController`. Nexus calls it untested, pending verification.
+- The Uni Hub's collection (`FF72`, `A1`), 255-byte reports with id `E0` on the interrupt pipe. The 24-pin cable is zones 0..5 of 20 LEDs, the 8-pin GPU cable zones 6..11 of 27 (the dual 8-pin cable has the first four).
+- A colour: `E0 <30 | zone>` and R, B, G per LED, then `E0 <10 | zone> 01 00 01 00 00` (direct mode, Nexus's middle speed, forward, full brightness). Off: the same commit with mode `00`. Then a latch over every zone: `E0 2C 0F FF 00 00 00 00`, a bit per zone, the GPU zones from bit 6. Nexus latches `03 FF` for the dual 8-pin cable when its setting says so; camless has no such setting and latches all twelve, Nexus's default.
+
+**Asiahorse Umbra V2** (`1a86:fe04`; experimental, with `[devices] other_brands` on)
+- Nexus `Peripherals/AsiahorseUmbra`, `Lighting/AsiahorseUmbraLightingFrameWriter.cs` and `Cooling/AsiahorseUmbraCoolingProvider.cs`, from the vendor app and captures of it. camless leaves the hub alone while `Sync_light` runs.
+- No source names the HID collection: 64-byte output and input reports on a vendor page, as for the TL.
+- Frames: `52 42 <length> 00 <command> <arguments> <sum>`, 64 bytes after a zero report id. The length counts the header, the arguments and the sum; the sum adds every byte before it. A reply carries the same command. Windows leaves the zero report id in front of replies.
+- Info `00`: the model as BE u32 at byte 5, which must be 5 for this id, and the firmware at 17..19.
+- Fans: they all run at one duty and report no speed. `08 01` takes them off the motherboard's PWM, `08 00` gives them back, when camless lets go and when the service stops, as Nexus does; `FB <duty>` sets the duty, which Nexus sends again with every info poll, and so does camless. An info request without a reply is a slow hub, not a lost one, as in Nexus: the duty still goes out.
+- Lighting: `FD 01` first (the hub drives the LEDs, not its ARGB input). Then the static effect on every port, `03 FF FF 00 03 01 FF` and colour 1 in all four colour slots of the 52-byte block; off is `06`.
+- camless never sends `02` (a port's LED count, kept in flash), `0B`, `0C`, `F9`, `FA`, `FC` or `FF`.
+
+**Nollie ARGB controllers** (`3061:4714`, `4716`; `16d2:1f01`, `1f11`, `1616`, `1617`, `1618`; `16d5:4714`, `4716`, `1f01`, `1f11`, `2a32`, `2a16`, `2a08`, `2c08`, `2a01`; experimental, with `[devices] other_brands` on)
+- Nexus `Peripherals/Nollie` and `Lighting/NollieLightingFrameWriter.cs`, ported from OpenRGB's `NollieController`. Nexus has no Nollie app to leave the controllers to, so neither has camless.
+- Lighting only, and the controllers answer nothing. They do not know their LED counts, so camless sends each channel the most LEDs it takes (Nexus's table), in one colour or black. The firmware keeps the last colours.
+- Collection: the composite OS2.1 controllers (`2a32` and `2a16` on interface 0, `2a08`, `2c08` and `2a01` on interface 2) at usage page `FF00`, usage `01`, as Nexus picks them. For the others Nexus matches the output report length: camless opens a vendor-defined collection whose output reports are exactly that long, and does not read it first, as the controllers send nothing.
+- Wide transport (the 16- and 32-channel ones): a 1025-byte report per channel, `00 <wire channel> <flag> <count BE>` and G, R, B per LED from byte 5, shown on receipt. Wire channels 15 and 31 carry flag 1 and 2, go in every frame, empty if nothing is set on them, and get 8 ms after them. Channels go in ascending wire order.
+- Chunked transport (the others): 65-byte reports of 21 LEDs, `00 <chunk + wire channel × stride>` and the LEDs from byte 2, G, R, B on `1f01`, `1f11`, `2a08`, `2a01` and `2c08`, R, G, B on the 28 series. A latch `00 FF` after the frame.
+- Each card channel goes to a wire channel through a map per controller (`Map32`, `Map16Legacy`, `Map16Os2`, or none).
+- camless never sends the standalone settings (`80`, `FE 02`), the release (`FF`, `FE 01`) or the LED-count handshake (`FE 03`).
+
+**Corsair iCUE LINK System Hub** (`1b1c:0c3f`; experimental, with `[devices] other_brands` on)
+- Nexus `Peripherals/CorsairLink`, `Cooling/CorsairLinkCoolingProvider.cs` and `Lighting/CorsairLinkLightingFrameWriter.cs`, checked against OpenLinkHub and OpenRGB, and run by Nexus on firmware 3.2.571 and 4.1.656. camless leaves the hub alone while iCUE runs (`iCUE`, its launcher, plugin host and services, and Corsair Link 4).
+- Usage page `FF42`, usage `01`. A command goes in a 513-byte write, `00 00 01 <command> <payload>`, and the hub answers each with a 512-byte report: the command at byte 2, its status at 3 (0 for taken).
+- Firmware `02 13`: the version at 4, 5 and 6..7 LE. Software mode `01 03 00 02`, then 500 ms before anything else, and every channel's duty right after the colour endpoint opens, as Nexus does; hardware mode, the hub's own curve, `01 03 00 01`, when camless lets go and when the service stops.
+- Data sits behind endpoints. A read: close `05 01 01 <endpoint>`, open `0D 01 <endpoint>`, read `08 01 <endpoint>`, close. The reply has the endpoint's data type at 4..5; another type is a late reply, and up to five more reads (50 ms each) find the right one.
+  - Devices `36`, type `21 00`: the channel count at 6, then per channel an 8-byte record (type at 2, model at 3, serial length at 7) and the serial. Length 0 is an empty channel. Nexus's model table gives names, LED counts, which have a speed and which a probe.
+  - LED counts `20` (no type check): per channel from 1 at 7 + 4 × channel, connected when the first u16 is 2, then the count, capped at 50. For the devices whose count varies.
+  - Speeds `17`, type `25 00`, and temperatures `21`, type `10 00`: the count at 6, then per channel from 0 a status (0 for a reading) and a LE value; temperatures in tenths.
+- Duties: one write for every speed channel on endpoint `18`, `06 01` and `<length LE> 00 00 07 00 <count>`, then `<channel> 00 <duty> 00` each. The length counts from the data type on. The reply proves nothing.
+- Software mode has no fallback: the hub holds the duties it got. Nexus sends them all every 2 s, holding the channels nothing set at 50 % (fans) and 70 % (pumps and coolers), and so does camless, with every poll. A duty set by hand goes no lower than 50 % on a pump; a curve's no lower than 70 % on a cooler (the H100i to H170i and the TITAN II), 31 % on a TITAN (type 17) and 30 % on another pump. camless takes the higher of the two: 70 % on those coolers, 50 % on the TITAN and the other pumps.
+- Lighting: close `05 01 00`, open `0D 00 22` once, then 40 ms (QX and RX chains drop QX lighting without it). Each frame: `06 00` and `<length LE> 00 00 12 00` and R, G, B for every device's LEDs in chain order, with an LCD cap's after its cooler's, in 508-byte pieces, the rest with `07 00`. A 0 leaves an LED as it was, so Nexus sends every byte as at least 1; camless sends 0 for the devices the config does not set. A refused frame opens the endpoint again first.
+- Each of the two ports takes so many lit LEDs: past 238, 340 and 442 on one, every colour is dimmed to 66 %, 33 % and 10 % (OpenLinkHub). The port is channel 13 on (7 on firmware 1). With a pump LCD on the chain, the cooler's inner ring (LEDs 16..19) goes dark.
+- Another program: every open handle gets every reply, and the hub sends nothing unasked. camless opens the hub without the read other HID devices get, so that a queued reply is heard, listens 2.5 s before it takes the hub, and lets it go at the first reply to a command it did not send, without hardware mode. After one, it takes the hub again only once a minute has passed without one, longer than iCUE's keep-alive (Nexus's 60 s).
+- camless never sends `1A 01`, which maps the chain again and powers it off and on, or anything to an LCD.
+
+**HYTE and iBUYPOWER hubs: the serial port**
+- USB serial (CDC ACM), 115200 baud, 8N1, DTR and RTS on (Nexus `Np50SerialTransport`). On Windows camless finds the port through SetupAPI (the Ports class, the hardware id, the `PortName` value) as Nexus's `WindowsSmartHubPortDiscovery` does, and opens it exclusively.
+- A request drops the input left over, then writes, then reads the reply's length or until its timeout (Nexus `SendRequest`). Fan writes and LED frames get no reply.
+- camless leaves the hubs alone while HYTE Nexus runs (`HYTE Nexus`, `HYTE.Nexus.Service`, and Nexus 3's `Nexus.exe`, `Nexus` on Linux).
+
+**HYTE Smart Hub** (`3402:0904`; experimental, with `[devices] other_brands` on)
+- Nexus `Peripherals/Hyte/SmartHub`, from HYTE's own service. Four PWM fan ports and four ARGB ports.
+- Info `FF CC 01 00` → 20 bytes, `FF CC` first: the tach of port n at 3 + 2n and 4 + 2n, rpm = 60000 / (H + L / 100) / 4, 0 when both are 0. The enabled flags after them are set whatever is plugged in. Firmware `FF DD 02` → `FF DD 02 a b c d`.
+- Duty: `FF CC 02 <port 1..4> <duty> 01`. The hub's watchdog puts every fan back on the duty saved in its flash 5 s after the last duty, so camless sends the duties it set with every poll and leaves the other ports alone. A poll interval above about 4 s loses the fans.
+- LEDs: `FF EE 01 <port> 00 00 00` and 200 LEDs in G, R, B, 607 bytes. Any frame keeps the hub's own animation off on all four ports (`ARGB_NO_Activity`), and it comes back 5 s after the last. Nexus writes every port each time; once the config sets a light, camless sends every port's frame with every poll, the ports it does not set off.
+- camless never sends `FF CC 07` (the animation's on/off, a flash write; Nexus sends it once when it reads it off) or `FF CC 0C` (the settings saved in flash).
+
+**HYTE Nexus Portal NP50** (`3402:0901`; experimental, with `[devices] other_brands` on)
+- Nexus `Peripherals/Hyte/Np50`, `Cooling/Np50CoolingProvider.cs` and `Lighting/Np50LightingFrameWriter.cs`, from HYTE's own service and protocol documents.
+- Info `FF CC 01 00` → 20 bytes: the 4-pin tach at 9 and 10, rpm = 60000 / ((H × 100 + L) / 10 × 4); the mode at 12 (`01` software, `02` motherboard, `03` static); the firmware animation at 15..19. It is also the heartbeat: the hub leaves software mode 5 s after the last one. camless sends one with every poll.
+- Port info `FF CC 01 <port 1..3>` → up to 240 bytes of 12-byte slots, until one has no module type at 3: the index at 2 (0 for its place), the type (`01` LS10, `02` LS30, `03` FP12, `06` LN60, `07` LN70), the LEDs at 5, the tach at 8 and 9 as on the Smart Hub. camless reads every port with every poll, and opens the hub again when the modules change. The hub sometimes sends less than 240 bytes (Nexus `PollPort`), so the read ends at the first empty slot rather than at its 400 ms timeout.
+- Cooling mode, 15 bytes: `FF CC 02 00 <mode> <static duty> 00 00 00 01 <animation> <R> <G> <B> <brightness>`, the animation as the hub reported it (brightness 100 for 0). Nexus sends it again at most every 30 s while the hub reports another mode, as it parses on the thread the LEDs stream on; so does camless. camless sends software mode only once a curve takes a fan.
+- Duties: the 4-pin header `FF CC 02 00 00 <duty>` and 6 zeros; a port's fans `FF CC 02 <port>` and 18 slots of `<slot> 00 <duty>` and 6 zeros. Nexus sends 0 for the slots nothing set; camless holds the FP12s at 50 % and the 4-pin header at 70 %.
+- Letting go: Nexus reads the saved mode, `FF CC 04 00` → 17 bytes, mode at 4 (`01` motherboard) and its fixed duty at 5, and sets that live, as does camless.
+- LEDs: a cycle of four frames, `FF EE 01 <port> 01 68 00` and G, R, B per LED, at least 90 bytes, the fourth empty, port 1 starting with the 6-LED logo. Without the fourth the firmware leaves the strips dark. The firmware's animation comes back 5 s after the last cycle.
+- camless never sends `FF CC 03` (the saved mode), `05`, `07` or `0C`, which write the hub's EEPROM.
+
+**iBUYPOWER MiniHub** (`3402:0900`; experimental, with `[devices] other_brands` on)
+- Nexus `Peripherals/Hyte/MiniHub` and `Cooling/MiniHubCoolingProvider.cs`, from HYTE's own service. Two PWM fan ports, the second for up to three fans, and four ARGB ports.
+- Firmware `FF DD 02` → 7 bytes. Fan mode `FF DD 05 <00 software | 01 motherboard>`, LED mode `FF DD 03 <00 | 01>`: motherboard after a power cycle, so not flash.
+- Duties: `FF DD 04 00 <port 1> 00 <port 2>`, 10..100 (the firmware runs a lower duty at 0). Both ports go in one command: Nexus sends 10 % for the port nothing set, camless 70 %.
+- Speeds `FF DD 06` → `FF DD 06 01 _ <period> 02 _ <period>`, rpm = 60000 / (period × 0.4). The tach reads right about half the time, and only while frames stream. Nexus shows a speed only once 5 of the last 20 readings from 200 to 4000 rpm agree within 2 %, their median, and holds it while one near it remains; so does camless, and it sends the frames it set with every poll.
+- LEDs: `FF EE 03 <port> 01 68 00` and G, R, B, padded to 50 LEDs (157 bytes), 100 on port 4 (307 bytes). Shorter frames leave LEDs lit. The LED mode is the whole hub's, so once the config sets a light camless sends every port's frame with every poll, the ports it does not set off, as Nexus writes every port.
+- No watchdog (Nexus `MiniHubHeartbeatWorker`): the hub keeps a duty until it loses power. camless hands the fans and the LEDs back to the motherboard when it lets go and when the service stops (Nexus's `ReleaseAll` does it for the fans). If camless crashes, the fans keep their last duty.
 
 **Hue 2 accessories** (the Krakens since the X3, and the Control Hub)
 - `20 03` → `21 03`: the channel count at `[14]`, then six accessory ids per channel from `[15]`; `00` ends a channel.
@@ -109,7 +194,7 @@ Sources:
 
 **What did not work**
 
-What was tried on the Kraken Elite V2 and the Control Hub and failed, so the next device does not repeat it.
+What was tried on the Kraken Elite V2 and the Control Hub and failed, so the next device does not repeat it. Nothing of the other brands' hubs has run on hardware yet.
 
 - LCD:
   - Raw RGB565 frames (format `0x06`): the cooler acknowledged every test frame and showed none. It shows only Q565 (`0x08`), the format CAM sends.
