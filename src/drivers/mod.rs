@@ -21,6 +21,7 @@ pub mod kraken3;
 pub mod kraken_elite_v2;
 pub mod lianli;
 pub mod lianli_tl;
+pub mod nollie;
 pub mod serial;
 pub mod strimer;
 pub mod umbra;
@@ -62,6 +63,22 @@ pub const MODELS: &[Model] = &[
     lianli_tl::MODEL,
     strimer::MODEL,
     umbra::MODEL,
+    nollie::N32,
+    nollie::N16,
+    nollie::N8,
+    nollie::N1,
+    nollie::N28_12,
+    nollie::N28_L1,
+    nollie::N28_L2,
+    nollie::N32_OS2,
+    nollie::N16_OS2,
+    nollie::N8_OS2,
+    nollie::N1_OS2,
+    nollie::N32_OS2_1,
+    nollie::N16_OS2_1,
+    nollie::N8_OS2_1,
+    nollie::PRISM8,
+    nollie::N1_OS2_1,
 ];
 
 pub type Open = fn(&HidApi, &Found) -> Result<Box<dyn Driver>>;
