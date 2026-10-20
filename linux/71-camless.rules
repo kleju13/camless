@@ -31,6 +31,10 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="0416", ATTR{idProduct}=="7372", TAG+="uaccess
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="fe04", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="fe04", TAG+="uaccess"
 
+# Corsair iCUE LINK System Hub.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c3f", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c3f", TAG+="uaccess"
+
 # Nollie's ARGB controllers, under their three vendor ids.
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4714|4716", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="3061", ATTR{idProduct}=="4714|4716", TAG+="uaccess"

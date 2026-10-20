@@ -10,6 +10,7 @@
 //! other input device.
 
 pub mod control_hub;
+pub mod corsair_link;
 pub mod demo;
 pub mod asetek;
 pub mod hid;
@@ -63,6 +64,7 @@ pub const MODELS: &[Model] = &[
     lianli_tl::MODEL,
     strimer::MODEL,
     umbra::MODEL,
+    corsair_link::MODEL,
     nollie::N32,
     nollie::N16,
     nollie::N8,
