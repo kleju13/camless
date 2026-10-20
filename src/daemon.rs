@@ -118,7 +118,8 @@ pub struct Daemon {
     cfg_stamp: Vec<Option<SystemTime>>,
     cfg_error: Option<String>,
     engine: Engine,
-    api: HidApi,
+    /// None in a demo, which touches no HID device.
+    api: Option<HidApi>,
     sensors: Sensors,
     /// Runs with administrator rights; read once, it cannot change.
     elevated: bool,
@@ -129,8 +130,6 @@ pub struct Daemon {
     shared: Arc<Mutex<Snapshot>>,
     start: Instant,
     verbose: bool,
-    /// Simulated devices instead of USB.
-    demo: bool,
     /// Curves already reported as missing their sensor, so a reload does not repeat it.
     warned: HashSet<String>,
     /// Where renderers send their frames: the same queue as the API's.
@@ -169,7 +168,7 @@ impl Daemon {
             cfg_path,
             cfg,
             cfg_error,
-            api: HidApi::new()?,
+            api: if demo { None } else { Some(HidApi::new()?) },
             sensors,
             elevated: web::is_elevated(),
             slots: Vec::new(),
@@ -179,7 +178,6 @@ impl Daemon {
             shared,
             start: Instant::now(),
             verbose,
-            demo,
             warned: HashSet::new(),
             frames,
             pages: HashMap::new(),
@@ -338,11 +336,12 @@ impl Daemon {
             return;
         }
         self.next_scan = Instant::now() + RESCAN_EVERY;
-        let (found, unsupported) = if self.demo {
-            (drivers::demo::found(), Vec::new())
-        } else {
-            let _ = self.api.refresh_devices();
-            drivers::scan(&self.api)
+        let (found, unsupported) = match &mut self.api {
+            None => (drivers::demo::found(), Vec::new()),
+            Some(api) => {
+                let _ = api.refresh_devices();
+                drivers::scan(api)
+            }
         };
         for f in found {
             match self.slots.iter_mut().find(|s| s.found.id == f.id) {
@@ -370,7 +369,11 @@ impl Daemon {
                 continue;
             }
             s.next_try = now + RESCAN_EVERY;
-            match s.found.open(&self.api) {
+            let opened = match &self.api {
+                Some(api) => s.found.open(api),
+                None => drivers::demo::open(&s.found),
+            };
+            match opened {
                 Ok(dev) => {
                     let mut info = dev.describe();
                     info.id = s.found.id.clone();

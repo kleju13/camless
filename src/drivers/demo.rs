@@ -18,6 +18,11 @@ pub fn found() -> Vec<Found> {
     MODELS.iter().map(|m| Found { model: m, id: m.slug.to_string(), path: CString::default() }).collect()
 }
 
+/// Opens a simulated device without a HID API, which a demo never needs.
+pub fn open(found: &Found) -> Result<Box<dyn Driver>> {
+    Ok(if std::ptr::eq(found.model, &MODELS[1]) { hub() } else { cooler() })
+}
+
 struct Fan {
     id: &'static str,
     max_rpm: f32,
@@ -42,7 +47,15 @@ fn fan(id: &'static str, max_rpm: f32, duty: f32) -> Fan {
 }
 
 fn open_cooler(_: &HidApi, _: &Found) -> Result<Box<dyn Driver>> {
-    Ok(Box::new(Demo {
+    Ok(cooler())
+}
+
+fn open_hub(_: &HidApi, _: &Found) -> Result<Box<dyn Driver>> {
+    Ok(hub())
+}
+
+fn cooler() -> Box<dyn Driver> {
+    Box::new(Demo {
         model: &MODELS[0],
         start: Instant::now(),
         last: Instant::now(),
@@ -50,11 +63,11 @@ fn open_cooler(_: &HidApi, _: &Found) -> Result<Box<dyn Driver>> {
         lights: vec!["ring", "rgb"],
         lcd: true,
         streaming: false,
-    }))
+    })
 }
 
-fn open_hub(_: &HidApi, _: &Found) -> Result<Box<dyn Driver>> {
-    Ok(Box::new(Demo {
+fn hub() -> Box<dyn Driver> {
+    Box::new(Demo {
         model: &MODELS[1],
         start: Instant::now(),
         last: Instant::now(),
@@ -62,7 +75,7 @@ fn open_hub(_: &HidApi, _: &Found) -> Result<Box<dyn Driver>> {
         lights: vec!["led1", "led2", "led3", "led4", "led5"],
         lcd: false,
         streaming: false,
-    }))
+    })
 }
 
 impl Demo {
