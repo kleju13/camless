@@ -113,14 +113,14 @@ On Linux, Steam games are found the same way, and a folder in `add` is a Linux p
 
 ## Other brands
 
-camless drives NZXT's devices, and with this on, other brands' fan hubs it has a driver for: for now the Lian Li Uni Hubs. It is off unless you turn it on, here or in *Settings → Devices → Other brands*:
+camless drives NZXT's devices, and with this on, other brands' fan hubs and LED controllers it has a driver for: Lian Li, Asiahorse, Nollie, Corsair's iCUE LINK hub, HYTE and iBUYPOWER ([the list](../README.md#devices)). It is off unless you turn it on, here or in *Settings → Devices → Other brands*:
 
 ```toml
 [devices]
 other_brands = true
 ```
 
-camless opens only a hub's vendor-defined HID collection, never a keyboard, mouse or other input device of the same brand. While the brand's own app runs (L-Connect for Lian Li), camless leaves the hub to it. Their ids, such as `lianli-uni-hub-sl-infinity/fan1`, come from `camless status`. [How it works](how-it-works.md#other-brands) has the details.
+camless opens only a hub's vendor-defined HID collection, or for HYTE and iBUYPOWER its serial port, never a keyboard, mouse or other input device of the same brand. While the brand's own app runs (L-Connect, Sync_light, iCUE or HYTE Nexus), camless leaves the hub to it. Their ids, such as `lianli-uni-hub-sl-infinity/fan1` or `hyte-smart-hub/argb2`, come from `camless status`. On the HYTE hubs, `interval_ms` must stay below about 4000, or the hub takes its fans and LEDs back between polls. [How it works](how-it-works.md#other-brands) has the details.
 
 ## Commands
 

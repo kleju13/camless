@@ -803,7 +803,7 @@ impl Daemon {
             .into_iter()
             .map(|(c, d)| (c.to_string(), if d == Duty::Unmanaged { d } else { Duty::Set(*fixed.get(c).unwrap_or(&failsafe)) }))
             .collect();
-        let mut set = 0;
+        let (mut set, mut handed) = (0, 0);
         for s in &mut self.slots {
             let Some(dev) = s.dev.as_mut() else { continue };
             let batch: Vec<(&str, u8)> = duties
@@ -811,8 +811,13 @@ impl Daemon {
                 .filter_map(|(c, d)| Some((local(&s.found.id, c)?, d.value()?)))
                 .filter(|(f, _)| !s.on_device.contains(*f) && s.info.fans.iter().any(|x| x.id == *f))
                 .collect();
-            if !batch.is_empty() && dev.set_duties(&batch).is_ok() {
-                set += batch.len();
+            let sent = if !batch.is_empty() && dev.set_duties(&batch).is_ok() { batch.len() } else { 0 };
+            // Another brand's hub goes back to its own control or the motherboard's,
+            // as when camless lets go of it; the failsafe duties stay if that fails.
+            if s.found.model.vendor.is_some() && dev.release().is_ok() {
+                handed += 1;
+            } else {
+                set += sent;
             }
             if let Some(lcd) = dev.lcd() {
                 if lcd.is_streaming() {
@@ -820,10 +825,13 @@ impl Daemon {
                 }
             }
         }
+        let mut note = "stopped".to_string();
         if set > 0 {
-            self.log(&format!("stopped; {set} host-driven fans left at {failsafe} % or their fixed duty"));
-        } else {
-            self.log("stopped");
+            note += &format!("; {set} host-driven fans left at {failsafe} % or their fixed duty");
         }
+        if handed > 0 {
+            note += &format!("; {handed} other brands' hubs handed back");
+        }
+        self.log(&note);
     }
 }

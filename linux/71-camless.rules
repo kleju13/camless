@@ -6,8 +6,8 @@
 # greeter's user has them; over SSH alone, nobody.
 #
 # Only these devices. Access to the hidraw or USB node of a keyboard or mouse would
-# let any program of that user read what is typed, so NZXT's and Lian Li's other
-# products are not in here. A test in src/drivers/mod.rs checks that these lines
+# let any program of that user read what is typed, so the other products of these
+# brands are not in here. A test in src/drivers/mod.rs checks that these lines
 # match the drivers' models.
 #
 # linux/install.sh puts this file in /etc/udev/rules.d.
@@ -19,6 +19,31 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="170e|1715|2007|2014|
 # Asetek-made Krakens X31, X41 and X61: a USB device, not HID.
 SUBSYSTEM=="usb", ATTR{idVendor}=="2433", ATTR{idProduct}=="b200", TAG+="uaccess"
 
-# Lian Li Uni Hubs, which camless drives only with [devices] other_brands on.
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0cf2", ATTRS{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="0cf2", ATTR{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106", TAG+="uaccess"
+# Other brands' hubs, which camless drives only with [devices] other_brands on.
+
+# Lian Li: Uni Hubs and the Strimer Plus V2's controller; the Uni Fan TL controller.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0cf2", ATTRS{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106|a200", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0cf2", ATTR{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106|a200", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="7372", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0416", ATTR{idProduct}=="7372", TAG+="uaccess"
+
+# Asiahorse Umbra V2.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="fe04", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="fe04", TAG+="uaccess"
+
+# Corsair iCUE LINK System Hub.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c3f", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c3f", TAG+="uaccess"
+
+# Nollie's ARGB controllers, under their three vendor ids.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4714|4716", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="3061", ATTR{idProduct}=="4714|4716", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d2", ATTRS{idProduct}=="1f01|1f11|1616|1617|1618", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="16d2", ATTR{idProduct}=="1f01|1f11|1616|1617|1618", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d5", ATTRS{idProduct}=="4714|4716|1f01|1f11|2a32|2a16|2a08|2c08|2a01", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="16d5", ATTR{idProduct}=="4714|4716|1f01|1f11|2a32|2a16|2a08|2c08|2a01", TAG+="uaccess"
+
+# HYTE Smart Hub and Nexus Portal NP50, iBUYPOWER MiniHub: USB serial ports, which
+# ModemManager would otherwise probe with modem commands.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="3402", ATTRS{idProduct}=="0900|0901|0904", ENV{ID_MM_DEVICE_IGNORE}="1", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="3402", ATTR{idProduct}=="0900|0901|0904", TAG+="uaccess"

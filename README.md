@@ -42,7 +42,7 @@ These follow liquidctl, the Linux driver and Nexus, and nobody has run camless o
 |---|---|---|
 | Kraken Plus 2024 | `1e71:3014` | pump and fan curves, lighting the cooler reports, LCD at the size it reports |
 | Kraken Elite 2023 | `1e71:300c` | pump and fan curves; LCD from firmware 2 |
-| Kraken 2023 | `1e71:300e` | pump and fan curves; LCD on firmware 2 |
+| Kraken 2023 (Kraken Base) | `1e71:300e` | pump and fan curves; LCD on firmware 2 |
 | Kraken Z3 (Z53, Z63, Z73) | `1e71:3008` | pump and fan curves, RGB header; the LCD shows only its own display |
 | Kraken X3 (X53, X63, X73) | `1e71:2007`, `1e71:2014` | pump curve, pump ring, logo and RGB header |
 
@@ -54,11 +54,19 @@ Experimental: Nexus leaves these out, so the driver follows liquidctl alone, and
 | Kraken M22 | `1e71:1715` | pump ring and logo |
 | Kraken X31, X41, X61 (and X40, X60) | `2433:b200` | pump and fan duties, logo; on Windows, needs WinUSB bound to it with [Zadig](https://zadig.akeo.ie) |
 
-Other brands, off unless you turn on *Settings → Devices → Other brands*: camless never drives keyboards or mice, and leaves a hub alone while its brand's app runs ([how it works](docs/how-it-works.md#other-brands)). Nexus calls its own support for these experimental, and so does camless:
+Other brands' fan hubs and LED controllers, off unless you turn on *Settings → Devices → Other brands*: camless never drives keyboards or mice, and leaves a hub alone while its brand's app runs ([how it works](docs/how-it-works.md#other-brands)). None of them has run with camless yet, so the app calls them experimental. Their lighting is off or one colour:
 
 | Device | USB id | What camless drives |
 |---|---|---|
-| Lian Li Uni Hub, SL, AL, SL-Infinity, SL v2, AL v2 | `0cf2:7750`, `0cf2:a100` to `a106` | fan duties and speeds on the four ports; the lighting stays as L-Connect left it |
+| Lian Li Uni Hub, SL, AL, SL-Infinity, SL v2, AL v2 | `0cf2:7750`, `0cf2:a100` to `a106` | fan duties and speeds on the four ports, and each port's lighting |
+| Lian Li Uni Fan TL controller | `0416:7372` | each TL fan's duty and speed, and each port's lighting |
+| Lian Li Strimer Plus V2 | `0cf2:a200` | the 24-pin and 8-pin cables' lighting |
+| Asiahorse Umbra V2 | `1a86:fe04` | one duty for all its fans, and one colour on its ten ARGB ports |
+| Nollie controllers, 1 to 32 channels | 16 models under `3061`, `16d2` and `16d5` ([list](docs/protocol.md)) | each channel's lighting |
+| Corsair iCUE LINK System Hub | `1b1c:0c3f` | duties and speeds of the LINK fans and pumps, their temperature probes, and each device's lighting |
+| HYTE Smart Hub | `3402:0904` | duties and speeds on the four fan headers, and the four ARGB ports |
+| HYTE Nexus Portal NP50 | `3402:0901` | the FP12 fans and the 4-pin header, and the lighting of each module and the logo |
+| iBUYPOWER MiniHub | `3402:0900` | duties and speeds on the two fan ports, and the four ARGB ports |
 
 [hardware/verified.toml](hardware/verified.toml) lists the hardware camless was reported working on. With any other device camless drives, the app shows *Unverified hardware* in the sidebar, or *Experimental hardware* for the devices above. *It works* or *Something is wrong* there opens a GitHub issue with a hardware report filled in. Once you submit it there, *I submitted it* hides the prompt for that setup, and a works report adds the device to the list.
 
@@ -116,7 +124,7 @@ To uninstall, run `~/.local/share/camless/uninstall.sh`. It keeps your settings 
 
 - Drivers for other NZXT devices: the Smart Device V2 and the RGB & Fan Controller.
 - On Linux: frame rates, and a run on real hardware.
-- Other brands: the Lian Li hubs' lighting, Lian Li's TL, Strimer and wireless controllers, and Corsair's iCUE LINK hub, which would have to yield to iCUE.
+- Other brands: Lian Li's wireless controllers, lighting effects on their hubs, and a run on real hardware.
 
 ## Credits
 

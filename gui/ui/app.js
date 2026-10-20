@@ -2616,10 +2616,10 @@
     for (const r of devRows) r.addEventListener('click', (e) => { if (e.target.closest('[data-a=verify]')) verifyDialog(); });
     const unsupported = ((S.status && S.status.unsupported) || []).map((u) => row(u.product || 'NZXT device', `No camless driver yet (${usbId(u)}).`, null));
     // Off by default: other brands' own apps drive these hubs too.
-    const brands = S.config && row('Other brands', 'camless also drives the fans on other brands’ hubs it has a driver for: Lian Li Uni Hubs, experimental. Never keyboards, mice or other input devices. While the brand’s own app runs, such as L-Connect, camless leaves the hub to it.', toggle({
+    const brands = S.config && row('Other brands', 'camless also drives other brands’ fan hubs and LED controllers it has a driver for, experimental: Lian Li, Asiahorse, Nollie, Corsair iCUE LINK, HYTE and iBUYPOWER. Never keyboards, mice or other input devices. While the brand’s own app runs, such as L-Connect or iCUE, camless leaves the hub to it.', toggle({
       checked: !!(S.config.devices && S.config.devices.other_brands), label: 'Other brands',
       onChange: async (v) => {
-        if (v && !(await confirmBox({ title: 'Drive other brands’ hubs', text: 'camless then sets the fans on Lian Li Uni Hubs that you give a curve, and leaves the other ports as they are. Nexus calls its own support for these hubs experimental, and nobody has reported camless working on one yet. Turning this off hands the ports camless set back to the motherboard’s fan header.', ok: 'Turn on' }))) { go(); return; }
+        if (v && !(await confirmBox({ title: 'Drive other brands’ hubs', text: 'camless then sets the fans you give a curve and the lights you set on these hubs, and leaves the rest as the hub runs it. Some hubs take all their fans’ duties at once: there the fans without a curve run at 50 to 70 %, on a Corsair iCUE LINK hub from the start. Nobody has reported camless working on one of these hubs yet. Turning this off hands the fans camless set back to the hub or the motherboard.', ok: 'Turn on' }))) { go(); return; }
         editCfg((x) => { if (v) x.devices = Object.assign({}, x.devices, { other_brands: true }); else delete x.devices; });
       },
     }));

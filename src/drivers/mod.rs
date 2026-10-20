@@ -6,19 +6,29 @@
 //!
 //! Other brands' fan and lighting hubs are listed here too, with their `Vendor`.
 //! camless opens them only with `[devices] other_brands` on, and only on their
-//! vendor-defined HID collection: never a keyboard, mouse or other input device.
+//! vendor-defined HID collection or their serial port: never a keyboard, mouse or
+//! other input device.
 
 pub mod control_hub;
+pub mod corsair_link;
 pub mod demo;
 pub mod asetek;
 pub mod hid;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
 pub mod hue2;
+pub mod hyte;
+pub mod hyte_np50;
+pub mod ibuypower_minihub;
 pub mod kraken2;
 pub mod kraken3;
 pub mod kraken_elite_v2;
 pub mod lianli;
+pub mod lianli_tl;
+pub mod nollie;
+pub mod serial;
+pub mod strimer;
+pub mod umbra;
 pub mod usb;
 pub mod vendor;
 #[cfg(windows)]
@@ -54,6 +64,29 @@ pub const MODELS: &[Model] = &[
     lianli::UNI_HUB_AL_V2,
     lianli::UNI_HUB_SL_V2_A105,
     lianli::UNI_HUB_SL_REDRAGON,
+    lianli_tl::MODEL,
+    strimer::MODEL,
+    umbra::MODEL,
+    corsair_link::MODEL,
+    nollie::N32,
+    nollie::N16,
+    nollie::N8,
+    nollie::N1,
+    nollie::N28_12,
+    nollie::N28_L1,
+    nollie::N28_L2,
+    nollie::N32_OS2,
+    nollie::N16_OS2,
+    nollie::N8_OS2,
+    nollie::N1_OS2,
+    nollie::N32_OS2_1,
+    nollie::N16_OS2_1,
+    nollie::N8_OS2_1,
+    nollie::PRISM8,
+    nollie::N1_OS2_1,
+    hyte::SMART_HUB,
+    hyte_np50::NP50,
+    ibuypower_minihub::MINIHUB,
 ];
 
 pub type Open = fn(&HidApi, &Found) -> Result<Box<dyn Driver>>;
@@ -73,10 +106,41 @@ pub struct Model {
     pub experimental: bool,
     /// Another brand's device, opened only with `[devices] other_brands` on.
     pub vendor: Option<&'static Vendor>,
-    /// The HID collection to open, as (usage page, usage). Another brand's model
-    /// needs one on a vendor-defined page, so no input device of that brand matches.
-    pub usage: Option<(u16, u16)>,
+    /// The HID collection to open. Another brand's HID model needs one on a
+    /// vendor-defined page, so no input device of that brand matches.
+    pub usage: Option<Usage>,
     pub open: Open,
+}
+
+/// Which HID collection of a device a driver opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Usage {
+    /// This (usage page, usage).
+    Exact(u16, u16),
+    /// Any collection on a vendor-defined page with output reports of at least
+    /// `output` bytes, as Windows counts them (`Caps`), and with `input`, input
+    /// reports too: what the driver writes and reads. For devices whose usage no
+    /// source names.
+    Vendor { output: usize, input: bool },
+    /// Any collection on a vendor-defined page whose output reports are exactly this
+    /// long, as Windows counts them: for a device camless only writes, whose usage no
+    /// source names.
+    VendorOutput(usize),
+}
+
+impl Usage {
+    /// Whether the collection `usage` with its report lengths, read only if needed,
+    /// is this one. Never one off the vendor-defined pages.
+    fn matches(self, usage: (u16, u16), caps: &dyn Fn() -> Option<hid::Caps>) -> bool {
+        usage.0 >= VENDOR_USAGE_PAGES
+            && match self {
+                Usage::Exact(page, id) => usage == (page, id),
+                Usage::Vendor { output, input } => {
+                    caps().is_some_and(|c| c.output >= output && (!input || c.input > 0))
+                }
+                Usage::VendorOutput(output) => caps().is_some_and(|c| c.output == output),
+            }
+    }
 }
 
 /// HID usage pages from here up are vendor-defined: not a keyboard, mouse or game
@@ -88,6 +152,8 @@ pub enum Bus {
     Hid,
     /// A vendor-class USB device, reached through WinUSB.
     Usb,
+    /// A USB serial port (CDC ACM): COM on Windows, `/dev/ttyACM*` on Linux.
+    Serial,
 }
 
 impl Model {
@@ -99,6 +165,31 @@ impl Model {
     /// A vendor-class USB device, not experimental.
     pub const fn usb(vid: u16, pid: u16, slug: &'static str, name: &'static str, open: Open) -> Model {
         Model { bus: Bus::Usb, ..Model::hid(vid, pid, slug, name, open) }
+    }
+
+    /// Another brand's HID hub on the collection `usage`: experimental.
+    pub const fn vendor_hid(
+        vid: u16,
+        pid: u16,
+        slug: &'static str,
+        name: &'static str,
+        vendor: &'static Vendor,
+        usage: Usage,
+        open: Open,
+    ) -> Model {
+        Model { experimental: true, vendor: Some(vendor), usage: Some(usage), ..Model::hid(vid, pid, slug, name, open) }
+    }
+
+    /// Another brand's hub on a USB serial port: experimental.
+    pub const fn vendor_serial(
+        vid: u16,
+        pid: u16,
+        slug: &'static str,
+        name: &'static str,
+        vendor: &'static Vendor,
+        open: Open,
+    ) -> Model {
+        Model { bus: Bus::Serial, experimental: true, vendor: Some(vendor), ..Model::hid(vid, pid, slug, name, open) }
     }
 
     /// Someone ran camless on it and reported it working: `hardware/verified.toml`.
@@ -116,7 +207,8 @@ impl Model {
 pub struct Found {
     pub model: &'static Model,
     pub id: String,
-    /// The HID path, or for a USB device its bus and address.
+    /// The HID path, for a USB device its bus and address, for a serial port its
+    /// device (`\\.\COM3`, `/dev/ttyACM0`).
     pub path: CString,
 }
 
@@ -188,6 +280,19 @@ pub trait Lcd {
     fn size(&self) -> (u16, u16);
 }
 
+/// A channel id made at run time, such as a fan found on a chain, for `Reading`,
+/// which takes `&'static str`. Each distinct id is kept once, for good.
+pub fn static_id(id: &str) -> &'static str {
+    static IDS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut ids = IDS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(known) = ids.iter().find(|known| **known == id) {
+        return known;
+    }
+    let new: &'static str = Box::leak(id.to_owned().into_boxed_str());
+    ids.push(new);
+    new
+}
+
 /// Windows lists each top-level collection of a HID interface as its own path, so
 /// one device is one serial number and interface. Without a serial, the path.
 fn device_key(d: &hidapi::DeviceInfo) -> String {
@@ -198,13 +303,28 @@ fn device_key(d: &hidapi::DeviceInfo) -> String {
 }
 
 /// The model of a HID collection. Another brand's model matches only with
-/// `other_brands` on, and only its own collection on a vendor-defined usage page.
-fn hid_model(vid: u16, pid: u16, usage: (u16, u16), other_brands: bool) -> Option<&'static Model> {
+/// `other_brands` on, and only its own collection on a vendor-defined usage page;
+/// `caps` reads the collection's report lengths, for the models that need them.
+fn hid_model(
+    vid: u16,
+    pid: u16,
+    usage: (u16, u16),
+    other_brands: bool,
+    caps: &dyn Fn() -> Option<hid::Caps>,
+) -> Option<&'static Model> {
     MODELS.iter().find(|m| {
         m.bus == Bus::Hid
             && (m.vid, m.pid) == (vid, pid)
-            && (m.vendor.is_none() || other_brands && m.usage == Some(usage) && usage.0 >= VENDOR_USAGE_PAGES)
+            && (m.vendor.is_none() || other_brands && m.usage.is_some_and(|u| u.matches(usage, caps)))
     })
+}
+
+/// The report lengths of the collection at a hidapi path.
+fn caps(path: &std::ffi::CStr) -> Option<hid::Caps> {
+    #[cfg(windows)]
+    return winhid::caps(path);
+    #[cfg(target_os = "linux")]
+    return hidraw::caps(path);
 }
 
 /// The id of the next device of a model: its slug, then `#2`, `#3`. Models that
@@ -221,17 +341,22 @@ fn next_id(found: &[Found], m: &Model) -> String {
 /// Supported devices with their ids, and NZXT devices without a driver. Other
 /// brands' devices are looked for only with `other_brands` on.
 pub fn scan(api: &HidApi, other_brands: bool) -> (Vec<Found>, Vec<Unsupported>) {
-    let model = |d: &hidapi::DeviceInfo| hid_model(d.vendor_id(), d.product_id(), (d.usage_page(), d.usage()), other_brands);
-    let mut entries: Vec<_> =
-        api.device_list().filter(|d| d.vendor_id() == NZXT_VID || model(d).is_some()).collect();
-    entries.sort_by_key(|d| d.path().to_owned());
+    let mut entries: Vec<_> = api
+        .device_list()
+        .map(|d| {
+            let usage = (d.usage_page(), d.usage());
+            (d, hid_model(d.vendor_id(), d.product_id(), usage, other_brands, &|| caps(d.path())))
+        })
+        .filter(|(d, m)| d.vendor_id() == NZXT_VID || m.is_some())
+        .collect();
+    entries.sort_by_key(|(d, _)| d.path().to_owned());
     let (mut found, mut unsupported, mut keys) = (Vec::<Found>::new(), Vec::<Unsupported>::new(), Vec::new());
-    for d in entries {
+    for (d, model) in entries {
         let key = device_key(d);
         if keys.contains(&key) {
             continue;
         }
-        match model(d) {
+        match model {
             Some(m) if m.interface.is_some_and(|i| i != d.interface_number()) => continue,
             Some(m) => {
                 let id = next_id(&found, m);
@@ -252,6 +377,17 @@ pub fn scan(api: &HidApi, other_brands: bool) -> (Vec<Found>, Vec<Unsupported>) 
             let Some(m) = usb.iter().find(|m| m.vid == d.vendor_id() && m.pid == d.product_id()) else { continue };
             let id = next_id(&found, m);
             let path = CString::new(usb::location(&d)).unwrap_or_default();
+            found.push(Found { model: m, id, path });
+        }
+    }
+    let serial: Vec<_> = MODELS.iter().filter(|m| m.bus == Bus::Serial && other_brands).collect();
+    if !serial.is_empty() {
+        let mut ports = serial::ports();
+        ports.sort_by(|a, b| a.path.cmp(&b.path));
+        for p in ports {
+            let Some(m) = serial.iter().find(|m| (m.vid, m.pid) == (p.vid, p.pid)) else { continue };
+            let id = next_id(&found, m);
+            let Ok(path) = CString::new(p.path) else { continue };
             found.push(Found { model: m, id, path });
         }
     }
@@ -276,7 +412,7 @@ mod tests {
     #[test]
     fn the_udev_rules_name_every_model_and_nothing_else() {
         use std::collections::BTreeSet;
-        let (mut hidraw, mut usb) = (BTreeSet::new(), BTreeSet::new());
+        let (mut hidraw, mut usb, mut tty) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
         let rules = include_str!("../../linux/71-camless.rules");
         for line in rules.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
             assert!(line.ends_with(r#"TAG+="uaccess""#), "{line}");
@@ -287,6 +423,8 @@ mod tests {
             let (set, attr) = match value("SUBSYSTEM") {
                 "hidraw" => (&mut hidraw, "ATTRS"),
                 "usb" => (&mut usb, "ATTR"),
+                // ModemManager would probe a serial hub with modem commands.
+                "tty" if line.contains(r#"ENV{ID_MM_DEVICE_IGNORE}="1""#) => (&mut tty, "ATTRS"),
                 other => panic!("subsystem {other} in {line}"),
             };
             let vid = u16::from_str_radix(value(&format!("{attr}{{idVendor}}")), 16).unwrap();
@@ -296,6 +434,7 @@ mod tests {
         }
         let ids = |bus: Option<Bus>| -> BTreeSet<_> { MODELS.iter().filter(|m| bus.is_none_or(|b| m.bus == b)).map(|m| (m.vid, m.pid)).collect() };
         assert_eq!(hidraw, ids(Some(Bus::Hid)));
+        assert_eq!(tty, ids(Some(Bus::Serial)));
         assert_eq!(usb, ids(None));
     }
 
@@ -311,17 +450,43 @@ mod tests {
 
     #[test]
     fn other_brands_open_only_their_vendor_collection() {
+        let none = || None;
         for m in MODELS.iter().filter(|m| m.vendor.is_some()) {
-            let (page, usage) = m.usage.expect("another brand's model names its HID collection");
-            assert!(page >= VENDOR_USAGE_PAGES && m.bus == Bus::Hid && m.vid != NZXT_VID);
-            assert!(hid_model(m.vid, m.pid, (page, usage), true).is_some());
-            assert!(hid_model(m.vid, m.pid, (page, usage), false).is_none());
+            let caps = match m.usage {
+                Some(Usage::VendorOutput(output)) => hid::Caps { input: 0, output },
+                _ => hid::Caps { input: 1025, output: 1025 },
+            };
+            let fits = move || Some(caps);
+            assert_ne!(m.vid, NZXT_VID);
+            if m.bus == Bus::Serial {
+                assert!(m.usage.is_none() && hid_model(m.vid, m.pid, (0xff00, 1), true, &fits).is_none());
+                continue;
+            }
+            assert_eq!(m.bus, Bus::Hid, "{}", m.slug);
+            let usage = match m.usage.expect("another brand's HID model names its collection") {
+                Usage::Exact(page, usage) => (page, usage),
+                Usage::Vendor { .. } | Usage::VendorOutput(_) => (0xff00, 1),
+            };
+            assert!(usage.0 >= VENDOR_USAGE_PAGES);
+            assert!(hid_model(m.vid, m.pid, usage, true, &fits).is_some());
+            assert!(hid_model(m.vid, m.pid, usage, false, &fits).is_none());
             // The same device's keyboard, mouse or consumer-control collections.
-            for input in [(0x01, 0x06), (0x01, 0x02), (0x0c, 0x01), (page, usage + 1)] {
-                assert!(hid_model(m.vid, m.pid, input, true).is_none());
+            for input in [(0x01, 0x06), (0x01, 0x02), (0x0c, 0x01), (0xfeff, 1)] {
+                assert!(hid_model(m.vid, m.pid, input, true, &fits).is_none());
+            }
+            match m.usage {
+                Some(Usage::Exact(page, usage)) => {
+                    assert!(hid_model(m.vid, m.pid, (page, usage + 1), true, &fits).is_none())
+                }
+                // Without its report lengths, or with too short ones, it is not the one.
+                _ => {
+                    assert!(hid_model(m.vid, m.pid, usage, true, &none).is_none());
+                    let short = || Some(hid::Caps { input: 0, output: 8 });
+                    assert!(hid_model(m.vid, m.pid, usage, true, &short).is_none());
+                }
             }
         }
         // NZXT's own devices need neither the setting nor a usage.
-        assert!(hid_model(NZXT_VID, 0x2022, (0x01, 0x06), false).is_some());
+        assert!(hid_model(NZXT_VID, 0x2022, (0x01, 0x06), false, &none).is_some());
     }
 }

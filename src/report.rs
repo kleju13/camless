@@ -9,6 +9,7 @@
 //! them out of error messages too, and user folders, `C:\Users\…` and `/home/…`.
 
 use crate::api;
+use crate::drivers::hid::{reports, Kind};
 use crate::drivers::{Model, MODELS, NZXT_VID};
 #[cfg(windows)]
 use crate::sensors::{reg_dword, reg_string};
@@ -555,67 +556,6 @@ fn hid_lines(s: &mut String, h: &Hid, raw: bool, indent: &str) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
-    In,
-    Out,
-    Feature,
-}
-
-/// Report ids and their lengths in bytes, without the id byte, in the order the
-/// descriptor gives them. A descriptor without ids has one report per kind, id 0.
-fn reports(desc: &[u8]) -> Vec<(Kind, u8, usize)> {
-    let (mut id, mut size, mut count) = (0u8, 0u32, 0u32);
-    let mut stack = Vec::new();
-    let mut bits: Vec<(Kind, u8, u32)> = Vec::new();
-    let mut i = 0;
-    while i < desc.len() {
-        let prefix = desc[i];
-        if prefix == 0xfe {
-            // A long item: its data size, its tag, then the data.
-            i += 3 + usize::from(desc.get(i + 1).copied().unwrap_or(0));
-            continue;
-        }
-        let len = [0, 1, 2, 4][usize::from(prefix & 3)];
-        let Some(data) = desc.get(i + 1..i + 1 + len) else { break };
-        let value = data.iter().rev().fold(0u32, |v, &b| v << 8 | u32::from(b));
-        let kind = match prefix & 0xfc {
-            0x80 => Some(Kind::In),
-            0x90 => Some(Kind::Out),
-            0xb0 => Some(Kind::Feature),
-            0x74 => {
-                size = value;
-                None
-            }
-            0x94 => {
-                count = value;
-                None
-            }
-            0x84 => {
-                id = value as u8;
-                None
-            }
-            0xa4 => {
-                stack.push((id, size, count));
-                None
-            }
-            0xb4 => {
-                (id, size, count) = stack.pop().unwrap_or((id, size, count));
-                None
-            }
-            _ => None,
-        };
-        if let Some(k) = kind {
-            match bits.iter_mut().find(|b| b.0 == k && b.1 == id) {
-                Some(b) => b.2 += size * count,
-                None => bits.push((k, id, size * count)),
-            }
-        }
-        i += 1 + len;
-    }
-    bits.into_iter().map(|(k, id, b)| (k, id, b.div_ceil(8) as usize)).collect()
-}
-
 /// `in: 11 13 (511 B); 77 (63 B)`, one line per kind.
 fn report_lines(desc: &[u8]) -> Vec<String> {
     let reports = reports(desc);
@@ -780,6 +720,9 @@ mod tests {
         let d = bytes(PLAIN);
         assert_eq!(report_lines(&d), ["in: no id (64 B)", "out: no id (64 B)"]);
         assert_eq!(reports(&d[..d.len() - 2]).len(), 1, "a cut descriptor gives what comes before the cut");
+        // The lengths the scan matches other brands' hubs by, as Windows counts them.
+        let caps = crate::drivers::hid::Caps::of_descriptor(&d);
+        assert_eq!((caps.input, caps.output), (65, 65));
     }
 
     #[test]
