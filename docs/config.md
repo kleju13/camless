@@ -109,12 +109,23 @@ add = ["javaw.exe", 'D:\Emulators']   # count these as games too
 skip = ["wallpaper64.exe"]            # never these, even from a store
 ```
 
+## Other brands
+
+camless drives NZXT's devices, and with this on, other brands' fan hubs it has a driver for: for now the Lian Li Uni Hubs. It is off unless you turn it on, here or in *Settings → Devices → Other brands*:
+
+```toml
+[devices]
+other_brands = true
+```
+
+camless opens only a hub's vendor-defined HID collection, never a keyboard, mouse or other input device of the same brand. While the brand's own app runs (L-Connect for Lian Li), camless leaves the hub to it. Their ids, such as `lianli-uni-hub-sl-infinity/fan1`, come from `camless status`. [How it works](how-it-works.md#other-brands) has the details.
+
 ## Commands
 
 `camless.exe` is also a command-line tool:
 
 ```
-camless status               open every supported device and print its channels, sensors and readings
+camless status               open every supported device and print its channels, sensors and readings (other brands' with [devices] other_brands on)
 camless list                 NZXT HID devices that are connected
 camless watch [seconds]      listen to input reports without sending anything (--raw for hex)
 camless sensors              read CPU, GPU and memory sensors once

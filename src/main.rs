@@ -91,7 +91,7 @@ fn main() -> Result<()> {
     };
     let config_path = || positional.first().map(PathBuf::from).unwrap_or_else(config::default_path);
     match args.first().map(String::as_str) {
-        Some("status") => status(),
+        Some("status") => status(&config_path()),
         Some("list") => list(),
         Some("watch") => {
             let secs = positional.first().map(|s| s.parse()).transpose().context("watch takes seconds")?;
@@ -162,11 +162,12 @@ fn sensors() -> Result<()> {
     Ok(())
 }
 
-/// The config only says where the service listens; a missing or broken one means
-/// the default address.
+/// The config only says where the service listens and whether other brands are
+/// on; a missing or broken one means the defaults.
 fn report(config: &Path, json: bool) -> Result<()> {
-    let api = Config::load(config).map(|c| c.api).unwrap_or_default();
-    let r = report::collect(api.enabled.then_some(api.listen.as_str()));
+    let cfg = Config::load(config).unwrap_or_default();
+    let api = &cfg.api;
+    let r = report::collect(api.enabled.then_some(api.listen.as_str()), cfg.devices.other_brands);
     if json {
         println!("{}", serde_json::to_string(&r)?);
     } else {
@@ -248,7 +249,7 @@ fn check(path: &Path) -> Result<()> {
 /// The first supported device that has an LCD.
 fn open_lcd() -> Result<(String, Box<dyn Driver>)> {
     let api = HidApi::new()?;
-    let (found, _) = drivers::scan(&api);
+    let (found, _) = drivers::scan(&api, false);
     let mut errors = Vec::new();
     for f in found {
         match f.open(&api) {
@@ -306,10 +307,12 @@ fn lcd_test(duration: Duration) -> Result<()> {
     result.and(back)
 }
 
-/// Opens every supported device once and prints what the config can refer to.
-fn status() -> Result<()> {
+/// Opens every supported device once and prints what the config can refer to;
+/// other brands' only with the config's `[devices] other_brands` on.
+fn status(config: &Path) -> Result<()> {
     let api = HidApi::new()?;
-    let (found, unsupported) = drivers::scan(&api);
+    let other_brands = Config::load(config).is_ok_and(|c| c.devices.other_brands);
+    let (found, unsupported) = drivers::scan(&api, other_brands);
     if found.is_empty() {
         println!("no supported NZXT device found");
     }

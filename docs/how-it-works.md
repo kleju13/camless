@@ -19,6 +19,15 @@ The app starts the service if it is not running. It asks Windows for administrat
 - **On exit:** host-driven fans go to `failsafe_duty` or their fixed duty, and LCDs go back to their own screen.
 - **Lost devices** (sleep, resume, replug) are reopened every 5 s.
 
+## Other brands
+
+`[devices] other_brands`, off unless you turn it on, lets camless drive other brands' fan hubs it has a driver for: the Lian Li Uni Hubs for now. Their own apps drive them too, so:
+- camless opens only a hub's vendor-defined HID collection (usage page `FF00` and up) of a model it has a driver for. Keyboards, mice and the other input collections of the same brand never match, and camless lists no other device of that brand, not even in `camless report`.
+- While the brand's app runs, camless leaves the hub to it: L-Connect for Lian Li, by process name, as Nexus does. camless checks every 5 s. When the app starts, camless hands the ports it set back to the hub's motherboard PWM input and closes the hub; once the app quits, camless opens the hub again.
+- A port stays as it is until a curve takes it. camless drives the fans only; the lighting stays as the hub or L-Connect left it.
+- Turning the setting off hands the ports back and closes the hubs within one `interval_ms`, like any config change.
+- When the service stops, the ports camless set go to `failsafe_duty`, like every host-driven fan.
+
 ## History
 
 The service records every sensor, and the speed and duty of every fan, while it runs:
