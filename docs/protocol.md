@@ -109,7 +109,7 @@ Sources:
   - The ARGB merge goes off first (`E0 10 34 00 00 00 00`, then 20 ms): once on the SL hubs, before every frame on the SL-Infinity (`a102`).
   - The hub keeps its colours when camless lets go. Nexus also sends a sync with the motherboard's ARGB (`E0 10 <argb register> <on>`) when the user asks for it; camless never does.
 - Not done: the L-Wireless controllers (`0416:8040`). Nexus sends a fan's duty in its RF bind frames, through a pairing state machine that addresses the master and each fan by MAC over WinUSB. Its `RfSaveCfg` (`15`) stores the setup in the fans' flash, and the fans need a clock-sync heartbeat. camless leaves them out until someone with the hardware can test it.
-- hidapi's native Windows backend has no `get_input_report`, and it trims output reports to the feature report length. `winhid.rs` makes these calls itself. On Linux, `hidraw.rs` sends the 7-byte feature report as it is (`HIDIOCSFEATURE`) and reads the speeds with `HIDIOCGINPUT`, as Nexus's `LinuxHidDevice.cs` does.
+- hidapi's native Windows backend has no `get_input_report`, and it trims output reports to the feature report length. `winhid.rs` makes these calls itself, and gives a write to the interrupt pipe 1 s, as Nexus's overlapped writes, so that a hub that stops taking reports cannot hold the service. On Linux, `hidraw.rs` sends the 7-byte feature report as it is (`HIDIOCSFEATURE`) and reads the speeds with `HIDIOCGINPUT`, as Nexus's `LinuxHidDevice.cs` does.
 
 **Lian Li Uni Fan TL controller** (`0416:7372`; experimental, with `[devices] other_brands` on)
 - Nexus `Peripherals/LianLiTl`, `Peripherals/LianLiCp` and `Lighting/TlLightingFrameWriter.cs`, from L-Connect and FanControl.LianLi. Nexus calls it untested, pending verification.
