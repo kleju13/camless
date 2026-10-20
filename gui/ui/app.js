@@ -285,7 +285,7 @@
       if (el.hidden) return;
       const [text, tip] = u.busy ? [`${cap(u.busy)}…`, `${cap(u.busy)} camless ${u.latest}.`]
         : u.error ? ['Update failed', `${u.error} Click to try again.`]
-        : ['Update available', `camless ${u.latest}${u.beta ? ' beta' : ''} is out; this is ${S.server.app_version}. Click to update.`];
+        : ['Update available', `camless ${u.latest}${u.beta && !u.latest.includes('beta') ? ' beta' : ''} is out; this is ${S.server.app_version}. Click to update.`];
       b.textContent = text;
       small.textContent = `camless ${u.latest}${u.beta ? ' beta' : ''}`;
       el.dataset.tone = u.busy ? 'busy' : u.error ? 'bad' : '';
@@ -2124,8 +2124,8 @@
     ]);
   }
 
-  // Stable offers releases only; Beta offers betas too, the versions that change only
-  // the last number until they are promoted. Switching checks again at once.
+  // Stable offers releases only; Beta offers betas too, the GitHub pre-releases such
+  // as 0.5.0-beta.1. Switching checks again at once.
   function channelRow() {
     return row('Update channel', 'Beta also offers betas: new features before a release, tried by fewer people. Back on Stable, camless keeps the version it has until a newer release comes out.', select({
       options: [{ value: 'stable', label: 'Stable' }, { value: 'beta', label: 'Beta' }],

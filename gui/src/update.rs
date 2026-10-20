@@ -235,9 +235,11 @@ fn message(text: &str) {
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("camless").as_ptr(), MB_OK | MB_ICONERROR) };
 }
 
-/// Whether version `a` is newer than `b`: `x.y.z` as numbers, then a release after
-/// its own pre-releases (`0.3.0` after `0.3.0-rc1`), and pre-releases by name.
+/// Whether version `a` is newer than `b`, as semver orders them: `x.y.z` as numbers,
+/// then a release after its own pre-releases (`0.5.0` after `0.5.0-beta.2`), and
+/// pre-releases dot by dot, numbers as numbers (`beta.10` after `beta.2`).
 fn newer(a: &str, b: &str) -> bool {
+    use std::cmp::Ordering;
     fn parse(v: &str) -> ([u64; 3], Option<&str>) {
         let v = v.split('+').next().unwrap_or_default();
         let (core, pre) = v.split_once('-').map_or((v, None), |(c, p)| (c, Some(p)));
@@ -247,13 +249,33 @@ fn newer(a: &str, b: &str) -> bool {
         }
         (n, pre)
     }
+    fn pre(x: &str, y: &str) -> Ordering {
+        let (mut xs, mut ys) = (x.split('.'), y.split('.'));
+        loop {
+            let order = match (xs.next(), ys.next()) {
+                (None, None) => return Ordering::Equal,
+                (None, Some(_)) => return Ordering::Less,
+                (Some(_), None) => return Ordering::Greater,
+                (Some(p), Some(q)) => match (p.parse::<u64>(), q.parse::<u64>()) {
+                    (Ok(p), Ok(q)) => p.cmp(&q),
+                    // A number comes before a name.
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => p.cmp(q),
+                },
+            };
+            if order != Ordering::Equal {
+                return order;
+            }
+        }
+    }
     let ((na, pa), (nb, pb)) = (parse(a), parse(b));
     if na != nb {
         return na > nb;
     }
     match (pa, pb) {
         (None, Some(_)) => true,
-        (Some(x), Some(y)) => x > y,
+        (Some(x), Some(y)) => pre(x, y) == Ordering::Greater,
         _ => false,
     }
 }
@@ -288,6 +310,14 @@ mod tests {
         assert!(newer("0.3.0-rc2", "0.3.0-rc1"));
         assert!(newer("0.3.0-rc1", "0.2.9"));
         assert!(!newer("0.2.0+build5", "0.2.0"));
+        assert!(newer("0.5.0-beta.2", "0.5.0-beta.1"));
+        assert!(newer("0.5.0-beta.10", "0.5.0-beta.2"));
+        assert!(!newer("0.5.0-beta.2", "0.5.0-beta.10"));
+        assert!(newer("0.5.0-rc.1", "0.5.0-beta.9"));
+        assert!(newer("0.5.0", "0.5.0-beta.3"));
+        assert!(newer("0.5.0-beta.1", "0.4.1"));
+        assert!(newer("0.5.0-beta.1", "0.5.0-beta"));
+        assert!(!newer("0.5.0-beta.1", "0.5.0-beta.1"));
     }
 
     #[test]

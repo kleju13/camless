@@ -22,7 +22,9 @@ if (-not $iscc) {
         Select-Object -Last 1 -ExpandProperty FullName
 }
 if (-not $iscc) { throw 'Inno Setup is not installed: https://jrsoftware.org/isdl.php' }
-& $iscc /Q "/DAppVersion=$version" (Join-Path $root 'installer\camless.iss')
+# Windows file versions are numbers only, so 0.5.0-beta.1 is 0.5.0 there.
+$numeric = ($version -split '[-+]')[0]
+& $iscc /Q "/DAppVersion=$version" "/DAppNumericVersion=$numeric" (Join-Path $root 'installer\camless.iss')
 if ($LASTEXITCODE -ne 0) { throw 'ISCC failed' }
 
 $setup = Join-Path $root 'dist\camless-setup.exe'

@@ -1,8 +1,8 @@
 # Pushing a tag like v0.2.0 builds camless-setup.exe, which installs camless.exe and camless-gui.exe,
 # and publishes it as a GitHub release. scripts/install.ps1 downloads and runs the latest one.
-# A version that changes only the last number, such as v0.4.1, comes out as a beta: a pre-release,
-# which only the app's beta channel offers. `gh release edit v0.4.1 --prerelease=false --latest`
-# promotes it to a release once it has been tried.
+# A version with a pre-release part, such as v0.5.0-beta.1, comes out as a beta: a GitHub pre-release,
+# which only the app's beta channel offers. Every other tag is a release. Betas of a version count up
+# (beta.1, beta.2, …) and the version itself follows as the release once they have been tried.
 name: Release
 
 on:
@@ -26,6 +26,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          beta=--prerelease
-          if [ "${TAG##*.}" = "0" ]; then beta=; fi
+          beta=
+          case "$TAG" in *-*) beta=--prerelease ;; esac
           gh release create "$TAG" dist/camless-setup.exe dist/camless-setup.exe.sha256 --title "camless $TAG" --generate-notes $beta
