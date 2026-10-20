@@ -42,3 +42,8 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d2", ATTRS{idProduct}=="1f01|1f11|1616|
 SUBSYSTEM=="usb", ATTR{idVendor}=="16d2", ATTR{idProduct}=="1f01|1f11|1616|1617|1618", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d5", ATTRS{idProduct}=="4714|4716|1f01|1f11|2a32|2a16|2a08|2c08|2a01", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="16d5", ATTR{idProduct}=="4714|4716|1f01|1f11|2a32|2a16|2a08|2c08|2a01", TAG+="uaccess"
+
+# HYTE Smart Hub and Nexus Portal NP50, iBUYPOWER MiniHub: USB serial ports, which
+# ModemManager would otherwise probe with modem commands.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="3402", ATTRS{idProduct}=="0900|0901|0904", ENV{ID_MM_DEVICE_IGNORE}="1", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="3402", ATTR{idProduct}=="0900|0901|0904", TAG+="uaccess"

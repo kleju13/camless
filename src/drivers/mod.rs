@@ -17,6 +17,9 @@ pub mod hid;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
 pub mod hue2;
+pub mod hyte;
+pub mod hyte_np50;
+pub mod ibuypower_minihub;
 pub mod kraken2;
 pub mod kraken3;
 pub mod kraken_elite_v2;
@@ -81,6 +84,9 @@ pub const MODELS: &[Model] = &[
     nollie::N8_OS2_1,
     nollie::PRISM8,
     nollie::N1_OS2_1,
+    hyte::SMART_HUB,
+    hyte_np50::NP50,
+    ibuypower_minihub::MINIHUB,
 ];
 
 pub type Open = fn(&HidApi, &Found) -> Result<Box<dyn Driver>>;
