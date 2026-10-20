@@ -5,9 +5,11 @@
 
 use anyhow::{Context, Result};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::time::Duration;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -21,9 +23,24 @@ const OPEN: &[u8] = b"open";
 pub struct Launches(Option<UnixListener>);
 
 /// A socket in the abstract namespace: no file to clean up, and gone with the
-/// process, so a crash leaves nothing that blocks the next start.
+/// process, so a crash leaves nothing that blocks the next start. Any user can bind
+/// or connect to such a name, so both ends check that the other is this user.
 fn address() -> Option<SocketAddr> {
-    SocketAddr::from_abstract_name(format!("camless-gui-{}", unsafe { libc::getuid() })).ok()
+    SocketAddr::from_abstract_name(format!("camless-gui-{}", me())).ok()
+}
+
+fn me() -> u32 {
+    // SAFETY: getuid cannot fail.
+    unsafe { libc::getuid() }
+}
+
+/// The user of the process at the other end of `s`.
+fn peer(s: &impl AsRawFd) -> Option<u32> {
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: cred and len live through the call, and len is cred's size.
+    let r = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&mut cred as *mut libc::ucred).cast(), &mut len) };
+    (r == 0).then_some(cred.uid)
 }
 
 /// Holds the app to one copy. A later launch wakes the running one and gets `None`.
@@ -33,20 +50,29 @@ pub fn claim() -> Option<Launches> {
     match UnixListener::bind_addr(&addr) {
         Ok(l) => Some(Launches(Some(l))),
         Err(_) => match UnixStream::connect_addr(&addr) {
-            Ok(mut s) => {
+            Ok(mut s) if peer(&s) == Some(me()) => {
                 let _ = s.write_all(OPEN);
                 None
+            }
+            Ok(_) => {
+                eprintln!("another user holds camless's launch socket; starting without it");
+                Some(Launches(None))
             }
             Err(_) => Some(Launches(None)),
         },
     }
 }
 
-/// Calls `open` each time a later launch asks for the window.
+/// Calls `open` each time a later launch of this user asks for the window.
 pub fn watch(launches: Launches, open: impl Fn() + Send + 'static) {
     let Some(listener) = launches.0 else { return };
     let _ = std::thread::Builder::new().name("launches".into()).spawn(move || {
         for stream in listener.incoming().flatten() {
+            if peer(&stream) != Some(me()) {
+                continue;
+            }
+            // A launch writes at once; one that does not cannot hold up the next.
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
             let mut buf = [0u8; 8];
             let n = (&stream).take(buf.len() as u64).read(&mut buf).unwrap_or(0);
             if &buf[..n] == OPEN {
@@ -187,10 +213,14 @@ pub mod autostart {
             };
         }
         let exe = std::env::current_exe()?;
+        let exe = exe.to_string_lossy();
+        // A program replaced while it runs, as install.sh does, reads as
+        // "<path> (deleted)"; the new one is at the path.
+        let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
-        std::fs::write(&file, entry(&exe.to_string_lossy())).with_context(|| format!("writing {}", file.display()))
+        std::fs::write(&file, entry(exe)).with_context(|| format!("writing {}", file.display()))
     }
 
     /// The entry for `exe`, quoted as the desktop entry spec asks, `%` doubled as
@@ -235,5 +265,12 @@ mod tests {
         let (rgba, size) = icon_rgba().unwrap();
         assert_eq!(size, 256);
         assert_eq!(rgba.len(), (size * size * 4) as usize);
+    }
+
+    #[test]
+    fn a_launch_socket_tells_whose_the_other_end_is() {
+        let (a, b) = UnixStream::pair().unwrap();
+        assert_eq!(peer(&a), Some(me()));
+        assert_eq!(peer(&b), Some(me()));
     }
 }

@@ -148,12 +148,13 @@ pub fn check(channel: Updates) -> Result<()> {
             }
             s.busy = None;
             match found {
-                Ok(r) => {
+                Ok(Some(r)) => {
                     s.available = newer(&r.version, env!("CARGO_PKG_VERSION"));
                     s.latest = Some(r.version.clone());
                     s.beta = r.beta;
                     s.release = Some(r);
                 }
+                Ok(None) => {}
                 Err(e) => s.error = Some(format!("{e:#}")),
             }
             return;
@@ -162,7 +163,9 @@ pub fn check(channel: Updates) -> Result<()> {
     Ok(())
 }
 
-fn latest(channel: Updates) -> Result<Release> {
+/// The latest release on `channel`, or None if it has no setup for this system: one
+/// still uploading its files, or, on Linux, the releases from before there was one.
+fn latest(channel: Updates) -> Result<Option<Release>> {
     let found = match channel {
         Updates::Stable => {
             let body = http::get(LATEST).context("asking GitHub for the latest release")?;
@@ -171,15 +174,13 @@ fn latest(channel: Updates) -> Result<Release> {
         Updates::Beta => {
             let body = http::get(RELEASES).context("asking GitHub for the latest releases")?;
             let all: Vec<Found> = serde_json::from_slice(&body).context("reading GitHub's answer")?;
-            newest(all).context("GitHub lists no release with a setup")?
+            let Some(found) = newest(all) else { return Ok(None) };
+            found
         }
     };
-    let url = |name: &str| {
-        let asset = found.assets.iter().find(|a| a.name == name);
-        asset.map(|a| a.browser_download_url.clone()).with_context(|| format!("release {} has no {name}", found.tag_name))
-    };
-    let (setup, sum) = (url(SETUP)?, url(&format!("{SETUP}.sha256"))?);
-    Ok(Release { version: found.version().to_string(), beta: found.prerelease, page: found.html_url.clone(), setup, sum })
+    let url = |name: &str| found.assets.iter().find(|a| a.name == name).map(|a| a.browser_download_url.clone());
+    let (Some(setup), Some(sum)) = (url(SETUP), url(&format!("{SETUP}.sha256"))) else { return Ok(None) };
+    Ok(Some(Release { version: found.version().to_string(), beta: found.prerelease, page: found.html_url.clone(), setup, sum }))
 }
 
 /// The newest version among the releases and betas that have a setup and its

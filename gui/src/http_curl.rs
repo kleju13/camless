@@ -17,6 +17,9 @@ pub fn get(url: &str) -> Result<Vec<u8>> {
     let rest = url.strip_prefix("https://").with_context(|| format!("{url} is not an https URL"))?;
     let host = rest.split('/').next().unwrap_or(rest);
     let out = Command::new("curl")
+        // First, or curl reads ~/.curlrc, where `insecure` would let anyone on the way
+        // swap the update and its checksum together.
+        .arg("--disable")
         .args(["--silent", "--show-error", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https"])
         .args(["--connect-timeout", "10", "--max-time", "300", "--max-filesize", &MAX_BODY.to_string()])
         .args(["--user-agent", AGENT, "--", url])

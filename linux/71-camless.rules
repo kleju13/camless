@@ -2,8 +2,8 @@
 # liquidctl's 71-liquidctl.rules does, so the service runs as that user and needs no
 # root. `uaccess` hands a device to whoever is logged in at the seat, through the
 # seat rules that run after this file (73-seat-late.rules); the name sorts after
-# systemd's 70-uaccess.rules too, as liquidctl's does. Nobody gets the devices at the
-# login screen or over SSH alone.
+# systemd's 70-uaccess.rules too, as liquidctl's does. At the login screen the
+# greeter's user has them; over SSH alone, nobody.
 #
 # Only these devices. Access to the hidraw or USB node of a keyboard or mouse would
 # let any program of that user read what is typed, so NZXT's and Lian Li's other

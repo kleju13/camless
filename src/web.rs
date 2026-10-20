@@ -120,9 +120,10 @@ impl Job {
         let lock = profile_lock(&dir);
         let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         let (w, h) = (self.page.width, self.page.height);
-        let browser = Browser::launch(&installed, &dir, w, h, &self.stop)?;
+        let (browser, cdp) = Browser::launch(&installed, &dir, w, h, &self.stop)?;
+        // Dropped before the browser, so that a browser left running sees its pipes close.
+        let mut cdp = cdp;
         self.set(|s| s.browser = Some(browser.name.clone()));
-        let mut cdp = Cdp::connect(browser.port, &browser.ws_path)?;
 
         let targets = cdp.call("Target.getTargets", json!({}), None)?;
         let page = targets["targetInfos"].as_array().and_then(|ts| ts.iter().find(|t| t["type"] == "page")).map(|t| t["targetId"].clone());
@@ -470,19 +471,28 @@ fn snap_launcher(exe: &Path) -> bool {
 
 struct Browser {
     process: os::Process,
-    port: u16,
-    ws_path: String,
     name: String,
 }
 
+/// How camless reaches the browser's DevTools. On Windows, a port on 127.0.0.1, which
+/// the browser writes in `DevToolsActivePort`. On Linux, two pipes, as other users on
+/// the same machine could connect to that port too.
+#[cfg(windows)]
+const DEVTOOLS: &str = "--remote-debugging-port=0";
+#[cfg(not(windows))]
+const DEVTOOLS: &str = "--remote-debugging-pipe";
+
 impl Browser {
-    fn launch(installed: &Installed, dir: &Path, w: u16, h: u16, stop: &AtomicBool) -> Result<Browser> {
+    /// Starts the browser and connects to its DevTools.
+    fn launch(installed: &Installed, dir: &Path, w: u16, h: u16, stop: &AtomicBool) -> Result<(Browser, Cdp)> {
         let (exe, name) = (&installed.exe, installed.name);
+        #[cfg(windows)]
         let port_file = dir.join("DevToolsActivePort");
+        #[cfg(windows)]
         let _ = std::fs::remove_file(&port_file);
         let args = [
             "--headless=new".to_string(),
-            "--remote-debugging-port=0".into(),
+            DEVTOOLS.into(),
             format!("--user-data-dir={}", dir.display()),
             format!("--window-size={w},{h}"),
             "--force-device-scale-factor=1".into(),
@@ -506,27 +516,60 @@ impl Browser {
             "--disable-features=SpareRendererForSitePerProcess".into(),
             "about:blank".into(),
         ];
-        let process = os::spawn(exe, &args)?;
         let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            // The file has the port, then the browser's WebSocket path.
-            if let Ok(text) = std::fs::read_to_string(&port_file) {
-                let mut lines = text.lines();
-                if let (Some(Ok(port)), Some(path)) = (lines.next().map(str::parse), lines.next()) {
-                    return Ok(Browser { process, port, ws_path: path.to_string(), name: name.into() });
+        #[cfg(windows)]
+        {
+            let browser = Browser { process: os::spawn(exe, &args)?, name: name.into() };
+            loop {
+                // The file has the port, then the browser's WebSocket path.
+                if let Ok(text) = std::fs::read_to_string(&port_file) {
+                    let mut lines = text.lines();
+                    if let (Some(Ok(port)), Some(path)) = (lines.next().map(str::parse), lines.next()) {
+                        let cdp = Cdp::connect(port, path)?;
+                        return Ok((browser, cdp));
+                    }
                 }
+                browser.starting(stop, deadline, "did not open its DevTools port")?;
+                std::thread::sleep(Duration::from_millis(100));
             }
-            if let Some(code) = process.exit_code() {
-                bail!("{name} exited at start (code {code})");
-            }
-            if stop.load(Ordering::SeqCst) {
-                bail!("stopped");
-            }
-            if Instant::now() > deadline {
-                bail!("{name} did not open its DevTools port");
-            }
-            std::thread::sleep(Duration::from_millis(100));
         }
+        #[cfg(not(windows))]
+        {
+            let (process, to, from) = os::spawn_piped(exe, &args)?;
+            let browser = Browser { process, name: name.into() };
+            let mut cdp = Cdp::pipe(to, from);
+            // Its first reply says it is up.
+            let up = (|| -> Result<()> {
+                let id = cdp.send("Browser.getVersion", json!({}), None)?;
+                while cdp.reply(id, Duration::from_millis(100))?.is_none() {
+                    browser.starting(stop, deadline, "did not answer on its DevTools pipe")?;
+                }
+                Ok(())
+            })();
+            match up {
+                Ok(()) => Ok((browser, cdp)),
+                // A browser gone at start closes its pipes; how it ended says more.
+                Err(_) if !stop.load(Ordering::SeqCst) && browser.process.wait(Duration::from_secs(1)) => {
+                    bail!("{name} exited at start (code {})", browser.process.exit_code().unwrap_or_default())
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    /// Fails if the browser has exited, the job has stopped, or `deadline` has passed,
+    /// with `late` as the reason then.
+    fn starting(&self, stop: &AtomicBool, deadline: Instant, late: &str) -> Result<()> {
+        if let Some(code) = self.process.exit_code() {
+            bail!("{} exited at start (code {code})", self.name);
+        }
+        if stop.load(Ordering::SeqCst) {
+            bail!("stopped");
+        }
+        if Instant::now() > deadline {
+            bail!("{} {late}", self.name);
+        }
+        Ok(())
     }
 }
 
@@ -748,6 +791,8 @@ mod win {
 mod unix {
     use anyhow::{Context, Result};
     use std::cell::Cell;
+    use std::fs::File;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::process::CommandExt;
     use std::path::Path;
     use std::process::{Command, Stdio};
@@ -798,19 +843,45 @@ mod unix {
         unsafe { libc::geteuid() == 0 }
     }
 
-    pub fn spawn(exe: &Path, args: &[String]) -> Result<Process> {
+    /// Starts the browser with the pipes `--remote-debugging-pipe` takes: it reads
+    /// commands from its fd 3 and writes to its fd 4. Returns the ends camless writes
+    /// to and reads from.
+    pub fn spawn_piped(exe: &Path, args: &[String]) -> Result<(Process, File, File)> {
+        let (commands, to) = pipe()?;
+        let (from, replies) = pipe()?;
+        let (c, r) = (commands.as_raw_fd(), replies.as_raw_fd());
         let mut cmd = Command::new(exe);
         cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
-        // Safe after fork: prctl only sets a flag of the new process.
+        // Safe after fork: prctl, fcntl, dup2 and close only change the new process.
         unsafe {
-            cmd.pre_exec(|| {
+            cmd.pre_exec(move || {
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                // Moved above 4 first, so that neither dup2 overwrites the other's
+                // source; dup2 leaves 3 and 4 open across exec.
+                let (c2, r2) = (libc::fcntl(c, libc::F_DUPFD, 5), libc::fcntl(r, libc::F_DUPFD, 5));
+                if c2 < 0 || r2 < 0 || libc::dup2(c2, 3) < 0 || libc::dup2(r2, 4) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::close(c2);
+                libc::close(r2);
                 Ok(())
             });
         }
         let child = cmd.spawn().with_context(|| format!("starting {}", exe.display()))?;
+        // The browser's ends close here, so each side sees the other one go.
+        drop((commands, replies));
         // Reaped by Process from here on.
-        Ok(Process { pid: child.id() as libc::pid_t, code: Cell::new(None) })
+        Ok((Process { pid: child.id() as libc::pid_t, code: Cell::new(None) }, File::from(to), File::from(from)))
+    }
+
+    /// A pipe as (read end, write end), both closed on exec.
+    fn pipe() -> Result<(OwnedFd, OwnedFd)> {
+        let mut fds = [0; 2];
+        // SAFETY: pipe2 fills both on success, and they are ours alone.
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error()).context("making a pipe for the browser");
+        }
+        Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
     }
 
     #[cfg(test)]
@@ -819,7 +890,7 @@ mod unix {
 
         #[test]
         fn the_browser_group_ends_with_its_process() {
-            let p = spawn(Path::new("/bin/sh"), &["-c".into(), "sleep 30 & exit 3".into()]).unwrap();
+            let (p, _, _) = spawn_piped(Path::new("/bin/sh"), &["-c".into(), "sleep 30 & exit 3".into()]).unwrap();
             assert!(p.wait(Duration::from_secs(5)));
             assert_eq!(p.exit_code(), Some(3));
             let pid = p.pid;
@@ -828,6 +899,20 @@ mod unix {
             drop(p);
             std::thread::sleep(Duration::from_millis(100));
             assert_eq!(unsafe { libc::kill(-pid, 0) }, -1);
+        }
+
+        /// What camless writes to fd 3 comes back from fd 4, here through cat.
+        #[test]
+        fn devtools_messages_go_through_the_pipes() {
+            let (p, to, from) = spawn_piped(Path::new("/bin/sh"), &["-c".into(), "cat <&3 >&4".into()]).unwrap();
+            let mut cdp = crate::cdp::Cdp::pipe(to, from);
+            let id = cdp.send("Browser.getVersion", serde_json::json!({}), None).unwrap();
+            let echo = cdp.reply(id, Duration::from_secs(5)).unwrap().expect("the message came back");
+            assert_eq!(echo["method"], "Browser.getVersion");
+            // Closing camless's end ends cat, and with it the pipe.
+            drop(cdp);
+            assert!(p.wait(Duration::from_secs(5)));
+            assert_eq!(p.exit_code(), Some(0));
         }
     }
 }
