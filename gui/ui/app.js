@@ -1810,90 +1810,111 @@
     track(S.on('state', tick));
     track(K.on('prefs', tick));
     tick();
-    host.appendChild(historyChart());
+    host.appendChild(historyCharts());
   }
 
   /* History from the service: the last hour a second at a time, and 30 days of
-     minutes. One group of series at a time, over the range picked above it. */
+     minutes. A small chart for each kind of reading, all over the range picked above
+     them. The pointer over one shows that moment in all of them. */
   const HIST_RANGES = [
     { value: 600, label: '10 min' }, { value: 3600, label: '1 hour' }, { value: 86400, label: '24 hours' },
     { value: 604800, label: '7 days' }, { value: 2592000, label: '30 days' },
   ];
-  const HIST_GROUPS = [
-    { id: 'temp', label: 'Temperatures' }, { id: 'load', label: 'Load' }, { id: 'power', label: 'Power' },
-    { id: 'fans', label: 'Fan speeds' }, { id: 'fps', label: 'FPS' },
-  ];
   const hasSensor = (id) => S.sensors().some((s) => s.id === id);
 
-  // The series a group shows, each with its reading now.
-  function histSeries(group) {
+  // The charts this PC has readings for, each with its series and the reading now.
+  function histPanels() {
     const sensorsOf = (pairs) => pairs.filter(([id]) => hasSensor(id)).map(([id, label]) => ({ id, label, now: () => S.value(id) }));
-    if (group === 'load') return sensorsOf([['cpu.load', 'CPU'], ['gpu.load', 'GPU'], ['ram.load', 'Memory']]);
-    if (group === 'power') return sensorsOf([['cpu.power', 'CPU'], ['gpu.power', 'GPU']]);
-    if (group === 'fps') return [{ id: 'fps', label: 'Game in front', now: () => { const g = S.status && S.status.game; return g ? g.fps : null; } }];
-    if (group === 'fans') {
-      return S.fans().filter((f) => f.hw && f.hw.connected !== false)
-        .map((f) => ({ id: `${f.id}.rpm`, label: fanLabel(f.id), now: () => { const x = S.fan(f.id); return x && x.hw ? x.hw.rpm : null; } }));
+    const liquid = S.sensors().filter((s) => S.isLiquid(s.id)).map((s) => {
+      const d = S.device(s.id.split('.')[0]);
+      return { id: s.id, label: d ? d.name : S.sourceLabel(s.id), now: () => S.value(s.id) };
+    });
+    const fans = S.fans().filter((f) => f.hw && f.hw.connected !== false)
+      .map((f) => ({ id: `${f.id}.rpm`, label: fanLabel(f.id), now: () => { const x = S.fan(f.id); return x && x.hw ? x.hw.rpm : null; } }));
+    return [
+      { id: 'liquid', title: 'Liquid temperature', kind: 'temp', series: liquid, area: true, mark: 55 },
+      { id: 'temp', title: 'CPU and GPU temperature', kind: 'temp', series: sensorsOf([['cpu.temp', 'CPU'], ['gpu.temp', 'GPU']]) },
+      { id: 'load', title: 'Load', kind: 'load', series: sensorsOf([['cpu.load', 'CPU'], ['gpu.load', 'GPU'], ['ram.load', 'Memory']]) },
+      { id: 'power', title: 'Power', kind: 'power', series: sensorsOf([['cpu.power', 'CPU'], ['gpu.power', 'GPU']]) },
+      { id: 'fans', title: 'Fan and pump speeds', kind: 'rpm', series: fans },
+      // Frame rates are recorded only while Games is on.
+      gamesOn() ? { id: 'fps', title: 'Frame rate', kind: 'fps', area: true, series: [{ id: 'fps', label: 'Game in front', now: () => { const g = S.status && S.status.game; return g ? g.fps : null; } }] } : null,
+    ].filter((p) => p && p.series.length);
+  }
+
+  // A temperature is drawn in the unit picked in Settings, so its grid lines are round.
+  const histConv = (kind) => (kind === 'temp' ? K.toUnit : (v) => v);
+  const NICE = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
+
+  // { lo, hi, step, label } of an axis around the readings from lo0 to hi0 (drawn units).
+  function histAxis(kind, lo0, hi0) {
+    if (kind === 'load') return { lo: 0, hi: 100, step: 25, label: (v) => `${v}%` };
+    if (kind === 'temp') {
+      // Close around the readings, so that a change of a degree shows, and at least
+      // 10 degrees tall, so that noise does not fill the chart.
+      let a = lo0 ?? 30, b = hi0 ?? 50;
+      const pad = Math.max(1, (b - a) * 0.15);
+      a -= pad; b += pad;
+      const least = K.prefs.unit === 'f' ? 18 : 10;
+      if (b - a < least) { const m = (a + b) / 2; a = m - least / 2; b = m + least / 2; }
+      const step = NICE.find((k) => (b - a) / k <= 5);
+      return { lo: Math.floor(a / step) * step, hi: Math.ceil(b / step) * step, step, label: (v) => `${Math.round(v)}°` };
     }
-    const ids = ['cpu.temp', 'gpu.temp'].filter(hasSensor).concat(S.sensors().filter((s) => S.isLiquid(s.id)).map((s) => s.id));
-    return ids.map((id) => ({ id, label: S.sourceLabel(id), now: () => S.value(id) }));
+    const least = kind === 'power' ? 50 : kind === 'rpm' ? 1000 : 60;
+    const want = Math.max(least, (hi0 ?? 0) * 1.1);
+    const step = NICE.find((k) => want / k <= 5);
+    const label = kind === 'power' ? (v) => `${v} W` : kind === 'rpm' ? (v) => K.rpm(v) : (v) => String(v);
+    return { lo: 0, hi: Math.ceil(want / step) * step, step, label };
   }
 
-  // [lowest, highest, step between grid lines, label] of a group's axis, given its highest value.
-  function histAxis(group, top) {
-    if (group === 'load') return [0, 100, 25, (v) => `${v}%`];
-    const [lo, least, label] = group === 'power' ? [0, 50, (v) => `${v} W`]
-      : group === 'fans' ? [0, 1000, (v) => K.rpm(v)]
-      : group === 'fps' ? [0, 60, (v) => String(v)]
-      : [20, 60, (v) => `${Math.round(K.toUnit(v))}°`];
-    const want = Math.max(least, group === 'temp' ? top + 5 : top * 1.1);
-    const step = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000].find((k) => (want - lo) / k <= 5) || 10000;
-    return [lo, lo + Math.ceil((want - lo) / step) * step, step, label];
-  }
-
-  function histValue(group, id, v) {
+  function histValue(kind, id, v) {
     if (v == null) return 'N/A';
-    if (group === 'fans') return `${K.rpm(v)} RPM`;
-    if (group === 'fps') return `${Math.round(v)} fps`;
-    return reading(id, v);
+    if (kind === 'rpm') return `${K.rpm(v)} RPM`;
+    if (kind === 'fps') return `${Math.round(v)} fps`;
+    return reading(id, v, kind === 'temp' ? 1 : 0);
   }
 
-  function historyChart() {
-    const el = h('<section class="cam-panel cam-chart"><header><h3>History</h3></header><div class="cam-chart-bar"></div><div class="cam-chart-plot"><canvas role="img"></canvas><div class="cam-chart-tip" hidden></div><p class="cam-chart-note" hidden></p></div></section>');
-    const head = el.firstElementChild, bar = el.querySelector('.cam-chart-bar');
-    const cv = el.querySelector('canvas'), tip = el.querySelector('.cam-chart-tip'), note = el.querySelector('.cam-chart-note');
+  function historyCharts() {
+    const el = h('<section class="cam-section cam-hist"><header><h2 class="cam-h2">History</h2><span class="grow"></span></header><p class="cam-hint cam-hist-note" hidden></p><div class="cam-hgrid"></div></section>');
+    const grid = el.querySelector('.cam-hgrid'), note = el.querySelector('.cam-hist-note');
     let span = HIST_RANGES.some((r) => r.value === K.prefs.histSpan) ? K.prefs.histSpan : 600;
-    let group = HIST_GROUPS.some((g) => g.id === K.prefs.histGroup) ? K.prefs.histGroup : 'temp';
-    let series = [], data = null, live = [], hover = null, asked = 0;
-    const hidden = new Set();
-    head.appendChild(choice({ options: HIST_RANGES, value: span, label: 'Range', onChange: (v) => { span = v; K.setPref('histSpan', v); build(); load(); } }));
-    const legend = h('<div class="cam-chart-legend"></div>');
-    // Frame rates are recorded only while Games is on.
-    const groups = HIST_GROUPS.filter((g) => g.id !== 'fps' || gamesOn());
-    if (!groups.some((g) => g.id === group)) group = 'temp';
-    bar.append(K.tabStrip(groups, group, (g) => { group = g; K.setPref('histGroup', g); hidden.clear(); build(); load(); }, { sub: true, label: 'Series' }), legend);
+    let panels = [], key = '', data = null, live = [], hoverT = null, asked = 0;
+    const hidden = new Set(K.prefs.histHidden || []);
+    el.firstElementChild.appendChild(choice({ options: HIST_RANGES, value: span, label: 'Range', onChange: (v) => { span = v; K.setPref('histSpan', v); load(); } }));
 
     function build() {
-      series = histSeries(group);
-      legend.textContent = '';
-      series.forEach((s, i) => {
-        const b = h('<button type="button" class="cam-legend"><i></i><span></span></button>');
-        b.lastElementChild.textContent = s.label;
-        b.setAttribute('aria-pressed', String(!hidden.has(s.id)));
-        b.firstElementChild.style.setProperty('--c', seriesColor(i));
-        b.addEventListener('click', () => {
-          if (hidden.has(s.id)) hidden.delete(s.id); else hidden.add(s.id);
+      const list = histPanels();
+      key = list.map((p) => `${p.id}:${p.series.map((s) => s.id).join(',')}`).join('|');
+      grid.textContent = '';
+      panels = list.map((p) => {
+        const box = h(`<section class="cam-panel cam-hpanel"><header><h3></h3><div class="cam-hlegend"></div></header><div class="cam-chart-plot"><canvas role="img"></canvas><div class="cam-chart-tip" hidden></div><p class="cam-chart-note" hidden>No readings in this range.</p></div></section>`);
+        box.querySelector('h3').textContent = p.title;
+        const cv = box.querySelector('canvas');
+        const items = p.series.map((s, i) => {
+          const b = h('<button type="button" class="cam-legend"><i></i><span></span><b class="num"></b><small class="num"></small></button>');
+          b.children[1].textContent = s.label;
+          b.firstElementChild.style.setProperty('--c', seriesColor(i));
           b.setAttribute('aria-pressed', String(!hidden.has(s.id)));
-          draw();
+          b.addEventListener('click', () => {
+            if (hidden.has(s.id)) hidden.delete(s.id); else hidden.add(s.id);
+            K.setPref('histHidden', [...hidden]);
+            b.setAttribute('aria-pressed', String(!hidden.has(s.id)));
+            drawAll();
+          });
+          box.querySelector('.cam-hlegend').appendChild(b);
+          return { s, b, now: b.children[2], stat: b.children[3] };
         });
-        legend.appendChild(b);
+        const panel = Object.assign({}, p, { box, cv, items, tip: box.querySelector('.cam-chart-tip'), empty: box.querySelector('.cam-chart-note') });
+        cv.addEventListener('pointermove', (e) => { const r = cv.getBoundingClientRect(); hoverT = panel.tAt ? panel.tAt(e.clientX - r.left) : null; drawAll(); });
+        cv.addEventListener('pointerleave', () => { hoverT = null; drawAll(); });
+        grid.appendChild(box);
+        return panel;
       });
-      cv.setAttribute('aria-label', `${HIST_GROUPS.find((g) => g.id === group).label} over the last ${HIST_RANGES.find((r) => r.value === span).label}`);
     }
 
     async function load() {
       const ask = ++asked;
-      const ids = series.map((s) => encodeURIComponent(s.id)).join(',');
+      const ids = [...new Set(panels.flatMap((p) => p.series.map((s) => s.id)))].map(encodeURIComponent).join(',');
       let r = null, err = null;
       if (ids && S.status) {
         try { r = await S.api('GET', `history?span=${span}&ids=${ids}`); } catch (e) { err = e; }
@@ -1901,14 +1922,12 @@
       if (ask !== asked) return;
       data = r;
       live = [];
-      const none = r && !Object.values(r.series).some((x) => x.avg.some((v) => v != null));
-      note.textContent = !ids ? 'Nothing to show here on this PC.'
+      note.textContent = !panels.length ? 'Nothing to show here on this PC.'
         : !S.status ? 'The service records history while it runs. It is not running now.'
         : err ? `No history: ${err.message}`
-        : none && group === 'fps' ? 'Frame rates are recorded while a game is played.'
-        : none && span > 3600 ? 'Nothing recorded in this range yet. The service keeps a minute-by-minute history for 30 days.' : '';
+        : span > 3600 ? 'Every point stands for several minutes: the line is their average, and the shade above it how high they went.' : '';
       note.hidden = !note.textContent;
-      draw();
+      drawAll();
     }
 
     // [{ t (ms), v: { id: [average, highest] } }], oldest first: the service's points,
@@ -1916,9 +1935,10 @@
     function points() {
       const out = [];
       if (data) {
+        const ids = Object.keys(data.series);
         for (let i = 0; i < data.count; i++) {
           const v = {};
-          for (const s of series) { const x = data.series[s.id]; if (x && x.avg[i] != null) v[s.id] = [x.avg[i], x.max[i]]; }
+          for (const id of ids) { const x = data.series[id]; if (x.avg[i] != null) v[id] = [x.avg[i], x.max[i]]; }
           out.push({ t: (data.from + i * data.step) * 1000, v });
         }
       }
@@ -1926,93 +1946,157 @@
       return out.concat(live.filter((p) => p.t >= after));
     }
 
-    function draw() {
+    function drawAll() {
+      const now = Date.now(), t0 = now - span * 1000;
+      const pts = points().filter((p) => p.t >= t0 - (data ? data.step * 1000 : 0));
+      for (const p of panels) drawPanel(p, pts, t0, now);
+    }
+
+    function drawPanel(p, pts, t0, now) {
+      const { cv } = p;
       if (!cv.isConnected) return;
+      const conv = histConv(p.kind);
+      const shown = p.series.filter((s) => !hidden.has(s.id));
+      const color = (s) => seriesColor(p.series.indexOf(s));
+      // Per series over the range: lowest and mean of the averages, highest of the peaks.
+      // `any` counts shown series only, for the axis; `has` any series, for the note.
+      let lo0 = null, hi0 = null, any = false, has = false;
+      for (const it of p.items) {
+        let mn = Infinity, mx = -Infinity, sum = 0, n = 0;
+        for (const pt of pts) {
+          const v = pt.v[it.s.id];
+          if (!v) continue;
+          mn = Math.min(mn, v[0]); mx = Math.max(mx, v[1] ?? v[0]); sum += v[0]; n++;
+        }
+        it.now.textContent = histValue(p.kind, it.s.id, it.s.now());
+        it.stat.textContent = n && p.series.length <= 3 ? `avg ${histValue(p.kind, it.s.id, sum / n)}, max ${histValue(p.kind, it.s.id, mx)}` : '';
+        it.b.title = n ? `${it.s.label} over the last ${HIST_RANGES.find((r) => r.value === span).label}: lowest ${histValue(p.kind, it.s.id, mn)}, average ${histValue(p.kind, it.s.id, sum / n)}, highest ${histValue(p.kind, it.s.id, mx)}` : it.s.label;
+        if (n) has = true;
+        if (n && !hidden.has(it.s.id)) { any = true; lo0 = Math.min(lo0 ?? Infinity, conv(mn)); hi0 = Math.max(hi0 ?? -Infinity, conv(mx)); }
+      }
+      p.empty.hidden = has || !data;
       const { ctx, w, h: hh } = D.fit(cv);
       ctx.clearRect(0, 0, w, hh);
       const css = getComputedStyle(cv);
-      const grid = css.getPropertyValue('--ce-grid').trim(), text = css.getPropertyValue('--t4').trim(), ink = css.getPropertyValue('--t3').trim();
-      const pl = 52, pr = 8, pt = 8, pb = 22;
-      const now = Date.now(), t0 = now - span * 1000;
-      const pts = points().filter((p) => p.t >= t0 - (data ? data.step * 1000 : 0));
-      const shown = series.filter((s) => !hidden.has(s.id));
-      const color = (s) => seriesColor(series.indexOf(s));
-      let top = 0;
-      for (const p of pts) for (const s of shown) if (p.v[s.id]) top = Math.max(top, p.v[s.id][0]);
-      const [lo, hi, every, label] = histAxis(group, top);
+      const gridC = css.getPropertyValue('--ce-grid').trim(), text = css.getPropertyValue('--t4').trim(), ink = css.getPropertyValue('--t3').trim();
+      const ax = histAxis(p.kind, lo0, hi0);
+      const pl = 46, pr = 8, pt = 8, pb = 20;
       const X = (t) => pl + ((t - t0) / (span * 1000)) * (w - pl - pr);
-      const Y = (v) => pt + (1 - (clamp(v, lo, hi) - lo) / (hi - lo)) * (hh - pt - pb);
+      const Y = (v) => pt + (1 - (clamp(conv(v), ax.lo, ax.hi) - ax.lo) / (ax.hi - ax.lo)) * (hh - pt - pb);
+      p.tAt = (x) => (x < pl || x > w - pr ? null : t0 + ((x - pl) / (w - pl - pr)) * span * 1000);
       ctx.font = `500 10.5px ${FONT}`;
       ctx.textAlign = 'right';
-      for (let v = lo; v <= hi + 1e-6; v += every) {
-        ctx.strokeStyle = grid; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(pl, Math.round(Y(v)) + 0.5); ctx.lineTo(w - pr, Math.round(Y(v)) + 0.5); ctx.stroke();
-        ctx.fillStyle = text; ctx.fillText(label(v), pl - 8, Y(v) + 3.5);
+      for (let v = ax.lo; v <= ax.hi + 1e-6; v += ax.step) {
+        const y = Math.round(pt + (1 - (v - ax.lo) / (ax.hi - ax.lo)) * (hh - pt - pb)) + 0.5;
+        ctx.strokeStyle = gridC; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(w - pr, y); ctx.stroke();
+        ctx.fillStyle = text; ctx.fillText(ax.label(Math.round(v * 10) / 10), pl - 8, y + 3.5);
       }
+      // Time labels from the right, leaving out those that would touch the one before.
       ctx.textAlign = 'center';
-      for (const [t, s] of histTicks(span, now)) ctx.fillText(s, clamp(X(t), pl + 18, w - pr - 18), hh - 5);
+      let room = Infinity;
+      for (const [x, s] of histTicks(span, now).map(([t, s]) => [clamp(X(t), pl + 18, w - pr - 18), s]).sort((a, b) => b[0] - a[0])) {
+        const half = ctx.measureText(s).width / 2;
+        if (x + half > room - 8) continue;
+        ctx.fillText(s, x, hh - 5);
+        room = x - half;
+      }
+      // Where camless sends every fan to 100%, when the readings come near it.
+      if (p.mark != null && conv(p.mark) >= ax.lo && conv(p.mark) <= ax.hi) {
+        const y = Math.round(Y(p.mark)) + 0.5;
+        ctx.save();
+        ctx.strokeStyle = css.getPropertyValue('--alert').trim(); ctx.globalAlpha = 0.7; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(w - pr, y); ctx.stroke();
+        ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.fillStyle = css.getPropertyValue('--alert').trim(); ctx.textAlign = 'left';
+        ctx.fillText(`${K.temp(p.mark, 0)}: every fan at 100%`, pl + 6, y - 5);
+        ctx.restore();
+      }
       // A gap in the readings, such as the service being off, breaks the line.
       const tick = (S.config && S.config.interval_ms) || 1000;
       const gap = Math.max(3e3, tick * 2.5, (data ? data.step : 1) * 2000);
-      for (const s of shown) {
-        ctx.strokeStyle = color(s);
-        ctx.lineWidth = 1.8;
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        let pen = false, last = 0;
-        for (const p of pts) {
-          const v = p.v[s.id];
-          if (!v || p.t - last > gap) pen = false;
+      const runs = (s) => {
+        const out = [];
+        let cur = null, last = 0;
+        for (const pt of pts) {
+          const v = pt.v[s.id];
+          if (!v || pt.t - last > gap) cur = null;
           if (!v) continue;
-          last = p.t;
-          const x = X(p.t), y = Y(v[0]);
-          if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+          last = pt.t;
+          if (!cur) out.push((cur = []));
+          cur.push([X(pt.t), Y(v[0]), Y(v[1] ?? v[0])]);
         }
-        ctx.stroke();
+        return out;
+      };
+      const bottom = hh - pb;
+      for (const s of shown) {
+        const c = color(s), rs = runs(s);
+        for (const r of rs) {
+          // How high the readings went within each point, over several minutes a point.
+          if (data && data.step > 1) {
+            ctx.beginPath();
+            r.forEach(([x, , ym], i) => (i ? ctx.lineTo(x, ym) : ctx.moveTo(x, ym)));
+            for (let i = r.length - 1; i >= 0; i--) ctx.lineTo(r[i][0], r[i][1]);
+            ctx.closePath();
+            ctx.globalAlpha = shown.length === 1 ? 0.22 : 0.1; ctx.fillStyle = c; ctx.fill(); ctx.globalAlpha = 1;
+          }
+          if (p.area && shown.length === 1) {
+            const g = ctx.createLinearGradient(0, pt, 0, bottom);
+            const rgb = S.color.hexToRgb(c);
+            g.addColorStop(0, S.color.css(rgb, 0.28)); g.addColorStop(1, S.color.css(rgb, 0));
+            ctx.beginPath();
+            r.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+            ctx.lineTo(r[r.length - 1][0], bottom); ctx.lineTo(r[0][0], bottom); ctx.closePath();
+            ctx.fillStyle = g; ctx.fill();
+          }
+          ctx.strokeStyle = c; ctx.lineWidth = 1.8; ctx.lineJoin = 'round';
+          ctx.beginPath();
+          r.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+          ctx.stroke();
+          if (r.length === 1) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(r[0][0], r[0][1], 2, 0, TAU); ctx.fill(); }
+        }
       }
-      tip.hidden = true;
-      if (hover == null || !pts.length) return;
-      const t = t0 + ((hover - pl) / (w - pl - pr)) * span * 1000;
+      cv.setAttribute('aria-label', `${p.title} over the last ${HIST_RANGES.find((r) => r.value === span).label}`);
+      p.tip.hidden = true;
+      if (hoverT == null || !pts.length) return;
       let best = null;
-      for (const p of pts) if (!best || Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+      for (const q of pts) if (!best || Math.abs(q.t - hoverT) < Math.abs(best.t - hoverT)) best = q;
       const on = shown.filter((s) => best.v[s.id]);
       const x = X(best.t);
       if (!on.length || x < pl || x > w - pr) return;
       ctx.strokeStyle = ink; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, pt); ctx.lineTo(Math.round(x) + 0.5, hh - pb); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, pt); ctx.lineTo(Math.round(x) + 0.5, bottom); ctx.stroke();
       for (const s of on) { ctx.fillStyle = color(s); ctx.beginPath(); ctx.arc(x, Y(best.v[s.id][0]), 3, 0, TAU); ctx.fill(); }
       // A point that stands for several samples also says how high it went.
       const many = data && data.step > 1 && best.t < (data.from + data.count * data.step) * 1000;
-      tip.innerHTML = `<time>${esc(histTime(best.t, span))}</time>` + on.map((s) => {
+      p.tip.innerHTML = `<time>${esc(histTime(best.t, span))}</time>` + on.map((s) => {
         const [avg, max] = best.v[s.id];
-        const peak = many && max != null && histValue(group, s.id, max) !== histValue(group, s.id, avg) ? `<small>max ${esc(histValue(group, s.id, max))}</small>` : '';
-        return `<div><i style="--c:${color(s)}"></i><span>${esc(s.label)}</span><b>${esc(histValue(group, s.id, avg))}</b>${peak}</div>`;
+        const peak = many && max != null && histValue(p.kind, s.id, max) !== histValue(p.kind, s.id, avg) ? `<small>max ${esc(histValue(p.kind, s.id, max))}</small>` : '';
+        return `<div><i style="--c:${color(s)}"></i><span>${esc(s.label)}</span><b>${esc(histValue(p.kind, s.id, avg))}</b>${peak}</div>`;
       }).join('');
-      tip.hidden = false;
-      const flip = x + 14 + tip.offsetWidth > w;
-      tip.style.left = `${flip ? x - 14 - tip.offsetWidth : x + 14}px`;
+      p.tip.hidden = false;
+      const flip = x + 14 + p.tip.offsetWidth > w;
+      p.tip.style.left = `${flip ? x - 14 - p.tip.offsetWidth : x + 14}px`;
     }
 
-    cv.addEventListener('pointermove', (e) => { hover = e.clientX - cv.getBoundingClientRect().left; draw(); });
-    cv.addEventListener('pointerleave', () => { hover = null; draw(); });
     // The last hour moves with every reading; every range loads again each minute.
     track(S.on('state', () => {
-      if (!S.status) return draw();
+      if (!S.status) return drawAll();
+      const k = histPanels().map((p) => `${p.id}:${p.series.map((s) => s.id).join(',')}`).join('|');
+      if (k !== key) { build(); load(); return; }
       if (!data && note.textContent.startsWith('The service')) { load(); return; }
       if (span <= 3600) {
         const v = {};
-        for (const s of series) { const x = s.now(); if (x != null) v[s.id] = [x, x]; }
+        for (const p of panels) for (const s of p.series) { const x = s.now(); if (x != null) v[s.id] = [x, x]; }
         live.push({ t: Date.now(), v });
-        if (Object.keys(v).length) note.hidden = true;
         while (live.length && live[0].t < Date.now() - span * 1000) live.shift();
       }
-      draw();
+      drawAll();
     }));
     const timer = setInterval(() => { if (!document.hidden) load(); }, 60e3);
     track(() => clearInterval(timer));
-    track(K.on('prefs', (k) => { if (k === 'theme') build(); draw(); }));
-    const ro = new ResizeObserver(() => draw());
-    ro.observe(cv);
+    track(K.on('prefs', (k) => { if (k === 'theme') build(); drawAll(); }));
+    const ro = new ResizeObserver(() => drawAll());
+    ro.observe(grid);
     track(() => ro.disconnect());
     build();
     load();

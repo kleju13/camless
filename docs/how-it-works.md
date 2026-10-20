@@ -25,7 +25,7 @@ The service records every sensor, and the speed and duty of every fan, while it 
 - the last hour at one reading a second, in memory;
 - each minute's average and highest value, in `history/` next to `camless.toml`, one CSV file per UTC day. Files older than 30 days are deleted. A day takes about 300 KB with a Kraken and a Control Hub.
 
-*Monitoring → History* shows them for the last 10 minutes, hour, 24 hours, 7 days or 30 days: temperatures, loads, power or fan speeds. Pointing at the chart shows the values at that moment, and the highest value too where a point stands for several readings. `camless run --demo` keeps its simulated readings in memory only.
+*Monitoring → History* shows them for the last 10 minutes, hour, 24 hours, 7 days or 30 days, a chart for each kind: liquid temperature, CPU and GPU temperature, load, power, fan and pump speeds, and the frame rate while Games is on. Liquid has a chart of its own, scaled close around its readings, so a change of a degree shows; the line at 55 °C, where every fan goes to 100 %, shows once the readings come near it. Each series gives its reading now, its average and its highest over the range. Pointing at one chart shows that moment in all of them. Over 24 hours and more, a point stands for several minutes: the line is their average, and a shade above it shows how high they went. `camless run --demo` keeps its simulated readings in memory only.
 
 ## Games
 
@@ -39,7 +39,7 @@ Frame rates come from the presents that the graphics kernel reports through ETW:
 
 ETW hands events over in batches, up to a second late, so frames are counted 2 s after they are shown. The 1 % low is the frame rate of the frame time that 1 % of frames took at least as long as: with 1 000 frames, the 10th slowest. Frame times are counted in buckets 1 % wide, so a low is within 1 %. A gap of more than a second between two frames is a pause, such as a loading screen, not a frame.
 
-*Games*, at the bottom of the sidebar, shows the game being played, each game's totals and every session. *Monitoring → History → FPS* charts the frame rate. `camless fps` prints the frame rate of the program in front once a second, to check that frames are counted. `camless run --demo` makes up a game in front, once Games is on, and three past sessions.
+*Games*, at the bottom of the sidebar, shows the game being played, each game's totals and every session. *Monitoring → History* charts the frame rate. `camless fps` prints the frame rate of the program in front once a second, to check that frames are counted. `camless run --demo` makes up a game in front, once Games is on, and three past sessions.
 
 ## AI assistants (MCP)
 
