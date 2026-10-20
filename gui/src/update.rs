@@ -34,6 +34,9 @@ pub struct State {
     pub error: Option<String>,
     #[serde(skip)]
     release: Option<Release>,
+    /// The channel the last check was asked for.
+    #[serde(skip)]
+    wanted: Updates,
 }
 
 #[derive(Clone, Debug)]
@@ -74,7 +77,8 @@ pub fn channel(path: &Path) -> Updates {
     Config::load(path).map(|c| c.updates).unwrap_or_default()
 }
 
-static STATE: Mutex<State> = Mutex::new(State { busy: None, latest: None, available: false, beta: false, error: None, release: None });
+static STATE: Mutex<State> =
+    Mutex::new(State { busy: None, latest: None, available: false, beta: false, error: None, release: None, wanted: Updates::Stable });
 /// How the app quits; the window's event loop sets it, and `--serve` has none.
 static QUIT: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 /// The checked setup, for `run_ready` once the app has quit.
@@ -108,19 +112,43 @@ fn fail(e: anyhow::Error) {
     s.error = Some(format!("{e:#}"));
 }
 
-/// Asks GitHub for the latest release on `channel`, in the background.
+/// Asks GitHub for the latest release on `channel`, in the background. A check that
+/// is running already starts again if it was for the other channel, so a release from
+/// the channel left behind is never offered.
 pub fn check(channel: Updates) -> Result<()> {
-    begin("checking")?;
-    std::thread::Builder::new().name("update".into()).spawn(move || match latest(channel) {
-        Ok(r) => {
-            let mut s = lock();
-            s.busy = None;
-            s.available = newer(&r.version, env!("CARGO_PKG_VERSION"));
-            s.latest = Some(r.version.clone());
-            s.beta = r.beta;
-            s.release = Some(r);
+    {
+        let mut s = lock();
+        s.wanted = channel;
+        if s.busy == Some("checking") {
+            return Ok(());
         }
-        Err(e) => fail(e),
+        if let Some(b) = s.busy {
+            bail!("camless is already {b} an update");
+        }
+        s.busy = Some("checking");
+        (s.error, s.latest, s.available, s.beta, s.release) = (None, None, false, false, None);
+    }
+    std::thread::Builder::new().name("update".into()).spawn(move || {
+        let mut channel = channel;
+        loop {
+            let found = latest(channel);
+            let mut s = lock();
+            if s.wanted != channel {
+                channel = s.wanted;
+                continue;
+            }
+            s.busy = None;
+            match found {
+                Ok(r) => {
+                    s.available = newer(&r.version, env!("CARGO_PKG_VERSION"));
+                    s.latest = Some(r.version.clone());
+                    s.beta = r.beta;
+                    s.release = Some(r);
+                }
+                Err(e) => s.error = Some(format!("{e:#}")),
+            }
+            return;
+        }
     })?;
     Ok(())
 }
@@ -145,9 +173,11 @@ fn latest(channel: Updates) -> Result<Release> {
     Ok(Release { version: found.version().to_string(), beta: found.prerelease, page: found.html_url.clone(), setup, sum })
 }
 
-/// The newest version among the releases and betas that have a setup to install.
+/// The newest version among the releases and betas that have a setup and its
+/// checksum; GitHub lists a release while its files are still uploading.
 fn newest(all: Vec<Found>) -> Option<Found> {
-    let ready = all.into_iter().filter(|f| !f.draft && f.assets.iter().any(|a| a.name == SETUP));
+    let has = |f: &Found, name: &str| f.assets.iter().any(|a| a.name == name);
+    let ready = all.into_iter().filter(|f| !f.draft && has(f, SETUP) && has(f, &format!("{SETUP}.sha256")));
     ready.reduce(|best, f| if newer(f.version(), best.version()) { f } else { best })
 }
 
@@ -266,11 +296,12 @@ mod tests {
         let setup = r#"[{"name":"camless-setup.exe","browser_download_url":"https://x/s"},{"name":"camless-setup.exe.sha256","browser_download_url":"https://x/h"}]"#;
         let all = list(&format!(
             r#"[{{"tag_name":"v0.5.0","html_url":"https://github.com/r/5","prerelease":true,"assets":[]}},
+               {{"tag_name":"v0.4.5","html_url":"https://github.com/r/45","prerelease":true,"assets":[{{"name":"camless-setup.exe","browser_download_url":"https://x/s"}}]}},
                {{"tag_name":"v0.4.1","html_url":"https://github.com/r/41","prerelease":true,"assets":{setup}}},
                {{"tag_name":"v0.4.10","html_url":"https://github.com/r/410","draft":true,"assets":{setup}}},
                {{"tag_name":"v0.4.0","html_url":"https://github.com/r/40","assets":{setup}}}]"#
         ));
-        // 0.5.0 has no setup yet and 0.4.10 is a draft.
+        // 0.5.0 has no setup yet, 0.4.5 no checksum, and 0.4.10 is a draft.
         let f = newest(all).unwrap();
         assert_eq!((f.version(), f.prerelease), ("0.4.1", true));
         // A release newer than every beta wins.
