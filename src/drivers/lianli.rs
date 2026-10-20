@@ -5,9 +5,9 @@
 //!
 //! camless drives the fans only. It leaves a port as it is until a curve takes it;
 //! then it puts that port in manual mode and sets its duty. When camless lets go of
-//! the hub, for L-Connect or with the setting turned off, it hands those ports back
-//! to the hub's motherboard PWM input. The lighting stays as the hub or L-Connect
-//! left it.
+//! the hub, for L-Connect, with the setting turned off or when the service stops, it
+//! hands those ports back to the hub's motherboard PWM input. The lighting stays as
+//! the hub or L-Connect left it.
 //!
 //! Every command is a 7-byte feature report with id `E0` on the hub's vendor
 //! collection (usage page `FF72`, usage `A1`). The speeds and the firmware version
@@ -23,7 +23,7 @@
 use super::hidraw::Hid;
 #[cfg(windows)]
 use super::winhid::Hid;
-use super::{Driver, FanReading, Found, Model, Reading, Vendor};
+use super::{Driver, FanReading, Found, Model, Reading, Usage, Vendor};
 use anyhow::{bail, Context, Result};
 use camless_core::lighting::Lighting;
 use camless_core::status::{Device, FanChannel, Unit};
@@ -38,12 +38,7 @@ pub const LIAN_LI: Vendor = Vendor {
 };
 
 const fn model(pid: u16, slug: &'static str, name: &'static str) -> Model {
-    Model {
-        experimental: true,
-        vendor: Some(&LIAN_LI),
-        usage: Some((0xff72, 0xa1)),
-        ..Model::hid(0x0cf2, pid, slug, name, open)
-    }
+    Model::vendor_hid(0x0cf2, pid, slug, name, &LIAN_LI, Usage::Exact(0xff72, 0xa1), open)
 }
 
 pub const UNI_HUB: Model = model(0x7750, "lianli-uni-hub", "Lian Li Uni Hub");

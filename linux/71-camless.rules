@@ -6,8 +6,8 @@
 # greeter's user has them; over SSH alone, nobody.
 #
 # Only these devices. Access to the hidraw or USB node of a keyboard or mouse would
-# let any program of that user read what is typed, so NZXT's and Lian Li's other
-# products are not in here. A test in src/drivers/mod.rs checks that these lines
+# let any program of that user read what is typed, so the other products of these
+# brands are not in here. A test in src/drivers/mod.rs checks that these lines
 # match the drivers' models.
 #
 # linux/install.sh puts this file in /etc/udev/rules.d.
@@ -19,6 +19,8 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="170e|1715|2007|2014|
 # Asetek-made Krakens X31, X41 and X61: a USB device, not HID.
 SUBSYSTEM=="usb", ATTR{idVendor}=="2433", ATTR{idProduct}=="b200", TAG+="uaccess"
 
-# Lian Li Uni Hubs, which camless drives only with [devices] other_brands on.
+# Other brands' hubs, which camless drives only with [devices] other_brands on.
+
+# Lian Li Uni Hubs.
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0cf2", ATTRS{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="0cf2", ATTR{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106", TAG+="uaccess"

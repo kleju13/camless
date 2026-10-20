@@ -60,7 +60,7 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t 
 # rights until the device is plugged in again or the PC restarts. Run as root, with
 # the rules file and where it goes.
 apply='install -D -m 644 "$1" "$2" || exit 1
-if ! { udevadm control --reload && udevadm trigger --action=change --subsystem-match=hidraw --subsystem-match=usb; }; then
+if ! { udevadm control --reload && udevadm trigger --action=change --subsystem-match=hidraw --subsystem-match=usb --subsystem-match=tty; }; then
   echo "udev did not reload its rules; they apply after a restart, or when the device is plugged in again." >&2
 fi'
 if ! cmp -s "$here/71-camless.rules" "$rules"; then
