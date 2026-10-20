@@ -122,7 +122,7 @@ impl Driver for ControlHub {
         Device {
             name: MODEL.name.into(),
             firmware: self.firmware.clone(),
-            verified: true,
+            verified: camless_core::hardware::is_verified(MODEL.vid, MODEL.pid),
             fans: (1..=PORTS)
                 .map(|n| FanChannel {
                     id: format!("fan{n}"),

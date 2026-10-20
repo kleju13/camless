@@ -1,0 +1,46 @@
+name: It works
+description: camless works on hardware it has not been verified on yet. The camless app fills in the report.
+title: "Works: "
+labels: ["hardware"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for checking. A report like this one marks the hardware as verified in `hardware/verified.toml`, so the next person with it gets no warning.
+
+        **In the app:** the **Unverified hardware** entry in the sidebar → **It works**. The app fills in the report below.
+        **Without the app:** run this in PowerShell and paste what it prints:
+
+        ```powershell
+        & "$env:LOCALAPPDATA\Programs\camless\camless.exe" report
+        ```
+
+        The report is read only: standard USB descriptor reads, no commands sent to the devices. It leaves out serial numbers, device paths, and your user and PC names. Read it before you submit; everything here is public.
+  - type: textarea
+    id: report
+    attributes:
+      label: Report from camless
+      description: If the app copied the report instead of filling it in, paste it here.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: What you tried, and it did what you set
+      options:
+        - label: Pump speed or curve
+        - label: Fan speeds or curves
+        - label: Lighting
+        - label: LCD
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything that looked off
+      description: Optional. A reading that seemed wrong, a light that lagged, a speed that did not match.
+  - type: checkboxes
+    id: public
+    attributes:
+      label: Before you submit
+      options:
+        - label: I read the report, and it is fine to publish.
+          required: true

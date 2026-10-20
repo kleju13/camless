@@ -8,7 +8,7 @@ body:
       value: |
         The maintainer only has a Kraken Elite 2024 and a Control Hub. Reports like this one are how other devices get drivers.
 
-        **In the app:** Settings → Devices → **Create report**, then **Open on GitHub**. The app fills in the report below.
+        **In the app:** Settings → Devices → **Create report**, then **Open on GitHub**. For hardware camless drives but has not verified, the **Unverified hardware** entry in the sidebar → **Something is wrong** does the same. The app fills in the report below.
         **Without the app:** run this in PowerShell and paste what it prints:
 
         ```powershell

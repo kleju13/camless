@@ -124,6 +124,73 @@
     });
   }
 
+  // `camless.exe report`, run by the app; it stops waiting once `alive()` is false.
+  async function gatherReport(alive) {
+    const failed = (e) => ({ error: e.message });
+    let r = await S.api('POST', 'report', {}).catch(failed);
+    while (alive() && r.busy) {
+      await new Promise((ok) => setTimeout(ok, 400));
+      r = await S.api('GET', 'report').catch(failed);
+    }
+    return r;
+  }
+
+  /* The devices camless drives that hardware/verified.toml does not list. The sidebar
+     asks how they work until the person says they submitted a report about this setup. */
+  const unverified = () => S.devices().filter((d) => !d.verified);
+  const setupKey = (list) => list.map((d) => `${d.id}@${d.firmware || ''}`).sort().join(',');
+  const UNVERIFIED = 'We’ve detected that your hardware configuration hasn’t been verified yet.';
+
+  // Either report goes straight to a new GitHub issue with the report filled in; the
+  // person checks it there before submitting, as the form asks.
+  function verifyDialog() {
+    const list = unverified();
+    let closed = false;
+    const note = h('<p class="cam-hint" aria-live="polite"></p>');
+    const m = modal({
+      title: 'Unverified hardware',
+      render(body) {
+        body.appendChild(h(`<p class="cam-lead"><b>${UNVERIFIED}</b></p>`));
+        const rows = h('<div class="cam-rows cam-box"></div>');
+        for (const d of list) rows.appendChild(row(d.name, `Firmware ${esc(d.firmware || 'unknown')}`, null));
+        body.appendChild(rows);
+        body.appendChild(h(`<p class="cam-hint">camless drives ${list.length > 1 ? 'these devices' : 'this device'} from other projects’ notes and captures of CAM, not from a test on the same hardware, so something may be off. Tell us how it goes. Either button gathers a hardware report and opens a GitHub issue with it filled in. You check it there before you submit; nothing is sent from here.</p>`));
+        body.appendChild(note);
+      },
+      actions: [
+        { label: 'Cancel' },
+        { label: 'Something is wrong', onClick: () => { send('problem'); return false; } },
+        { label: 'It works', primary: true, onClick: () => { send('works'); return false; } },
+        { label: 'I submitted it', primary: true, onClick: submitted },
+      ],
+      onClose: () => { closed = true; },
+    });
+    const btns = m.buttons.slice(1, 3), done = m.buttons[3];
+    done.hidden = true;
+    const fail = (html) => { note.innerHTML = html; btns.forEach((b) => { b.disabled = false; }); };
+    async function send(kind) {
+      btns.forEach((b) => { b.disabled = true; });
+      note.textContent = 'Gathering the report…';
+      const r = await gatherReport(() => !closed);
+      if (closed) return;
+      if (r.error || !r.text) return fail(`<span class="cam-err">The report could not be made: ${esc(r.error || 'camless.exe printed nothing')}</span>`);
+      if (!r.fits) {
+        try { await navigator.clipboard.writeText(r.text); } catch (e) { return fail(`<span class="cam-err">The report could not be copied: ${esc(e.message)}</span>`); }
+      }
+      const o = await act('report/issue', { kind });
+      if (!o) return fail('');
+      // Opening the browser sends nothing: the issue exists only once it is submitted.
+      btns.forEach((b) => { b.hidden = true; });
+      done.hidden = false;
+      done.focus();
+      note.textContent = `${o.filled ? 'GitHub opened with the report filled in. Check it there, then submit it.' : 'GitHub opened. Paste the report from your clipboard into the Report field, then submit it.'} Once it is submitted, press I submitted it and the sidebar stops asking about this setup.`;
+    }
+    function submitted() {
+      K.setPref('verifyReported', [...new Set([...(K.prefs.verifyReported || []), setupKey(list)])]);
+      toast('Thanks. The sidebar stops asking about this setup.');
+    }
+  }
+
   // A hardware report for a GitHub issue. The app gathers it and shows all of it; Open on
   // GitHub fills in a new issue, which reaches GitHub only once the person submits it there.
   function reportDialog() {
@@ -147,13 +214,8 @@
     const [, copyBtn, openBtn] = m.buttons;
     copyBtn.disabled = openBtn.disabled = true;
 
-    const failed = (e) => ({ error: e.message });
     (async () => {
-      let r = await S.api('POST', 'report', {}).catch(failed);
-      while (!closed && r.busy) {
-        await new Promise((ok) => setTimeout(ok, 400));
-        r = await S.api('GET', 'report').catch(failed);
-      }
+      const r = await gatherReport(() => !closed);
       if (closed) return;
       if (r.error || !r.text) {
         pre.textContent = 'The report could not be made.';
@@ -230,6 +292,7 @@
       : `<a href="#${n.id}" data-id="${n.id}" title="${esc(n.label)}">${I[n.icon]}<span class="lbl">${esc(n.label)}</span></a>`)).join('');
     nav.appendChild(serviceBadge());
     nav.appendChild(updateBadge());
+    nav.appendChild(verifyBadge());
     const navItems = () => nav.querySelectorAll('a[data-id]').forEach((a) => { a.hidden = !navShown(a.dataset.id); });
     S.on('config', navItems);
     navItems();
@@ -300,6 +363,21 @@
       el.setAttribute('aria-label', `${text}: camless ${u.latest}`);
     };
     S.on('state', upd);
+    upd();
+    return el;
+  }
+
+  function verifyBadge() {
+    const el = h(`<button type="button" class="cam-upd verify" hidden>${I.info}<span class="lbl"><b>Unverified hardware</b><small>Tell us if it works</small></span></button>`);
+    el.title = `${UNVERIFIED} Click to tell us how it works.`;
+    el.setAttribute('aria-label', 'Unverified hardware: tell us if it works');
+    el.addEventListener('click', verifyDialog);
+    const upd = () => {
+      const list = S.status ? unverified() : [];
+      el.hidden = !list.length || (K.prefs.verifyReported || []).includes(setupKey(list));
+    };
+    S.on('state', upd);
+    K.on('prefs', upd);
     upd();
     return el;
   }
@@ -2172,7 +2250,8 @@
       row('Config folder', `<code>${esc(sv.config_path)}</code>`, sv.sandbox ? null : button('Open folder', { small: true, onClick: () => act('open-folder', {}) })),
     ]);
 
-    const devRows = S.devices().map((d) => row(d.name, `Firmware ${esc(d.firmware || 'unknown')}. ${d.verified ? 'Tested on real hardware.' : 'Not yet tested on real hardware; this driver follows other projects’ notes and captures of CAM.'}`, deviceStatus(d.id)));
+    const devRows = S.devices().map((d) => row(d.name, `Firmware ${esc(d.firmware || 'unknown')}. ${d.verified ? 'Verified: reported working on this model.' : 'Not verified yet: this driver follows other projects’ notes and captures of CAM. <button type="button" class="cam-link" data-a="verify">Tell us how it works</button>'}`, deviceStatus(d.id)));
+    for (const r of devRows) r.addEventListener('click', (e) => { if (e.target.closest('[data-a=verify]')) verifyDialog(); });
     const unsupported = ((S.status && S.status.unsupported) || []).map((u) => row(u.product || 'NZXT device', `No camless driver yet (${usbId(u)}).`, null));
     panel('Devices', devRows.concat(unsupported, [
       !devRows.length && !unsupported.length ? row(S.status ? 'No devices found' : 'The service is not running', null, null) : null,

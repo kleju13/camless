@@ -137,7 +137,7 @@ impl Backend {
             ("POST", "open-folder") => self.open_folder(),
             ("POST", "report") => report::start(&self.path()).map(|_| json!(report::state())).map_err(Refused::from),
             ("GET", "report") => Ok(json!(report::state())),
-            ("POST", "report/issue") => self.report_issue(),
+            ("POST", "report/issue") => self.report_issue(body),
             ("POST", "open-link") => self.open_link(body),
             ("POST", "window/closed") => {
                 if let Some(f) = &self.on_closed {
@@ -414,12 +414,19 @@ impl Backend {
         Ok(json!({}))
     }
 
-    /// Opens a new GitHub issue with the last report in the browser.
-    fn report_issue(&self) -> Answer {
+    /// Opens a new GitHub issue with the last report in the browser: a problem, or
+    /// with `{"kind": "works"}`, hardware that works.
+    fn report_issue(&self, body: &[u8]) -> Answer {
+        #[derive(Deserialize)]
+        struct Issue {
+            #[serde(default)]
+            kind: report::Kind,
+        }
+        let Issue { kind } = parse(body)?;
         if self.sandbox {
             bail_refused("the sandbox does not open a browser")?;
         }
-        Ok(json!({ "filled": report::open_issue()? }))
+        Ok(json!({ "filled": report::open_issue(kind)? }))
     }
 
     /// Opens a page the window links to. The window names it, so it cannot send the

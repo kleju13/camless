@@ -265,7 +265,7 @@ fn render(f: &Facts) -> String {
                 let slug = d.id.split('#').next().unwrap_or_default();
                 let ids = MODELS.iter().find(|m| m.slug == slug).map(|m| format!(" `{:04x}:{:04x}`", m.vid, m.pid)).unwrap_or_default();
                 let firmware = d.firmware.as_deref().unwrap_or("unknown");
-                let tested = if d.verified { "tested on hardware" } else { "driver not yet tested on hardware" };
+                let tested = if d.verified { "verified" } else { "not verified yet" };
                 let connected = if d.connected { "connected" } else { "not connected" };
                 let _ = writeln!(s, "- {}{ids}: firmware {firmware}, {tested}, {connected}", d.name);
                 if !d.fans.is_empty() {
@@ -775,7 +775,7 @@ about the table"
         assert!(text.contains(r"  - error: lost <hidden> at <device path>, C:\Users\<user>\x.toml"));
         assert!(text.starts_with(&format!("camless {} · Windows 11 25H2, build 26200.9711 · Example CPU\n", env!("CARGO_PKG_VERSION"))));
         assert!(text.contains("Service 0.3.0: running, as administrator, CPU temperature: yes\n"));
-        assert!(text.contains("- Kraken Elite (2024) `1e71:3012`: firmware 1.2.0, tested on hardware, connected\n"));
+        assert!(text.contains("- Kraken Elite (2024) `1e71:3012`: firmware 1.2.0, verified, connected\n"));
         assert!(text.contains("  - fans: pump (pump, min 20 %, stores curves), fan (stores curves)\n"));
         assert!(text.contains("  - LCD 640×640, round\n"));
         assert!(text.contains("**NZXT devices without a driver**\n- NZXT Kraken X `1e71:2007`\n"));

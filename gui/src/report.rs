@@ -14,11 +14,22 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const NEW_ISSUE: &str = "https://github.com/kleju13/camless/issues/new?template=hardware-report.yml";
+const WORKS_ISSUE: &str = "https://github.com/kleju13/camless/issues/new?template=hardware-works.yml";
 /// GitHub sends someone who is not signed in to its login page with the whole URL in
 /// `return_to`, which fails from about 7000 characters; longer URLs get 414.
 const MAX_URL: usize = 6000;
 /// The form's report field, when the report did not fit in the URL.
 const PASTE_HERE: &str = "camless copied the report to your clipboard. Paste it here (Ctrl+V) in place of this line.";
+
+/// What the issue is about: a device camless does not drive or drives wrong, or one
+/// that is not verified yet and works.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    #[default]
+    Problem,
+    Works,
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct State {
@@ -54,7 +65,8 @@ pub fn start(config: &Path) -> Result<()> {
     let spawned = std::thread::Builder::new().name("report".into()).spawn(move || {
         let result = run(&exe, &config);
         *lock() = match result {
-            Ok(r) => State { fits: issue_url(&r.title, &r.text).1, title: Some(r.title), text: Some(r.text), ..Default::default() },
+            // A Works issue has the shorter URL, so this holds for both.
+            Ok(r) => State { fits: issue_url(Kind::Problem, &r.title, &r.text).1, title: Some(r.title), text: Some(r.text), ..Default::default() },
             Err(e) => State { error: Some(format!("{e:#}")), ..Default::default() },
         };
     });
@@ -126,20 +138,24 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<Vec<u8>> {
 
 /// Opens the new issue in the default browser with the last report. Returns whether
 /// the report is in the URL; if not, the page has put it on the clipboard.
-pub fn open_issue() -> Result<bool> {
+pub fn open_issue(kind: Kind) -> Result<bool> {
     let s = state();
     let (Some(title), Some(text)) = (s.title, s.text) else {
         bail!("there is no report yet");
     };
-    let (url, filled) = issue_url(&title, &text);
+    let (url, filled) = issue_url(kind, &title, &text);
     open_url(&url)?;
     Ok(filled)
 }
 
 /// The new-issue URL with the title and the report filled in, and whether the report
 /// fit; if not, the report field asks for the clipboard.
-fn issue_url(title: &str, text: &str) -> (String, bool) {
-    let url = |report: &str| format!("{NEW_ISSUE}&title={}&report={}", encode(title), encode(report));
+fn issue_url(kind: Kind, title: &str, text: &str) -> (String, bool) {
+    let (base, title) = match kind {
+        Kind::Problem => (NEW_ISSUE, title.to_string()),
+        Kind::Works => (WORKS_ISSUE, format!("Works: {}", title.strip_prefix("Hardware: ").unwrap_or(title))),
+    };
+    let url = |report: &str| format!("{base}&title={}&report={}", encode(&title), encode(report));
     let full = url(text);
     if full.len() <= MAX_URL {
         (full, true)
@@ -192,16 +208,25 @@ mod tests {
 
     #[test]
     fn a_long_report_goes_through_the_clipboard() {
-        let (url, filled) = issue_url("Hardware: Control Hub", "camless 0.3.0\n**Devices camless drives**");
+        let (url, filled) = issue_url(Kind::Problem, "Hardware: Control Hub", "camless 0.3.0\n**Devices camless drives**");
         assert!(filled);
         assert_eq!(
             url,
             "https://github.com/kleju13/camless/issues/new?template=hardware-report.yml&title=Hardware%3A+Control+Hub&report=camless+0.3.0%0A%2A%2ADevices+camless+drives%2A%2A"
         );
-        let (url, filled) = issue_url("Hardware: Control Hub", &"0600ff".repeat(1000));
+        let (url, filled) = issue_url(Kind::Problem, "Hardware: Control Hub", &"0600ff".repeat(1000));
         assert!(!filled);
         assert!(url.ends_with(&format!("&report={}", encode(PASTE_HERE))));
         assert!(url.len() <= MAX_URL);
+    }
+
+    #[test]
+    fn a_works_report_has_its_own_form_and_title() {
+        let (url, filled) = issue_url(Kind::Works, "Hardware: Kraken X3", "camless 0.5.0");
+        assert!(filled);
+        assert_eq!(url, "https://github.com/kleju13/camless/issues/new?template=hardware-works.yml&title=Works%3A+Kraken+X3&report=camless+0.5.0");
+        let template = include_str!("../../.github/ISSUE_TEMPLATE/hardware-works.yml");
+        assert!(template.contains("id: report"), "the app fills this field from the URL");
     }
 
     #[test]
