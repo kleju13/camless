@@ -63,7 +63,7 @@ CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed
 
 ## Credits
 
-Most of what camless knows about NZXT devices comes from [liquidctl](https://github.com/liquidctl/liquidctl): its drivers, issues and pull requests. The Linux `nzxt-kraken3` driver helped too. Frames for the Kraken LCD are [Q565](https://github.com/seritools/q565), by seritools. The history on the Monitoring page was inspired by [Nexus](https://github.com/hello-nexus/nexus). How CAM streams them to the Kraken Elite was worked out from captures of CAM. The [protocol notes](docs/protocol.md) list the sources for each device.
+Most of what camless knows about NZXT devices comes from [liquidctl](https://github.com/liquidctl/liquidctl): its drivers, issues and pull requests. The Linux `nzxt-kraken3` driver helped too. Frames for the Kraken LCD are [Q565](https://github.com/seritools/q565), by seritools. How CAM streams them to the Kraken Elite was worked out from captures of CAM. The [protocol notes](docs/protocol.md) list the sources for each device. The history on the Monitoring page was inspired by [Nexus](https://github.com/hello-nexus/nexus).
 
 ## License
 
