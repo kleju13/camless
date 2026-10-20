@@ -11,6 +11,9 @@
 #endif
 ; The file version takes numbers only; a beta's is its version without the suffix.
 #ifndef AppNumericVersion
+  #if Pos("-", AppVersion) > 0 || Pos("+", AppVersion) > 0
+    #error Pass the number part of a pre-release too: ISCC /DAppVersion=x.y.z-beta.n /DAppNumericVersion=x.y.z camless.iss
+  #endif
   #define AppNumericVersion AppVersion
 #endif
 

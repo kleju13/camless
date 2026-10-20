@@ -274,6 +274,9 @@
     return el;
   }
 
+  // " beta" after a beta's version, unless its tag says so already, as 0.5.0-beta.1 does.
+  const betaTag = (u) => (u.beta && !/beta/i.test(u.latest || '') ? ' beta' : '');
+
   // Under the service, only while there is a newer camless: the check at launch found it.
   function updateBadge() {
     const el = h(`<button type="button" class="cam-upd" hidden>${I.download}<span class="lbl"><b></b><small></small></span></button>`);
@@ -285,9 +288,9 @@
       if (el.hidden) return;
       const [text, tip] = u.busy ? [`${cap(u.busy)}…`, `${cap(u.busy)} camless ${u.latest}.`]
         : u.error ? ['Update failed', `${u.error} Click to try again.`]
-        : ['Update available', `camless ${u.latest}${u.beta && !u.latest.includes('beta') ? ' beta' : ''} is out; this is ${S.server.app_version}. Click to update.`];
+        : ['Update available', `camless ${u.latest}${betaTag(u)} is out; this is ${S.server.app_version}. Click to update.`];
       b.textContent = text;
-      small.textContent = `camless ${u.latest}${u.beta ? ' beta' : ''}`;
+      small.textContent = `camless ${u.latest}${betaTag(u)}`;
       el.dataset.tone = u.busy ? 'busy' : u.error ? 'bad' : '';
       el.title = tip;
       el.setAttribute('aria-label', `${text}: camless ${u.latest}`);
@@ -2146,7 +2149,7 @@
       let hint;
       if (u.busy === 'checking') hint = 'Checking GitHub for a newer camless…';
       else if (u.busy) hint = `${cap(u.busy)} camless ${esc(u.latest)}…`;
-      else if (u.available) hint = `camless ${esc(u.latest)}${u.beta ? ' beta' : ''} is out. Updating installs the app and the service together, then opens camless again.`;
+      else if (u.available) hint = `camless ${esc(u.latest)}${betaTag(u)} is out. Updating installs the app and the service together, then opens camless again.`;
       else if (u.latest) hint = u.latest === sv.app_version ? 'This is the latest version.' : `The latest ${u.beta ? 'beta' : 'release'} is ${esc(u.latest)}.`;
       else hint = '';
       if (!u.busy) hint += `${hint ? ' ' : ''}camless checks GitHub once each time it starts.`;
