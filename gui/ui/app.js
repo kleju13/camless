@@ -1148,10 +1148,7 @@
         if (c0.kind === 'graph') {
           const src = select({
             options: sourceOptions(c0.sensor), value: c0.sensor, label: 'Source',
-            onChange: (s) => change((x) => {
-              if (S.unitOf(s) !== S.unitOf(x.sensor)) x.points = clone(S.presets(s).custom);
-              x.sensor = s;
-            }),
+            onChange: (s) => S.setCurveSensor(name, s),
           });
           rows.appendChild(row('Source', null, src));
           const ed = h('<div class="cam-ch-curve cam-ch-curve-big"></div>');
@@ -1242,9 +1239,20 @@
   }
   const isRing = (id) => id.split('/')[1] === 'ring';
 
+  /* The colors a channel had before an effect with fewer, or none, took them, so an
+     effect that takes more gets them back: Fixed red, then Spectrum Wave, then Fixed
+     is red again. Kept for as long as the window is open. */
+  const colorMemo = {};
+  // After an edit of the colors, those are the ones; else the longer list is kept.
+  function rememberColors(id, longer) {
+    const now = S.lightOf(id).colors || [];
+    if (!longer || now.length >= (colorMemo[id] || []).length) colorMemo[id] = now.slice();
+  }
   function fitColors(x) {
     const [mn, mx] = S.EFFECTS[S.effectKey(x.mode)].colors;
-    x.colors = (x.colors || []).slice(0, mx);
+    const had = x.colors || [], kept = colorMemo[x.channel] || [];
+    if (had.length >= kept.length) colorMemo[x.channel] = had.slice();
+    x.colors = had.concat(colorMemo[x.channel].filter((c) => !had.includes(c))).slice(0, mx);
     let i = 0;
     while (x.colors.length < mn) x.colors.push(PALETTE.find((c) => !x.colors.includes(c)) || PALETTE[i++ % PALETTE.length]);
   }
@@ -1322,14 +1330,14 @@
       cols.forEach((c, i) => {
         const s = h(`<span class="cam-swatch" style="--c:#${esc(c)}"><input type="color" value="#${esc(c)}" aria-label="Color ${i + 1}, #${esc(c)}">${cols.length > mn ? `<button type="button" class="x" aria-label="Remove color ${i + 1}">×</button>` : ''}</span>`);
         const inp = s.querySelector('input');
-        inp.addEventListener('input', () => { s.style.setProperty('--c', inp.value); S.editLight(id, (y) => { y.colors[i] = inp.value.slice(1); }); });
+        inp.addEventListener('input', () => { s.style.setProperty('--c', inp.value); S.editLight(id, (y) => { y.colors[i] = inp.value.slice(1); }); rememberColors(id); });
         const xb = s.querySelector('.x');
-        if (xb) xb.addEventListener('click', (e) => { e.preventDefault(); S.editLight(id, (y) => { y.colors.splice(i, 1); }); sw.paint(); });
+        if (xb) xb.addEventListener('click', (e) => { e.preventDefault(); S.editLight(id, (y) => { y.colors.splice(i, 1); }); rememberColors(id); sw.paint(); });
         sw.appendChild(s);
       });
       if (cols.length < mx) {
         const add = h('<button type="button" class="cam-link">+ Add a color</button>');
-        add.addEventListener('click', () => { S.editLight(id, (y) => { y.colors = (y.colors || []).slice(0, mx); y.colors.push(PALETTE.find((c) => !y.colors.includes(c)) || 'ffffff'); }); sw.paint(); });
+        add.addEventListener('click', () => { S.editLight(id, (y) => { y.colors = (y.colors || []).slice(0, mx); y.colors.push(PALETTE.find((c) => !y.colors.includes(c)) || 'ffffff'); }); rememberColors(id); sw.paint(); });
         sw.appendChild(add);
       }
     };
@@ -1370,7 +1378,7 @@
     const fx = select({
       options: opts, value: LEAVE, label: 'Effect',
       onChange: (m) => {
-        if (m === LEAVE) S.edit((c) => { c.light = (c.light || []).filter((l) => l.channel !== id); }, { what: 'lighting' });
+        if (m === LEAVE) { rememberColors(id, true); S.edit((c) => { c.light = (c.light || []).filter((l) => l.channel !== id); }, { what: 'lighting' }); }
         else S.editLight(id, (x) => { x.mode = m; fitColors(x); });
       },
     });

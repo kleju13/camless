@@ -339,11 +339,26 @@
     return 'custom';
   }
 
-  /* What a curve held before a preset replaced it, so going back to Custom or to a
-     source finds it again. Kept for as long as the window is open. */
-  const memo = {};
-  const memoOf = (name) => (memo[name] = memo[name] || { custom: {}, duty: null });
-  on('config', (what) => { if (what === 'replace') for (const k of Object.keys(memo)) if (!curve(k)) delete memo[k]; });
+  /* What a curve held before a preset or a source replaced it, so going back to
+     Custom, Fixed or that source finds it again: its custom points by sensor, its
+     fixed duty and its sensor. Kept on this PC for each profile, so a fan put on
+     Fixed for a while, say to tell which fan is which, gets its own curve back
+     after a restart too. */
+  const MEMO_KEY = 'camless-curve-memo';
+  const memos = (() => { try { return JSON.parse(localStorage.getItem(MEMO_KEY)) || {}; } catch (e) { return {}; } })();
+  const memoProfile = () => (st.config && st.config.profile) || '';
+  const memoBook = () => (memos[memoProfile()] = memos[memoProfile()] || {});
+  function memoOf(name) {
+    const book = memoBook();
+    return (book[name] = book[name] || { custom: {}, duty: null });
+  }
+  function keepMemo() {
+    try { localStorage.setItem(MEMO_KEY, JSON.stringify(memos)); } catch (e) { /* storage off */ }
+  }
+  on('config', (what) => {
+    if (what === 'replace') { const book = memoBook(); for (const k of Object.keys(book)) if (!curve(k)) delete book[k]; }
+    if (what === 'replace' || what === 'cooling' || what === 'curve') keepMemo();
+  });
 
   // The fan's curve, made for it if it has none.
   function ownCurve(c, id, make) {
@@ -375,15 +390,16 @@
         replaceCurve(c, cur, { kind: 'fixed', name: cur.name, duty: m.duty ?? now });
         return;
       }
-      let g = cur;
       if (cur.kind !== 'graph') {
+        // Back from Fixed: the sensor and the custom points it had before.
         if (cur.kind === 'fixed') m.duty = cur.duty;
         const sens = m.sensor || s;
-        g = graphOf(cur.name, sens, clone(presets(sens).custom));
-        replaceCurve(c, cur, g);
+        const points = p === 'custom' ? m.custom[sens] || presets(sens).custom : presets(sens)[p];
+        replaceCurve(c, cur, graphOf(cur.name, sens, clone(points)));
+        return;
       }
-      if (p === 'silent' || p === 'performance') g.points = clone(presets(g.sensor)[p]);
-      else if (p === 'custom' && preset(id) !== 'custom') g.points = clone(m.custom[g.sensor] || presets(g.sensor).custom);
+      if (p === 'silent' || p === 'performance') cur.points = clone(presets(cur.sensor)[p]);
+      else if (p === 'custom' && preset(id) !== 'custom') cur.points = clone(m.custom[cur.sensor] || presets(cur.sensor).custom);
     }, { what: 'cooling' });
   }
 
@@ -407,6 +423,22 @@
       if (was === 'silent' || was === 'performance') cur.points = clone(presets(sensorId)[was]);
       else cur.points = clone(m.custom[sensorId] || presets(sensorId).custom);
     }, { what: 'cooling' });
+  }
+
+  /* A graph curve's sensor, from its own dialog. Points stay for a sensor in the same
+     unit; for another unit they are kept, and the ones the curve had on that sensor
+     before come back. */
+  function setCurveSensor(name, sensorId) {
+    edit((c) => {
+      const x = (c.curve || []).find((k) => k.name === name);
+      if (!x || x.kind !== 'graph' || x.sensor === sensorId) return;
+      if (unitOf(sensorId) !== unitOf(x.sensor)) {
+        const m = memoOf(name);
+        m.custom[x.sensor] = clone(x.points);
+        x.points = clone(m.custom[sensorId] || presets(sensorId).custom);
+      }
+      x.sensor = sensorId;
+    }, { what: 'curve' });
   }
 
   // A copy of the fan's curve that only this fan follows.
@@ -433,7 +465,8 @@
         if (x.kind === 'mix') x.curves = x.curves.map((n) => (n === old ? name : n));
       }
       for (const f of c.fan || []) if (f.curve === old) f.curve = name;
-      if (memo[old]) { memo[name] = memo[old]; delete memo[old]; }
+      const book = memoBook();
+      if (book[old]) { book[name] = book[old]; delete book[old]; }
     }, { what: 'cooling' });
   }
 
@@ -669,7 +702,7 @@
     UNIT, sensors, sensor, value, unitOf, isLiquid, sourceLabel, range, presets,
     devices, device, devOf,
     curves, curve, fans, fan, fanCfg, fanName, fanValue, curveValue, users, defaultSensor, preset,
-    ensureFan, tidyFans, setPreset, setSource, fork, useCurve, renameCurve, newCurve, deleteCurve, uniqueCurveName,
+    ensureFan, tidyFans, setPreset, setSource, setCurveSensor, fork, useCurve, renameCurve, newCurve, deleteCurve, uniqueCurveName,
     EFFECTS, SPEEDS, effectKey, lights, lightCfg, lightOf, editLight, renderLight, describeLight,
     color: { hexToRgb, mix, scale, hsl, css },
     screens, lcdOf, editLcd,
