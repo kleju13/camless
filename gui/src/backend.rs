@@ -131,7 +131,7 @@ impl Backend {
             ("POST", "service/restart") => self.service(Action::Restart),
             ("PUT", "autostart") => self.set_autostart(body),
             ("POST", "admin-task") => self.set_admin_task(body),
-            ("POST", "update/check") => update::check().map(|_| json!({})).map_err(Refused::from),
+            ("POST", "update/check") => update::check(update::channel(&self.path())).map(|_| json!({})).map_err(Refused::from),
             ("POST", "update/install") => self.install_update(),
             ("POST", "update/notes") => self.release_notes(),
             ("POST", "open-folder") => self.open_folder(),

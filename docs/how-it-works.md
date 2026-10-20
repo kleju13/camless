@@ -121,3 +121,9 @@ It listens on `127.0.0.1:30641` by default and binds to loopback only. It reject
 `camless-setup.exe` (Inno Setup, `installer/camless.iss`) installs both exes for the current user in `%LOCALAPPDATA%\Programs\camless`. Run over an installed camless, it closes the app, stops the service through `POST /v1/stop`, replaces both exes and opens the app again, which starts the service.
 
 The app asks GitHub for the latest release once each time it starts. *Update* downloads `camless-setup.exe`, checks it against the release's SHA-256, quits the app and runs the setup, so the app and the service always update together. Uninstalling keeps `%APPDATA%\camless` unless you choose to delete it.
+
+*Settings → About → Update channel* picks what the app offers:
+- **Stable**, the default, offers releases.
+- **Beta** offers betas too. A version that changes only the last number, such as 0.4.1, comes out first as a GitHub pre-release. It becomes a release once it has been tried.
+
+Back on Stable, camless keeps the version it has until a newer release comes out. `install.ps1` always installs the latest release, never a beta. In `camless.toml` the channel is `updates = "beta"`.

@@ -89,7 +89,7 @@ pub fn run(launches: Launches, show: bool, ui_dir: Option<PathBuf>) -> Result<()
     crate::update::on_quit(move || {
         let _ = p.send_event(UserEvent::Quit);
     });
-    let _ = crate::update::check();
+    let _ = crate::update::check(crate::update::channel(&camless_core::config::default_path()));
     // WebView2 keeps its profile here rather than next to the program.
     let data = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("camless").join("WebView2"));
     let mut app = App {

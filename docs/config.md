@@ -28,6 +28,7 @@ Curves work as in FanControl:
 ```toml
 interval_ms = 1000
 failsafe_duty = 70            # fans whose sensor has no reading, and host-driven fans when camless stops
+updates = "beta"              # the app offers betas too; "stable", the default, offers releases only
 
 [[curve]]
 kind = "graph"

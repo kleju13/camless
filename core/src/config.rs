@@ -34,6 +34,9 @@ pub struct Config {
     /// `AMDFamily17.bin` next to camless.exe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pawnio_module: Option<PathBuf>,
+    /// Which releases the app offers as updates.
+    #[serde(default, skip_serializing_if = "Updates::is_stable")]
+    pub updates: Updates,
     #[serde(default, skip_serializing_if = "Api::is_default")]
     pub api: Api,
     #[serde(default, skip_serializing_if = "Games::is_default")]
@@ -55,6 +58,7 @@ impl Default for Config {
             failsafe_duty: default_failsafe_duty(),
             profile: None,
             pawnio_module: None,
+            updates: Updates::Stable,
             api: Api::default(),
             games: Games::default(),
             curves: Vec::new(),
@@ -120,6 +124,24 @@ impl Default for Api {
 impl Api {
     fn is_default(&self) -> bool {
         *self == Api::default()
+    }
+}
+
+/// Which releases the app offers. A version that changes only the last number, such
+/// as 0.4.1, comes out as a beta, a GitHub pre-release, until it is promoted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Updates {
+    /// Releases only.
+    #[default]
+    Stable,
+    /// Betas too.
+    Beta,
+}
+
+impl Updates {
+    fn is_stable(&self) -> bool {
+        *self == Updates::Stable
     }
 }
 
@@ -857,6 +879,16 @@ url = "http://127.0.0.1:30640/lcd"
         assert_eq!(Config::parse(&c.to_toml().unwrap()).unwrap(), c);
         assert!(!Config::default().to_toml().unwrap().contains("games"));
         assert!(Config::parse("[games]\nskip = [\" \"]\n").is_err());
+    }
+
+    #[test]
+    fn the_update_channel_is_stable_unless_set() {
+        assert_eq!(Config::default().updates, Updates::Stable);
+        assert!(!Config::default().to_toml().unwrap().contains("updates"));
+        let c = Config::parse("updates = \"beta\"\n[api]\nenabled = false\n").unwrap();
+        assert_eq!(c.updates, Updates::Beta);
+        assert_eq!(Config::parse(&c.to_toml().unwrap()).unwrap(), c);
+        assert!(Config::parse("updates = \"nightly\"\n").is_err());
     }
 
     #[test]
