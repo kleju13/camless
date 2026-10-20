@@ -1427,6 +1427,8 @@
   /* ------------------------------------------------------------------- LCD */
 
   const KRAKENDIAL = 'http://127.0.0.1:30640/';
+  // The service's Local API when camless.toml sets none: camless_core::DEFAULT_API.
+  const API_DEFAULT = { enabled: true, listen: '127.0.0.1:30641' };
 
   // Two sleeved tubes with their fittings, leaving the head at `deg` (0 = to the right).
   function drawTubes(ctx, cx, cy, r, deg) {
@@ -1495,7 +1497,7 @@
       fps.set(l.fps || 10);
       rotVal.textContent = l.orientation + '°';
       rUrl.hidden = rFps.hidden = l.mode !== 'web';
-      const api = (S.config && S.config.api) || { enabled: true, listen: '127.0.0.1:30640' };
+      const api = Object.assign({}, API_DEFAULT, S.config && S.config.api);
       rMode.hint(l.mode === 'liquid'
         ? 'The cooler draws this screen itself, so it stays on when camless is closed.'
         : l.mode === 'web'
@@ -2089,13 +2091,13 @@
         hotRow,
       ]);
 
-      const api = c.api || { enabled: true, listen: '127.0.0.1:30640' };
+      const api = Object.assign({}, API_DEFAULT, c.api);
       panel('Local API', [
         row('Local API', 'This window and LCD pages such as KrakenDial read the service through it. Only this PC can reach it. A change takes effect when the service restarts.', toggle({
           checked: api.enabled !== false, label: 'Local API',
           onChange: async (v) => {
             if (!v && !(await confirmBox({ title: 'Turn off Local API', text: 'After the service restarts, this window can no longer show readings or the service’s state, and pages on the LCD stop working. Settings are still saved and applied.', ok: 'Turn off' }))) { go(); return; }
-            editCfg((x) => { x.api = Object.assign({}, x.api || { listen: api.listen }, { enabled: v }); if (v && x.api.listen === '127.0.0.1:30640') delete x.api; });
+            editCfg((x) => { x.api = Object.assign({}, x.api || { listen: api.listen }, { enabled: v }); if (v && x.api.listen === API_DEFAULT.listen) delete x.api; });
           },
         })),
         row('Address', null, h(`<code>http://${esc(api.listen)}</code>`)),
