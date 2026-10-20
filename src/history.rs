@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// How far back the samples in memory go.
@@ -171,9 +171,7 @@ impl History {
             text.push_str(&header_line(&names));
         }
         text.push_str(&data_line(m));
-        let path = dir.join(day_file(day));
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
-        f.write_all(text.as_bytes())?;
+        append_lines(&dir.join(day_file(day)), &text)?;
         self.header = Some((day, names));
         Ok(())
     }
@@ -298,6 +296,19 @@ fn read_day(r: impl BufRead, b: &mut Buckets, wanted: &dyn Fn(&str) -> bool) {
             }
         }
     }
+}
+
+/// Appends `text`, whole lines, to `path` in one write. When a crash cut the file's
+/// last line short, `text` starts on a line of its own, so only the cut line is lost.
+pub fn append_lines(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut f = std::fs::OpenOptions::new().create(true).read(true).append(true).open(path)?;
+    let torn = f.seek(SeekFrom::End(0))? > 0 && {
+        let mut last = [0u8];
+        f.seek(SeekFrom::End(-1))?;
+        f.read_exact(&mut last)?;
+        last[0] != b'\n'
+    };
+    f.write_all(if torn { format!("\n{text}") } else { text.to_string() }.as_bytes())
 }
 
 fn header_line(names: &[String]) -> String {
@@ -483,6 +494,29 @@ mod tests {
         let r = b.finish();
         assert_eq!(r.series["a"].avg, [Some(1.0), None, Some(5.0)]);
         assert_eq!(r.series["b"].max, [Some(4.0), None, Some(8.0)]);
+    }
+
+    #[test]
+    fn a_header_after_a_cut_line_starts_a_line() {
+        let dir = temp_dir("camless-history-torn");
+        let t0 = days_from_civil(2026, 10, 20) * 86_400;
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("2026-10-20.csv"), format!("#t,cpu.temp\n{t0},40,40\n{},4", t0 + 60)).unwrap();
+        let h = Mutex::new(History::new(Some(dir.clone())));
+        {
+            let mut h = h.lock().unwrap();
+            for s in 120..180 {
+                h.record((t0 + s) * 1000, &v(&[("cpu.temp", 50.0)]));
+            }
+            h.finish();
+        }
+        let text = std::fs::read_to_string(dir.join("2026-10-20.csv")).unwrap();
+        assert!(text.ends_with(&format!("{},4\n#t,cpu.temp\n{},50,50\n", t0 + 60, t0 + 120)), "{text}");
+        let r = query(&h, t0 + 7200, 7200, None);
+        let cpu = &r.series["cpu.temp"];
+        assert_eq!(cpu.avg[0], Some(40.0));
+        assert_eq!(cpu.avg[1], None);
+        assert_eq!(cpu.avg[2], Some(50.0));
     }
 
     #[test]

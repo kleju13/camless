@@ -1815,7 +1815,8 @@
       ctx.textAlign = 'center';
       for (const [t, s] of histTicks(span, now)) ctx.fillText(s, clamp(X(t), pl + 18, w - pr - 18), hh - 5);
       // A gap in the readings, such as the service being off, breaks the line.
-      const gap = Math.max(3e3, (data ? data.step : 1) * 2000);
+      const tick = (S.config && S.config.interval_ms) || 1000;
+      const gap = Math.max(3e3, tick * 2.5, (data ? data.step : 1) * 2000);
       for (const s of shown) {
         ctx.strokeStyle = color(s);
         ctx.lineWidth = 1.8;
