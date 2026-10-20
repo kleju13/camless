@@ -1,10 +1,15 @@
 //! Updates from the GitHub releases that release.yml publishes. The app asks for the
 //! latest one once at launch, and again from Settings. When it is newer, the page
 //! offers it. On the beta channel (`updates = "beta"` in camless.toml) betas count
-//! too, the GitHub pre-releases, and the newest version of all is offered. Installing downloads camless-setup.exe, checks it against the release's
-//! SHA-256 and quits the app, which starts the setup on its way out, once the page
-//! has saved and the tray icon is gone. The setup stops the service, replaces both
-//! exes and opens the app again, which starts the service.
+//! too, the GitHub pre-releases, and the newest version of all is offered. Installing
+//! downloads camless-setup.exe, checks it against the release's SHA-256 and quits the
+//! app, which starts the setup on its way out, once the page has saved and the tray
+//! icon is gone. The setup stops the service, replaces both exes and opens the app
+//! again, which starts the service.
+//!
+//! On Linux the release's tarball takes the setup's place: the app unpacks it in its
+//! own cache folder and, on its way out, runs its `install.sh --update`, which puts
+//! both programs where these are, restarts the user service and opens the app again.
 
 use crate::http;
 use anyhow::{bail, Context, Result};
@@ -16,8 +21,12 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 const LATEST: &str = "https://api.github.com/repos/kleju13/camless/releases/latest";
 /// The newest releases and betas, for the beta channel.
 const RELEASES: &str = "https://api.github.com/repos/kleju13/camless/releases?per_page=30";
+#[cfg(windows)]
 const SETUP: &str = "camless-setup.exe";
+#[cfg(not(windows))]
+const SETUP: &str = "camless-linux-x86_64.tar.gz";
 /// Shows its progress and asks nothing; errors still show.
+#[cfg(windows)]
 const SETUP_ARGS: [&str; 2] = ["/SILENT", "/NORESTART"];
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -188,6 +197,8 @@ pub fn install() -> Result<()> {
         let s = lock();
         s.release.clone().filter(|_| s.available).context("there is no newer release to install; check again")?
     };
+    #[cfg(not(windows))]
+    writable_here()?;
     begin("downloading")?;
     std::thread::Builder::new().name("update".into()).spawn(move || match download(&release) {
         Ok(path) => {
@@ -208,14 +219,74 @@ fn download(r: &Release) -> Result<PathBuf> {
     if !have.eq_ignore_ascii_case(&want) {
         bail!("the downloaded {SETUP} does not match its checksum ({have}, expected {want})");
     }
+    #[cfg(windows)]
+    return save(&setup);
+    #[cfg(not(windows))]
+    return unpack(&setup);
+}
+
+/// Saves the checked setup in the user's own temp folder. Returns it.
+#[cfg(windows)]
+fn save(setup: &[u8]) -> Result<PathBuf> {
     let dir = std::env::temp_dir().join("camless-update");
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let path = dir.join(SETUP);
-    std::fs::write(&path, &setup).with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(&path, setup).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
 
+/// The folder the app runs from, which the update replaces the programs in; it must
+/// be the user's to write, as `install.sh` puts them in `~/.local/bin`.
+#[cfg(not(windows))]
+fn writable_here() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("finding this program")?;
+    let dir = exe.parent().context("finding this program's folder")?.to_path_buf();
+    let probe = dir.join(format!(".camless-update-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(dir)
+        }
+        Err(_) => bail!("camless is installed in {}, which this user cannot write; update it the way it was installed", dir.display()),
+    }
+}
+
+/// Unpacks the checked tarball in the app's cache folder, the user's own: one in
+/// /tmp could be swapped by another user before `install.sh` runs. Returns the
+/// script.
+#[cfg(not(windows))]
+fn unpack(tarball: &[u8]) -> Result<PathBuf> {
+    unpack_in(&camless_core::config::xdg_dir("XDG_CACHE_HOME", ".cache").join("camless").join("update"), tarball)
+}
+
+#[cfg(not(windows))]
+fn unpack_in(dir: &std::path::Path, tarball: &[u8]) -> Result<PathBuf> {
+    let dir = dir.to_path_buf();
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).with_context(|| format!("emptying {}", dir.display()))?;
+    }
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let file = dir.join(SETUP);
+    std::fs::write(&file, tarball).with_context(|| format!("writing {}", file.display()))?;
+    let out = std::process::Command::new("tar")
+        .args(["-xzf"])
+        .arg(&file)
+        .args(["--no-same-owner", "-C"])
+        .arg(&dir)
+        .output()
+        .context("running tar")?;
+    if !out.status.success() {
+        bail!("unpacking {SETUP}: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let script = dir.join("camless").join("install.sh");
+    if !script.is_file() {
+        bail!("{SETUP} has no camless/install.sh");
+    }
+    Ok(script)
+}
+
 /// Starts the setup that `install` got ready, after the app's event loop has ended.
+#[cfg(windows)]
 pub fn run_ready() {
     let Some(path) = READY.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
     if let Err(e) = std::process::Command::new(&path).args(SETUP_ARGS).spawn() {
@@ -224,15 +295,56 @@ pub fn run_ready() {
     }
 }
 
+/// Runs the unpacked `install.sh --update` once the app's main loop has ended, in a
+/// session of its own, as it outlives the app. What it prints goes to
+/// `~/.local/state/camless/update.log`.
+#[cfg(not(windows))]
+pub fn run_ready() {
+    use std::os::unix::process::CommandExt;
+    let Some(script) = READY.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+    let started = (|| -> Result<()> {
+        let bin = writable_here()?;
+        let logs = camless_core::config::xdg_dir("XDG_STATE_HOME", ".local/state").join("camless");
+        std::fs::create_dir_all(&logs)?;
+        let log = std::fs::File::create(logs.join("update.log"))?;
+        let mut command = std::process::Command::new("sh");
+        command.arg(&script).arg("--update").env("CAMLESS_BIN_DIR", bin).stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
+        // SAFETY: setsid is async-signal-safe, as code between fork and exec must be.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        command.spawn()?;
+        Ok(())
+    })();
+    if let Err(e) = started {
+        message(&format!("camless could not start the update.\n\n{}: {e:#}\n\nRun it by hand, or open camless again.", script.display()));
+    }
+}
+
 /// The release's page on GitHub, for its notes.
 pub fn page() -> Option<String> {
     lock().release.as_ref().map(|r| r.page.clone()).filter(|p| p.starts_with("https://github.com/"))
 }
 
+#[cfg(windows)]
 fn message(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("camless").as_ptr(), MB_OK | MB_ICONERROR) };
+}
+
+/// A dialog, as the window is gone; GTK still runs once its main loop has ended.
+#[cfg(not(windows))]
+fn message(text: &str) {
+    use gtk::prelude::*;
+    eprintln!("{text}");
+    let dialog = gtk::MessageDialog::new(None::<&gtk::Window>, gtk::DialogFlags::MODAL, gtk::MessageType::Error, gtk::ButtonsType::Ok, text);
+    dialog.set_title("camless");
+    dialog.run();
+    unsafe { dialog.destroy() };
 }
 
 /// Whether version `a` is newer than `b`, as semver orders them: `x.y.z` as numbers,
@@ -280,6 +392,7 @@ fn newer(a: &str, b: &str) -> bool {
     }
 }
 
+#[cfg(windows)]
 fn sha256(data: &[u8]) -> Result<[u8; 32]> {
     use windows_sys::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
     let mut out = [0u8; 32];
@@ -288,6 +401,12 @@ fn sha256(data: &[u8]) -> Result<[u8; 32]> {
         bail!("SHA-256 failed (NTSTATUS {status:#x})");
     }
     Ok(out)
+}
+
+#[cfg(not(windows))]
+fn sha256(data: &[u8]) -> Result<[u8; 32]> {
+    use sha2::Digest;
+    Ok(sha2::Sha256::digest(data).into())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -323,10 +442,10 @@ mod tests {
     #[test]
     fn the_beta_channel_takes_the_newest_version_with_a_setup() {
         let list = |json: &str| serde_json::from_str::<Vec<Found>>(json).unwrap();
-        let setup = r#"[{"name":"camless-setup.exe","browser_download_url":"https://x/s"},{"name":"camless-setup.exe.sha256","browser_download_url":"https://x/h"}]"#;
+        let setup = format!(r#"[{{"name":"{SETUP}","browser_download_url":"https://x/s"}},{{"name":"{SETUP}.sha256","browser_download_url":"https://x/h"}}]"#);
         let all = list(&format!(
             r#"[{{"tag_name":"v0.5.0","html_url":"https://github.com/r/5","prerelease":true,"assets":[]}},
-               {{"tag_name":"v0.4.5","html_url":"https://github.com/r/45","prerelease":true,"assets":[{{"name":"camless-setup.exe","browser_download_url":"https://x/s"}}]}},
+               {{"tag_name":"v0.4.5","html_url":"https://github.com/r/45","prerelease":true,"assets":[{{"name":"{SETUP}","browser_download_url":"https://x/s"}}]}},
                {{"tag_name":"v0.4.1","html_url":"https://github.com/r/41","prerelease":true,"assets":{setup}}},
                {{"tag_name":"v0.4.10","html_url":"https://github.com/r/410","draft":true,"assets":{setup}}},
                {{"tag_name":"v0.4.0","html_url":"https://github.com/r/40","assets":{setup}}}]"#
@@ -346,5 +465,36 @@ mod tests {
     #[test]
     fn sha256_matches_the_standard_vector() {
         assert_eq!(hex(&sha256(b"abc").unwrap()), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    /// A tarball made by tar, unpacked over the last one, yields its install.sh.
+    #[cfg(not(windows))]
+    #[test]
+    fn an_update_unpacks_to_its_install_script() {
+        let root = std::env::temp_dir().join(format!("camless-unpack-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let pack = |name: &str, files: &[(&str, &str)]| {
+            let src = root.join(name);
+            for (path, text) in files {
+                let path = src.join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            }
+            let tarball = root.join(format!("{name}.tar.gz"));
+            let ok = std::process::Command::new("tar").arg("-czf").arg(&tarball).arg("-C").arg(&src).arg("camless").status().unwrap();
+            assert!(ok.success());
+            std::fs::read(tarball).unwrap()
+        };
+        let old = pack("old", &[("camless/install.sh", "old"), ("camless/stale", "")]);
+        let new = pack("new", &[("camless/install.sh", "new")]);
+        let dir = root.join("update");
+        unpack_in(&dir, &old).unwrap();
+        let script = unpack_in(&dir, &new).unwrap();
+        assert_eq!(script, dir.join("camless").join("install.sh"));
+        assert_eq!(std::fs::read_to_string(&script).unwrap(), "new");
+        assert!(!dir.join("camless").join("stale").exists());
+        let empty = pack("empty", &[("camless/VERSION", "0")]);
+        assert!(unpack_in(&dir, &empty).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

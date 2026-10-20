@@ -14,6 +14,7 @@ camless was built with a coding agent, and new devices will mostly come the same
 - **You can't see the hardware.** Ask the person you work with what the device actually does after each step: the screen, the pump, the fan speeds, the lights. A reply without an error is not proof that something worked.
 - **Look before you write.** Quit the NZXT CAM app first: it opens the devices exclusively, and it starts again at logon unless it is turned off in Task Manager's startup apps. CAM Service does not hold them. Then run `camless status`: it lists every NZXT device and opens only the ones with a driver.
 - **Starting CAM from your shell**, for a capture: if it exits at once with code 0 or 9 and writes no log, your shell has `ELECTRON_RUN_AS_NODE=1` set, as some agent harnesses do. CAM's exe then runs as plain Node. Remove the variable for that process first.
+- **On Linux** the device files belong to root. `install.sh`'s udev rules (`linux/71-camless.rules`) give them to the user logged in at the computer, not to an SSH session alone, so run camless in a terminal of the desktop session. A new model needs its id in those rules too; a test checks them against `MODELS`. There is no CAM to quit, and `nzxt-kraken3` can stay loaded.
 - **Send only bytes you have a source for:** liquidctl, the Linux drivers, or a capture of CAM made with `tools/capture/`. Don't guess commands on someone's cooler.
 - **Never write flash.** Flash uploads have left Kraken Elites stuck in the bootloader (liquidctl #774, #907, #927). No firmware updates, no images or settings saved to flash: streaming and runtime commands only.
 - **Fail safe.** A curve stored on a device must still speed up when it gets hot.
@@ -28,5 +29,7 @@ Add the device's section to `docs/protocol.md` when you add or fix a driver. Lis
 ```
 cargo test --workspace --release
 ```
+
+On Linux this needs `libwebkit2gtk-4.1-dev`, `libgtk-3-dev` and `libudev-dev`. CI runs it on Windows and on Ubuntu 22.04.
 
 A driver needs tests for its report builders and parsers, preferably against bytes captured from CAM or the device.

@@ -4,8 +4,14 @@
 //! the user turned it on; if UAC is declined, it starts it without them and says so.
 //! Each action runs on its own thread: UAC can wait on the user for as long as they
 //! like.
+//!
+//! On Linux the service runs as the user and needs no rights of its own: camless's
+//! udev rules give that user the devices. The app starts it as the systemd user
+//! service that linux/install.sh sets up, or without it when there is none.
 
-use crate::{client, task};
+use crate::client;
+#[cfg(windows)]
+use crate::task;
 use anyhow::{anyhow, bail, Context, Result};
 use camless_core::config::{self, Config};
 use std::path::{Path, PathBuf};
@@ -95,8 +101,21 @@ fn start(addr: &str, config: &Path) -> Result<Option<String>> {
     if running(addr) {
         return Ok(None);
     }
-    let exe = client::daemon_exe().context("camless.exe is not next to camless-gui.exe")?;
+    #[cfg(not(windows))]
+    let note = {
+        client::daemon_exe().context(client::NO_DAEMON)?;
+        // The user service runs the default config.
+        if config == config::default_path() && systemd::installed() {
+            systemd::start()?;
+        } else {
+            client::start_daemon(config)?;
+        }
+        None
+    };
+    #[cfg(windows)]
+    let exe = client::daemon_exe().context(client::NO_DAEMON)?;
     // The task runs the default config. Without it, or if it is gone, UAC asks.
+    #[cfg(windows)]
     let note = if config == config::default_path() && task::ready() && task::run().is_ok() {
         None
     } else {
@@ -134,6 +153,30 @@ fn wait(limit: Duration, done: impl Fn() -> bool) -> std::result::Result<(), ()>
     Err(())
 }
 
+/// The systemd user service in `~/.config/systemd/user`, which runs `camless run`
+/// on the default config.
+#[cfg(not(windows))]
+mod systemd {
+    use anyhow::{bail, Context, Result};
+    use std::process::{Command, Stdio};
+
+    const UNIT: &str = "camless.service";
+
+    pub fn installed() -> bool {
+        let out = Command::new("systemctl").args(["--user", "show", "--property=LoadState", "--value", UNIT]).stderr(Stdio::null()).output();
+        out.is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "loaded")
+    }
+
+    pub fn start() -> Result<()> {
+        let out = Command::new("systemctl").args(["--user", "start", UNIT]).stdin(Stdio::null()).output().context("running systemctl")?;
+        if !out.status.success() {
+            bail!("systemctl --user start {UNIT}: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
 pub enum Elevate {
     Declined,
     Failed(anyhow::Error),
@@ -141,6 +184,7 @@ pub enum Elevate {
 
 /// `exe` with `params` through UAC, with no console window. Returns once it started,
 /// or with its exit code once it ended if `wait`.
+#[cfg(windows)]
 pub fn run_elevated(exe: &Path, params: &str, wait: bool) -> std::result::Result<Option<u32>, Elevate> {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_CANCELLED};
     use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
@@ -180,11 +224,12 @@ pub fn run_elevated(exe: &Path, params: &str, wait: bool) -> std::result::Result
 
 /// The command line for `run`. Windows paths cannot hold `"`, and the config is a
 /// file, so its path never ends in a backslash that would escape the closing quote.
+#[cfg(windows)]
 fn run_args(config: &Path) -> String {
     format!("run \"{}\"", config.display())
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

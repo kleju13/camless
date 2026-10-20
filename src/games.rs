@@ -13,6 +13,10 @@
 //!
 //! Frame rates come from [`crate::fps`], which needs administrator rights. Without
 //! them a session still has its play time and temperatures.
+//!
+//! On Linux a game counts as in front while it runs ([`linux`]): Wayland tells no
+//! program which window is in front. Linux games come from Steam libraries, Proton's
+//! included, and from `[games] add`; there are no frame rates.
 
 use crate::fps::{self, Capture, Meter, SECOND};
 use crate::history;
@@ -23,13 +27,23 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_SYNCHRONIZE,
 };
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux::Process;
+
+/// Why Linux sessions have no frame rates.
+const NO_FPS: &str = "frame rates are counted on Windows only";
 /// A game this long in the background ends its session.
 const AWAY: Duration = Duration::from_secs(180);
 /// Seconds of play a session needs to be kept.
@@ -159,8 +173,10 @@ fn add_temps(temps: &mut BTreeMap<String, Acc>, sensors: &[Sensor]) {
 }
 
 /// A process handle, for telling when the game exits.
+#[cfg(windows)]
 struct Process(HANDLE);
 
+#[cfg(windows)]
 impl Process {
     fn open(pid: u32) -> Option<Process> {
         let h = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -179,6 +195,7 @@ impl Process {
     }
 }
 
+#[cfg(windows)]
 impl Drop for Process {
     fn drop(&mut self) {
         unsafe { CloseHandle(self.0) };
@@ -186,6 +203,7 @@ impl Drop for Process {
 }
 
 /// The process that owns the window in front, 0 for none, as on a locked screen.
+#[cfg(windows)]
 pub fn foreground() -> u32 {
     let w = unsafe { GetForegroundWindow() };
     if w.is_null() {
@@ -197,6 +215,7 @@ pub fn foreground() -> u32 {
 }
 
 /// The file name of process `pid`'s program.
+#[cfg(windows)]
 pub fn program(pid: u32) -> Option<String> {
     let path = Process::open(pid)?.path()?;
     Some(file_name(&path).to_string())
@@ -274,7 +293,9 @@ impl Games {
         let file = dir.map(|d| d.join("sessions.jsonl"));
         let log = file.as_deref().map(load).unwrap_or_default();
         let (error, retry) = match (demo, elevated) {
-            (true, _) | (_, true) => (None, Some(Instant::now())),
+            (true, _) => (None, Some(Instant::now())),
+            _ if cfg!(not(windows)) => (Some(NO_FPS.to_string()), None),
+            (_, true) => (None, Some(Instant::now())),
             _ => (Some("needs administrator rights".to_string()), None),
         };
         Games {
@@ -318,7 +339,7 @@ impl Games {
             self.known.clear();
             self.front = (u32::MAX, None);
         }
-        let pid = foreground();
+        let pid = self.in_front();
         if self.front.0 != pid {
             let path = Process::open(pid).and_then(|p| p.path());
             let game = path.and_then(|path| Some((self.game_at(&path)?, file_name(&path).to_string())));
@@ -385,6 +406,22 @@ impl Games {
         // Nothing is counted for the first couple of seconds; that is not 0 fps.
         o.fps = (in_front && o.meter.started()).then(|| o.meter.fps());
         o.fps.map(|f| f as f32)
+    }
+
+    /// The process in front.
+    #[cfg(windows)]
+    fn in_front(&mut self) -> u32 {
+        foreground()
+    }
+
+    /// The game that runs, which counts as in front: the open one while it runs, else
+    /// the first program that is a game.
+    #[cfg(target_os = "linux")]
+    fn in_front(&mut self) -> u32 {
+        if let Some(o) = self.open.as_ref().filter(|o| !o.process.as_ref().is_some_and(Process::exited)) {
+            return o.pid;
+        }
+        linux::processes().into_iter().find(|(_, path)| self.game_at(path).is_some()).map_or(0, |(pid, _)| pid)
     }
 
     /// Starts the capture, and starts it again after it failed or stopped.
@@ -530,6 +567,9 @@ fn listed(list: &[String], path: &str) -> bool {
 fn store_game(path: &str, epic: &[(String, String)]) -> Option<Title> {
     let lower = path.to_ascii_lowercase().replace('/', "\\");
     if let Some((i, folder)) = folder_after(path, &lower, r"\steamapps\common\") {
+        if steam_tool(folder) {
+            return None;
+        }
         let app = steam_app(Path::new(&path[..i]), folder);
         let steam = app.as_ref().and_then(|a| a.appid);
         let name = app.and_then(|a| a.name).unwrap_or_else(|| folder.to_string());
@@ -539,6 +579,13 @@ fn store_game(path: &str, epic: &[(String, String)]) -> Option<Title> {
         return Some(Title { name: folder.to_string(), steam: None });
     }
     epic.iter().find(|(folder, _)| in_folder(&lower, folder)).map(|(_, name)| Title { name: name.clone(), steam: None })
+}
+
+/// Steam's libraries hold its own tools next to the games: Proton, the Steam Linux
+/// Runtime that runs games on Linux, and the shared redistributables.
+fn steam_tool(folder: &str) -> bool {
+    let f = folder.to_ascii_lowercase();
+    f.starts_with("proton") || f.starts_with("steamlinuxruntime") || f.starts_with("steam linux runtime") || f == "steamworks shared"
 }
 
 /// Where `marker` is in `path`, found in its lower case `lower`, and the folder after
@@ -611,6 +658,12 @@ fn quoted(line: &str) -> Vec<String> {
 }
 
 /// Epic Games installs from the launcher's manifests: (folder in lower case, name).
+#[cfg(not(windows))]
+fn epic_installs() -> Vec<(String, String)> {
+    Vec::new()
+}
+
+#[cfg(windows)]
 fn epic_installs() -> Vec<(String, String)> {
     let data = std::env::var_os("ProgramData").map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from);
     let Ok(dir) = std::fs::read_dir(data.join(r"Epic\EpicGamesLauncher\Data\Manifests")) else { return Vec::new() };
@@ -627,6 +680,7 @@ fn epic_installs() -> Vec<(String, String)> {
     out
 }
 
+#[cfg(any(windows, test))]
 fn epic_install(item: &str) -> Option<(String, String)> {
     let v: serde_json::Value = serde_json::from_str(item).ok()?;
     let folder = normalize(v["InstallLocation"].as_str()?);
@@ -748,13 +802,15 @@ mod tests {
         let lib = std::env::temp_dir().join(format!("camless-steam-{}", std::process::id()));
         std::fs::create_dir_all(lib.join("steamapps")).unwrap();
         let acf = "\"AppState\"\n{\n\t\"appid\"\t\t\"1091500\"\n\t\"name\"\t\t\"A \\\"Quoted\\\" Game\"\n\t\"installdir\"\t\t\"AQG\"\n}\n";
-        std::fs::write(lib.join(r"steamapps\appmanifest_1091500.acf"), acf).unwrap();
+        std::fs::write(lib.join("steamapps").join("appmanifest_1091500.acf"), acf).unwrap();
         // Without an appid line, the file name has it.
-        std::fs::write(lib.join(r"steamapps\appmanifest_730.acf"), "\"AppState\"\n{\n\t\"installdir\"\t\t\"Other\"\n}\n").unwrap();
-        let game = |dir: &str| store_game(&lib.join(format!(r"steamapps\common\{dir}\Game.exe")).to_string_lossy(), &[]);
+        std::fs::write(lib.join("steamapps").join("appmanifest_730.acf"), "\"AppState\"\n{\n\t\"installdir\"\t\t\"Other\"\n}\n").unwrap();
+        let game = |dir: &str| store_game(&lib.join("steamapps").join("common").join(dir).join("Game.exe").to_string_lossy(), &[]);
         assert_eq!(game("aqg"), Some(Title { name: "A \"Quoted\" Game".into(), steam: Some(1_091_500) }));
         assert_eq!(game("Other"), Some(Title { name: "Other".into(), steam: Some(730) }));
         assert_eq!(game("Gone"), Some(Title { name: "Gone".into(), steam: None }));
+        assert_eq!(game("Proton 9.0"), None);
+        assert_eq!(game("SteamLinuxRuntime_sniper"), None);
         std::fs::remove_dir_all(&lib).unwrap();
     }
 
@@ -772,6 +828,11 @@ mod tests {
         assert!(listed(&list, r"d:\emulators\dolphin\Dolphin.exe"));
         assert!(!listed(&list, r"D:\EmulatorsOld\x.exe"));
         assert!(!listed(&list, r"C:\java.exe"));
+        // Linux folders, and a Wine game by its file name.
+        let list = ["/home/a/Games".to_string(), "Game.exe".to_string()];
+        assert!(listed(&list, "/home/a/Games/emu/emu"));
+        assert!(!listed(&list, "/home/a/GamesOld/x"));
+        assert!(listed(&list, r"C:\Games\GAME.EXE"));
     }
 
     #[test]

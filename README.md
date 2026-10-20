@@ -6,7 +6,7 @@ A light replacement for NZXT CAM. It handles fan and pump curves, lighting and t
 
 ![The Cooling page: liquid, CPU and GPU temperatures, and each fan on its curve](docs/screenshots/cooling.png)
 
-**[Download camless-setup.exe](https://github.com/kleju13/camless/releases/latest/download/camless-setup.exe)** · Windows 10 and 11, x64
+**[Download camless-setup.exe](https://github.com/kleju13/camless/releases/latest/download/camless-setup.exe)** · Windows 10 and 11, x64 · [Linux](#linux), x64, not yet run on hardware
 
 - **Curves as in FanControl.** A curve is a graph, a fixed duty, a mix of other curves or a trigger. It follows CPU, GPU or liquid temperature, load or power, with hysteresis and separate rise and fall times. Each fan adds its own offset and limits.
 - **Curves stored on the Kraken.** When the Kraken can run a curve by itself, camless stores it there, so the pump keeps its curve if camless stops.
@@ -31,7 +31,7 @@ camless is not affiliated with or endorsed by NZXT. NZXT, CAM and Kraken are tra
 
 ## Devices
 
-| Device | USB id | Tested on the maintainer's hardware |
+| Device | USB id | Tested on the maintainer's hardware, on Windows |
 |---|---|---|
 | Kraken Elite 2024 (Kraken Elite V2) | `1e71:3012` | pump and fan curves, lighting, LCD |
 | Control Hub (H9 Flow RGB+ and other recent cases) | `1e71:2022` | fan duties, lighting |
@@ -52,7 +52,7 @@ Experimental: Nexus leaves these out, so the driver follows liquidctl alone, and
 |---|---|---|
 | Kraken X2 (X42, X52, X62, X72) | `1e71:170e` | pump and fan curves from firmware 3, pump ring and logo |
 | Kraken M22 | `1e71:1715` | pump ring and logo |
-| Kraken X31, X41, X61 (and X40, X60) | `2433:b200` | pump and fan duties, logo; needs WinUSB bound to it with [Zadig](https://zadig.akeo.ie) |
+| Kraken X31, X41, X61 (and X40, X60) | `2433:b200` | pump and fan duties, logo; on Windows, needs WinUSB bound to it with [Zadig](https://zadig.akeo.ie) |
 
 Other brands, off unless you turn on *Settings → Devices → Other brands*: camless never drives keyboards or mice, and leaves a hub alone while its brand's app runs ([how it works](docs/how-it-works.md#other-brands)). Nexus calls its own support for these experimental, and so does camless:
 
@@ -66,6 +66,8 @@ The app lists other NZXT devices as "no driver yet". If you have one, *Settings 
 
 ## Install
 
+### Windows
+
 1. Quit NZXT CAM, and turn it off in *Task Manager → Startup apps* so it does not come back at the next logon. While CAM's app runs, it holds the devices and camless cannot open them. CAM Service can keep running.
 2. Run [camless-setup.exe](https://github.com/kleju13/camless/releases/latest/download/camless-setup.exe). It needs no administrator rights. It is not code-signed, so SmartScreen may stop it: *More info → Run anyway*. Or install from PowerShell, which also checks the download's SHA-256:
    ```
@@ -78,16 +80,42 @@ The app checks for a new release each time it starts and shows *Update available
 
 CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed `AMDFamily17.bin` in `%LOCALAPPDATA%\Programs\camless`. Without them, curves on CPU temperature hold the failsafe duty. The Kraken's liquid temperature needs none of this, so new curves use it by default.
 
+### Linux
+
+> [!NOTE]
+> camless on Linux has not run on NZXT hardware yet. It has the same drivers as on Windows and reaches the devices through hidraw and usbfs, as liquidctl and Nexus do on Linux. Only the build, the install and the app with simulated devices were tested. *It works* or *Something is wrong* in the app tells us how it went.
+
+It runs on x64 with glibc 2.34 or later and WebKitGTK 4.1: Ubuntu 22.04, Debian 12 and later.
+
+1. Download `camless-linux-x86_64.tar.gz` and its `.sha256` from the [releases](https://github.com/kleju13/camless/releases). The first ones with it are betas. Then:
+   ```
+   sha256sum -c camless-linux-x86_64.tar.gz.sha256
+   tar -xzf camless-linux-x86_64.tar.gz
+   ./camless/install.sh
+   ```
+2. `install.sh` puts `camless` and `camless-gui` in `~/.local/bin`, adds camless to your desktop's menu, and runs the service as a systemd user service that starts when you log in. It also installs udev rules, `/etc/udev/rules.d/71-camless.rules`. They let whoever is logged in at the computer open the devices camless drives, and no others. They are the only part that needs root, so sudo asks for your password. If camless cannot open a device right after, plug it in again or restart.
+3. The app needs WebKitGTK 4.1 and GTK 3 (`libwebkit2gtk-4.1-0` on Debian and Ubuntu), and curl for updates. Its tray icon needs `libayatana-appindicator3-1` (or `libappindicator3-1`) and a desktop that shows such icons: KDE Plasma does, and GNOME with the AppIndicator extension. Without one, closing the window quits the app, and the service keeps running.
+
+What is different from Windows:
+- **No frame rates**, which come from Windows' ETW. Games finds Steam games, native and under Proton. camless does not ask which window is in front (Wayland does not say), so a game counts as played while it runs.
+- **CPU temperature** comes from hwmon (k10temp, zenpower or coretemp) and needs no PawnIO. CPU power comes from RAPL, which only root can read, so it has no reading.
+- **No admin rights**: the service runs as you. *Import from NZXT CAM* is on Windows only, like CAM, and so are firmware updates, which camless never installs: CAM on Windows does.
+- **Kernel drivers** such as `nzxt-kraken3` can stay loaded. Do not run another program that sets the same fans, such as CoolerControl, liquidctl or fancontrol.
+- **Updates** download the new tarball and run its `install.sh`. When the udev rules have changed, the desktop asks for your password (pkexec), or you run `install.sh` from the download.
+
+To uninstall, run `~/.local/share/camless/uninstall.sh`. It keeps your settings in `~/.config/camless`.
+
 ## Documentation
 
 - [Configuration](docs/config.md): `camless.toml`, profiles, curve kinds and the command line.
-- [How it works](docs/how-it-works.md): the service and the app, fan control and safeguards, history and games, AI assistants, web pages on the LCD, the local API, and updates.
+- [How it works](docs/how-it-works.md): the service and the app, fan control and safeguards, history and games, AI assistants, web pages on the LCD, the local API, updates, and Linux.
 - [Protocol notes](docs/protocol.md) for each device.
 - [Contributing](CONTRIBUTING.md): building, testing and adding a device.
 
 ## Not done yet
 
 - Drivers for other NZXT devices: the Smart Device V2 and the RGB & Fan Controller.
+- On Linux: frame rates, and a run on real hardware.
 - Other brands: the Lian Li hubs' lighting, Lian Li's TL, Strimer and wireless controllers, and Corsair's iCUE LINK hub, which would have to yield to iCUE.
 
 ## Credits

@@ -2,7 +2,7 @@
 
 The maintainer can only test a Kraken Elite 2024 and a Control Hub. Every other NZXT device needs someone who owns it. A driver is one Rust file. The service, the config and the app pick a new device up from what the driver describes, so nothing else changes.
 
-If you own such a device but will not write the driver, open a [hardware report](https://github.com/kleju13/camless/issues/new?template=hardware-report.yml). `camless report` prints what it needs: the device's USB interfaces, endpoints and HID report ids, and what the service knows. It only reads standard USB descriptors. With an older camless, or without it, the device's name and its Hardware Ids from Device Manager are a start.
+If you own such a device but will not write the driver, open a [hardware report](https://github.com/kleju13/camless/issues/new?template=hardware-report.yml). `camless report` prints what it needs: the device's USB interfaces, endpoints and HID report ids, and what the service knows. It only reads standard USB descriptors. With an older camless, or without it, the device's name and its Hardware Ids from Device Manager, or its line from `lsusb` on Linux, are a start.
 
 The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you agree that your contribution is licensed under it too.
 
@@ -14,18 +14,19 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 | `src/drivers/<model>.rs` | one device: its protocol and a `Driver` |
 | `src/drivers/mod.rs` | the `Driver` and `Lcd` traits, `MODELS`, bus scanning |
 | `src/drivers/hid.rs`, `hue2.rs` | shared HID I/O and the Hue 2 lighting protocol |
-| `src/drivers/usb.rs`, `winhid.rs`, `vendor.rs` | WinUSB transfers, HID calls hidapi lacks, and other brands' apps |
+| `src/drivers/usb.rs`, `winhid.rs`, `hidraw.rs`, `vendor.rs` | USB transfers (WinUSB, usbfs on Linux), HID calls hidapi lacks on Windows, Lian Li's reports on Linux, and other brands' apps |
 | `src/daemon.rs` | the service loop: curves, duties, reloads, failsafes |
 | `src/web.rs`, `src/cdp.rs` | web pages on an LCD: a headless browser driven over the DevTools protocol |
 | `src/backdrop.rs` | a moving background a page hands over, which camless plays under the page |
 | `src/history.rs` | sensor and fan history: the last hour in memory, minutes on disk for 30 days |
-| `src/games.rs`, `src/fps.rs` | game sessions, and frame rates from the graphics kernel's ETW events |
+| `src/games.rs`, `src/games/linux.rs`, `src/fps.rs` | game sessions, Linux's processes, and frame rates from the graphics kernel's ETW events |
 | `src/mcp.rs` | `camless mcp`: an MCP server for AI assistants, on top of the local API |
 | `core/` | config and profiles, curve engine, CAM import, status types; no hardware code |
-| `gui/` | the app: tray icon, WebView2 window, the JSON API its page uses, and updates from GitHub releases |
+| `gui/` | the app: tray icon, WebView2 window (`app.rs`; GTK and WebKitGTK in `app_gtk.rs` on Linux), the JSON API its page uses, and updates from GitHub releases |
 | `gui/ui/` | the app's page: HTML, CSS and plain JavaScript, built into `camless-gui.exe` |
 | `installer/camless.iss` | the Inno Setup script for `camless-setup.exe`, which installs, updates and uninstalls both exes |
-| `scripts/` | `package.ps1` builds the setup; `install.ps1` installs the latest release |
+| `linux/` | the Linux install: udev rules, the systemd user service, the desktop entry, `install.sh` and `uninstall.sh` |
+| `scripts/` | `package.ps1` builds the setup; `install.ps1` installs the latest release; `package-linux.sh` builds the Linux tarball |
 | `.github/workflows/` | `ci.yml` tests and packages every pull request; `release.yml` publishes a release for a `v*` tag |
 | `tools/capture/` | Frida scripts that log what CAM sends to a device |
 | `tools/icon/` | draws the logo into `gui/camless.ico`, the icon in both exes, the tray and the window, and into `gui/icon.svg` |
@@ -35,12 +36,12 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 
 1. **Find what CAM sends.** Start with [liquidctl](https://github.com/liquidctl/liquidctl): many NZXT devices are documented there, and its sources are the best reference. If it is not there, capture CAM (below).
 2. **Write `src/drivers/<model>.rs`.** Use `control_hub.rs` (fans and lights only) or `kraken_elite_v2.rs` (pump, stored curves, LCD) as a template:
-   - a `pub const MODEL: Model`, from `Model::hid(vid, pid, slug, name, open)`: the USB vendor and product id, a slug for the config (`smart-device-v2`, `rgb-fan-controller`), and the name people know it by. Set `interface` if the device has several HID interfaces. `Model::usb` is for a device that is not HID, which camless reaches through WinUSB (`usb.rs`). Set `experimental: true` when no other program drives the device the way the driver does, for example when Nexus leaves it out and the driver follows liquidctl alone, or when the program it follows calls its own support experimental. Another brand's device also needs `vendor`, with the app camless leaves it to, and `usage`: its vendor-defined HID collection (usage page `FF00` and up), so that no keyboard or mouse of that brand ever matches (`lianli.rs`);
+   - a `pub const MODEL: Model`, from `Model::hid(vid, pid, slug, name, open)`: the USB vendor and product id, a slug for the config (`smart-device-v2`, `rgb-fan-controller`), and the name people know it by. Set `interface` if the device has several HID interfaces. `Model::usb` is for a device that is not HID, which camless reaches through WinUSB, or usbfs on Linux (`usb.rs`). Set `experimental: true` when no other program drives the device the way the driver does, for example when Nexus leaves it out and the driver follows liquidctl alone, or when the program it follows calls its own support experimental. Another brand's device also needs `vendor`, with the app camless leaves it to, and `usage`: its vendor-defined HID collection (usage page `FF00` and up), so that no keyboard or mouse of that brand ever matches (`lianli.rs`);
    - `describe()`: its fan channels (`pump: true` for pumps, `min_duty`, `device_curves` if it can store curves), light channels with LED counts (and `modes` if they take fewer than the Hue 2 effects), and the LCD;
    - `sensors()` and `poll()`: readings by the driver's own ids, such as `liquid`;
    - `set_duties()`, `set_lighting()`, and `store_curve()` / `lcd()` where the device supports them;
    - pure functions that build and parse reports, with unit tests against captured bytes.
-3. **List it** in `MODELS` in `src/drivers/mod.rs`.
+3. **List it** in `MODELS` in `src/drivers/mod.rs`, and its USB id in `linux/71-camless.rules`, so that Linux lets the user open it. A test checks that the two match.
 4. **Check it** with `camless status`. It opens the device once and prints every channel and sensor. Then use `camless run --verbose` with a small config.
 5. **Add it to `hardware/verified.toml`** only for what you ran on the hardware, with what you checked and the issue or pull request as the source. `describe()` takes `verified` from that list with `MODEL.verified()`, and `experimental` with `MODEL.is_experimental()`. The app shows any other device as unverified, or experimental, and asks its owner how it works. Say in the module comment and the pull request what you tested.
 6. **Add a section** to `docs/protocol.md`.
@@ -75,8 +76,10 @@ camless run --demo demo.toml                        # simulated devices for work
 camless-gui --serve 127.0.0.1:30652 --config demo.toml --ui-dir gui/ui
 ```
 
+On Linux the build needs WebKitGTK 4.1, GTK 3 and libudev with their headers: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev` and `libudev-dev` on Debian and Ubuntu. `sh scripts/package-linux.sh` packs both programs and `linux/` into `dist/camless-linux-x86_64.tar.gz`.
+
 `demo.toml` can be a copy of `gui/tests/data/demo.toml`. `--serve` shows the app's page at http://127.0.0.1:30652/ in any browser and edits only the file given with `--config`. With `--ui-dir`, the page comes from the source folder, so a reload picks up changes to `gui/ui` without a rebuild.
 
 Run the tests before opening a pull request. A new driver needs tests for its report builders and parsers, preferably against bytes captured from CAM.
 
-CI builds the setup for every pull request, as the run's *camless-setup* artifact. A tag `vX.Y.Z` publishes it, and fails unless all three `Cargo.toml` files are at that version: the app compares its own version with the latest release. A tag with a pre-release part, such as `v0.5.0-beta.1`, is a beta: a GitHub pre-release, which only the app's beta channel offers. Betas count up, `beta.1`, `beta.2`, and the app orders them as numbers. Any other tag, such as `v0.5.0` or `v0.5.1`, is a release. Betas from before 0.5, such as `v0.4.1`, followed the old rule, where a last number other than 0 meant a beta.
+CI builds the setup and the Linux tarball for every pull request, on Windows and on Ubuntu 22.04, as the run's *camless-setup* and *camless-linux* artifacts. A tag `vX.Y.Z` publishes both, and fails unless all three `Cargo.toml` files are at that version: the app compares its own version with the latest release. A tag with a pre-release part, such as `v0.5.0-beta.1`, is a beta: a GitHub pre-release, which only the app's beta channel offers. Betas count up, `beta.1`, `beta.2`, and the app orders them as numbers. Any other tag, such as `v0.5.0` or `v0.5.1`, is a release. Betas from before 0.5, such as `v0.4.1`, followed the old rule, where a last number other than 0 meant a beta.

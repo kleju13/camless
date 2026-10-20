@@ -3,7 +3,9 @@
 //! same, by process name (its `ConflictAppDefinitions.cs`).
 
 use std::collections::HashSet;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
@@ -30,6 +32,7 @@ impl Vendor {
 
 /// The executable names of every process, in lower case. Empty if Windows does not
 /// list them.
+#[cfg(windows)]
 pub fn running_processes() -> HashSet<String> {
     let mut names = HashSet::new();
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -45,6 +48,26 @@ pub fn running_processes() -> HashSet<String> {
         more = unsafe { Process32NextW(snap, &mut entry) } != 0;
     }
     unsafe { CloseHandle(snap) };
+    names
+}
+
+/// The program names of every process, in lower case, from the first word of its
+/// command line, which any user can read: a Windows program under Wine by its
+/// Windows name.
+#[cfg(target_os = "linux")]
+pub fn running_processes() -> HashSet<String> {
+    let mut names = HashSet::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        if !entry.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())) {
+            continue;
+        }
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else { continue };
+        let argv0 = cmdline.split(|&b| b == 0).next().unwrap_or_default();
+        let name = String::from_utf8_lossy(argv0);
+        if let Some(name) = name.rsplit(['/', '\\']).next().filter(|n| !n.is_empty()) {
+            names.insert(name.to_lowercase());
+        }
+    }
     names
 }
 

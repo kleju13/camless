@@ -32,9 +32,7 @@ Usage:
   camless watch [seconds]      Listen to input reports without sending anything
                                (default 10 s; CAM must not hold the devices)
   camless sensors              Read CPU, GPU and memory sensors once
-  camless fps [seconds]        Print the frame rate of the program in front once a
-                               second (default 10 s; needs administrator rights)
-  camless mcp [config]         An MCP server on stdin and stdout for AI assistants:
+{FPS}  camless mcp [config]         An MCP server on stdin and stdout for AI assistants:
                                sensors, history, game sessions and fan curves; asks
                                the running service and writes its config
   camless report [config]      Print a hardware report for a GitHub issue: the NZXT
@@ -49,9 +47,7 @@ Usage:
   camless lcd page URL         Render a web page the way the LCD shows it and save
                                the last frame as a PNG, without opening a device
 
-The config defaults to camless.toml next to camless.exe if there is one, else
-%APPDATA%\\camless\\camless.toml. `run` applies changes to it while running.
-
+{CONFIG}
 Options:
   --verbose                    run: print sensors and duties every interval
   --demo                       run: simulated devices instead of USB, for trying
@@ -63,10 +59,53 @@ Options:
                                lcd page: the PNG (default lcd-page.png)
   --for SECONDS                lcd page: how long to render (default 6)
 
-The NZXT CAM app holds the devices exclusively; quit it first (CAM Service can
+{NOTES}";
+
+#[cfg(windows)]
+const PLATFORM_USAGE: [(&str, &str); 3] = [
+    (
+        "{FPS}",
+        "  camless fps [seconds]        Print the frame rate of the program in front once a
+                               second (default 10 s; needs administrator rights)
+",
+    ),
+    (
+        "{CONFIG}",
+        "The config defaults to camless.toml next to camless.exe if there is one, else
+%APPDATA%\\camless\\camless.toml. `run` applies changes to it while running.
+",
+    ),
+    (
+        "{NOTES}",
+        "The NZXT CAM app holds the devices exclusively; quit it first (CAM Service can
 keep running).
 CPU temperature needs PawnIO, AMDFamily17.bin and administrator rights.
-";
+",
+    ),
+];
+
+#[cfg(not(windows))]
+const PLATFORM_USAGE: [(&str, &str); 3] = [
+    ("{FPS}", ""),
+    (
+        "{CONFIG}",
+        "The config defaults to camless.toml next to camless if there is one, else
+~/.config/camless/camless.toml. `run` applies changes to it while running.
+",
+    ),
+    (
+        "{NOTES}",
+        "camless reaches the devices through hidraw and usbfs; the udev rules that come
+with it let the signed-in user do that without root. A kernel driver such as
+nzxt-kraken3 may stay loaded, but nothing else should set the same fans:
+CoolerControl, liquidctl or fan curves written to hwmon.
+",
+    ),
+];
+
+fn usage() -> String {
+    PLATFORM_USAGE.iter().fold(USAGE.to_string(), |text, (key, value)| text.replace(key, value))
+}
 
 static STOP: AtomicBool = AtomicBool::new(false);
 static STOPPED: AtomicBool = AtomicBool::new(false);
@@ -98,6 +137,7 @@ fn main() -> Result<()> {
             watch(Duration::from_secs(secs.unwrap_or(10)), flag("--raw"))
         }
         Some("sensors") => sensors(),
+        #[cfg(windows)]
         Some("fps") => {
             let secs = positional.first().map(|s| s.parse()).transpose().context("fps takes seconds")?;
             fps_watch(Duration::from_secs(secs.unwrap_or(10)))
@@ -130,12 +170,13 @@ fn main() -> Result<()> {
             lcd_test(Duration::from_secs(secs.unwrap_or(20)))
         }
         _ => {
-            print!("{USAGE}");
+            print!("{}", usage());
             Ok(())
         }
     }
 }
 
+#[cfg(windows)]
 fn beside_exe(name: &str) -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -143,9 +184,16 @@ fn beside_exe(name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
+#[cfg(windows)]
 fn pawnio_module(configured: Option<&PathBuf>) -> std::result::Result<Vec<u8>, String> {
     let path = configured.cloned().unwrap_or_else(|| beside_exe("AMDFamily17.bin"));
     std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// PawnIO is Windows only; Linux reads CPU temperature from hwmon.
+#[cfg(not(windows))]
+fn pawnio_module(_configured: Option<&PathBuf>) -> std::result::Result<Vec<u8>, String> {
+    Err("PawnIO is for Windows".into())
 }
 
 fn sensors() -> Result<()> {
@@ -272,7 +320,7 @@ fn lcd_test(duration: Duration) -> Result<()> {
     let (w, h) = lcd.size();
     let (w, h) = (usize::from(w), usize::from(h));
     println!("{id}: lcd {w}×{h}");
-    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(on_console_event), 1) };
+    catch_stop();
     let start = Instant::now();
     let (mut sent, mut slowest) = (0usize, Duration::ZERO);
     let result = loop {
@@ -372,6 +420,14 @@ fn status(config: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Ctrl+C, closing the console, logoff and shutdown stop camless the way `--for`
+/// does, so the fans are put in their safe state first.
+#[cfg(windows)]
+fn catch_stop() {
+    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(on_console_event), 1) };
+}
+
+#[cfg(windows)]
 unsafe extern "system" fn on_console_event(kind: u32) -> windows_sys::core::BOOL {
     STOP.store(true, Ordering::SeqCst);
     // On close, logoff and shutdown Windows ends the process when this returns, so
@@ -383,6 +439,24 @@ unsafe extern "system" fn on_console_event(kind: u32) -> windows_sys::core::BOOL
         }
     }
     1
+}
+
+/// SIGINT (Ctrl+C), SIGTERM (systemd stopping the service, shutdown) and SIGHUP
+/// stop camless the way `--for` does; it puts the fans in their safe state and exits.
+#[cfg(not(windows))]
+fn catch_stop() {
+    extern "C" fn on_signal(_: libc::c_int) {
+        STOP.store(true, Ordering::SeqCst);
+    }
+    let handler: extern "C" fn(libc::c_int) = on_signal;
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = handler as libc::sighandler_t;
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+    }
 }
 
 fn run(path: PathBuf, verbose: bool, demo: bool, limit: Option<Duration>) -> Result<()> {
@@ -402,7 +476,7 @@ fn run(path: PathBuf, verbose: bool, demo: bool, limit: Option<Duration>) -> Res
             (Config::default(), Some(format!("{e:#}")))
         }
     };
-    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(on_console_event), 1) };
+    catch_stop();
     if let Some(limit) = limit {
         std::thread::spawn(move || {
             std::thread::sleep(limit);
@@ -434,10 +508,11 @@ fn run(path: PathBuf, verbose: bool, demo: bool, limit: Option<Duration>) -> Res
 
 /// Prints the frame rate of the program in front once a second, counted the way
 /// game sessions count it.
+#[cfg(windows)]
 fn fps_watch(duration: Duration) -> Result<()> {
     let capture = fps::Capture::start("camless-fps-check").context("starting the ETW session")?;
     // Ctrl+C stops the session instead of leaving it running.
-    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(on_console_event), 1) };
+    catch_stop();
     eprintln!("frames of the program in front, counted 2 s late, for {} s", duration.as_secs());
     let (mut pid, mut meter) = (0, fps::Meter::default());
     let start = Instant::now();

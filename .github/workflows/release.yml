@@ -1,5 +1,6 @@
 # Pushing a tag like v0.2.0 builds camless-setup.exe, which installs camless.exe and camless-gui.exe,
-# and publishes it as a GitHub release. scripts/install.ps1 downloads and runs the latest one.
+# and camless-linux-x86_64.tar.gz, whose install.sh installs camless and camless-gui, and publishes
+# both as one GitHub release. scripts/install.ps1 downloads and runs the latest setup.
 # A version with a pre-release part, such as v0.5.0-beta.1, comes out as a beta: a GitHub pre-release,
 # which only the app's beta channel offers. Every other tag is a release. Betas of a version count up
 # (beta.1, beta.2, …) and the version itself follows as the release once they have been tried.
@@ -10,22 +11,51 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - run: cargo test --workspace --release
       - run: choco install innosetup --no-progress -y
       - run: ./scripts/package.ps1 -Tag "${{ github.ref_name }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/camless-setup.exe*
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libudev-dev
+      - run: cargo test --workspace --release
+      - run: sh scripts/package-linux.sh "${{ github.ref_name }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: dist/camless-linux-x86_64.tar.gz*
+
+  # Once both are built, so the release never shows up with one of them missing.
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
       - name: Publish
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           beta=
           case "$TAG" in *-*) beta=--prerelease ;; esac
-          gh release create "$TAG" dist/camless-setup.exe dist/camless-setup.exe.sha256 --title "camless $TAG" --generate-notes $beta
+          gh release create "$TAG" dist/camless-setup.exe dist/camless-setup.exe.sha256 \
+            dist/camless-linux-x86_64.tar.gz dist/camless-linux-x86_64.tar.gz.sha256 \
+            --repo "$GITHUB_REPOSITORY" --title "camless $TAG" --generate-notes $beta

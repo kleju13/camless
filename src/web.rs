@@ -1,10 +1,11 @@
 //! Web pages on an LCD, shown the way CAM's Web Integration shows them. A headless
-//! Microsoft Edge (or Chrome) renders the page at the screen's size with
-//! `?kraken=1`, camless hands it sensor data through
+//! Microsoft Edge or Chrome, on Linux Chrome or Chromium, renders the page at the
+//! screen's size with `?kraken=1`, camless hands it sensor data through
 //! `window.nzxt.v1.onMonitoringDataUpdate` every second, and streams what it draws.
 //!
 //! The browser runs as the signed-in user even when camless is elevated, with a
-//! profile of its own, and in a job object, so it ends when camless does.
+//! profile of its own, and in a job object, so it ends when camless does. On Linux
+//! it runs in a process group of its own, which ends with the thread that started it.
 //!
 //! A page can also hand camless its moving background (backdrop.rs) and draw only
 //! what lies over it; camless then plays the background under the page's frames.
@@ -112,13 +113,14 @@ impl Job {
 
     /// One browser, until the job stops (Ok) or something fails (Err).
     fn session(&self) -> Result<()> {
-        let dir = profile_dir(&self.device);
+        let installed = find_browser().context(NO_BROWSER)?;
+        let dir = profile_dir(&installed.profiles, &self.device);
         // A new renderer for the same screen waits for the old browser to close: two
         // cannot share a profile.
         let lock = profile_lock(&dir);
         let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         let (w, h) = (self.page.width, self.page.height);
-        let browser = Browser::launch(&dir, w, h, &self.stop)?;
+        let browser = Browser::launch(&installed, &dir, w, h, &self.stop)?;
         self.set(|s| s.browser = Some(browser.name.clone()));
         let mut cdp = Cdp::connect(browser.port, &browser.ws_path)?;
 
@@ -390,12 +392,11 @@ pub fn decode_png(png_bytes: &[u8]) -> Result<(Vec<u8>, usize, usize, usize)> {
     Ok((buf, fw as usize, fh as usize, info.color_type.samples()))
 }
 
-/// `%LOCALAPPDATA%\camless\browser\<device>`: cookies and storage of the pages on
-/// that screen, apart from the user's own browser.
-fn profile_dir(device: &str) -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+/// `<profiles>\<device>`: cookies and storage of the pages on that screen, apart from
+/// the user's own browser.
+fn profile_dir(profiles: &Path, device: &str) -> PathBuf {
     let safe: String = device.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
-    base.join("camless").join("browser").join(safe)
+    profiles.join(safe)
 }
 
 fn profile_lock(dir: &Path) -> Arc<Mutex<()>> {
@@ -404,7 +405,22 @@ fn profile_lock(dir: &Path) -> Arc<Mutex<()>> {
     locks.entry(dir.to_path_buf()).or_default().clone()
 }
 
-fn find_browser() -> Option<(PathBuf, &'static str)> {
+/// A browser that renders pages headless: its program, its name, and the folder its
+/// camless profiles go in.
+struct Installed {
+    exe: PathBuf,
+    name: &'static str,
+    profiles: PathBuf,
+}
+
+#[cfg(windows)]
+const NO_BROWSER: &str = "rendering a web page needs Microsoft Edge or Google Chrome, and neither is installed";
+#[cfg(not(windows))]
+const NO_BROWSER: &str = "rendering a web page needs Google Chrome, Chromium, Microsoft Edge or Brave, and none is installed";
+
+/// `%LOCALAPPDATA%\camless\browser`.
+#[cfg(windows)]
+fn find_browser() -> Option<Installed> {
     let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
     let candidates = [
         (env("ProgramFiles(x86)"), r"Microsoft\Edge\Application\msedge.exe", "Microsoft Edge"),
@@ -413,19 +429,55 @@ fn find_browser() -> Option<(PathBuf, &'static str)> {
         (env("ProgramFiles(x86)"), r"Google\Chrome\Application\chrome.exe", "Google Chrome"),
         (env("LOCALAPPDATA"), r"Google\Chrome\Application\chrome.exe", "Google Chrome"),
     ];
-    candidates.into_iter().find_map(|(dir, rel, name)| Some((dir?.join(rel), name)).filter(|(p, _)| p.is_file()))
+    let (exe, name) =
+        candidates.into_iter().find_map(|(dir, rel, name)| Some((dir?.join(rel), name)).filter(|(p, _)| p.is_file()))?;
+    let profiles = env("LOCALAPPDATA").unwrap_or_else(std::env::temp_dir).join("camless").join("browser");
+    Some(Installed { exe, name, profiles })
+}
+
+/// Chromium-family browsers from packages, then Ubuntu's Chromium snap, the names
+/// Nexus looks for (`LinuxBrowsers.cs`). Profiles go in
+/// `~/.local/share/camless/browser`; a snap can write only to its own folder, so
+/// there in `~/snap/chromium/common/camless-browser`.
+#[cfg(not(windows))]
+fn find_browser() -> Option<Installed> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or(home.join(".local/share"));
+    let packaged = [
+        ("/usr/bin/google-chrome-stable", "Google Chrome"),
+        ("/usr/bin/google-chrome", "Google Chrome"),
+        ("/usr/bin/chromium", "Chromium"),
+        ("/usr/bin/chromium-browser", "Chromium"),
+        ("/usr/bin/microsoft-edge-stable", "Microsoft Edge"),
+        ("/usr/bin/microsoft-edge", "Microsoft Edge"),
+        ("/usr/bin/brave-browser", "Brave"),
+        ("/usr/bin/brave", "Brave"),
+    ];
+    let found = packaged.into_iter().find(|(p, _)| Path::new(p).is_file() && !snap_launcher(Path::new(p)));
+    if let Some((exe, name)) = found {
+        return Some(Installed { exe: exe.into(), name, profiles: data.join("camless/browser") });
+    }
+    let snap = Path::new("/snap/bin/chromium");
+    snap.exists().then(|| Installed { exe: snap.into(), name: "Chromium", profiles: home.join("snap/chromium/common/camless-browser") })
+}
+
+/// Ubuntu's `chromium-browser` package holds only a script that starts the snap.
+#[cfg(not(windows))]
+fn snap_launcher(exe: &Path) -> bool {
+    let head = std::fs::read(exe).map(|b| b[..b.len().min(4096)].to_vec()).unwrap_or_default();
+    head.starts_with(b"#!") && head.windows(6).any(|w| w == b"/snap/")
 }
 
 struct Browser {
-    process: win::Process,
+    process: os::Process,
     port: u16,
     ws_path: String,
     name: String,
 }
 
 impl Browser {
-    fn launch(dir: &Path, w: u16, h: u16, stop: &AtomicBool) -> Result<Browser> {
-        let (exe, name) = find_browser().context("rendering a web page needs Microsoft Edge or Google Chrome, and neither is installed")?;
+    fn launch(installed: &Installed, dir: &Path, w: u16, h: u16, stop: &AtomicBool) -> Result<Browser> {
+        let (exe, name) = (&installed.exe, installed.name);
         let port_file = dir.join("DevToolsActivePort");
         let _ = std::fs::remove_file(&port_file);
         let args = [
@@ -454,7 +506,7 @@ impl Browser {
             "--disable-features=SpareRendererForSitePerProcess".into(),
             "about:blank".into(),
         ];
-        let process = win::spawn(&exe, &args)?;
+        let process = os::spawn(exe, &args)?;
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             // The file has the port, then the browser's WebSocket path.
@@ -486,9 +538,15 @@ impl Drop for Browser {
     }
 }
 
-pub use win::is_elevated;
+pub use os::is_elevated;
+
+#[cfg(windows)]
+use win as os;
+#[cfg(not(windows))]
+use unix as os;
 
 /// Starting the browser: as the signed-in user, inside a kill-on-close job.
+#[cfg(windows)]
 mod win {
     use anyhow::{bail, Result};
     use std::ffi::c_void;
@@ -680,6 +738,96 @@ mod win {
             assert_eq!(quote(r"C:\dir with space\"), r#""C:\dir with space\\""#);
             assert_eq!(quote(r#"say "hi""#), r#""say \"hi\"""#);
             assert_eq!(quote(""), r#""""#);
+        }
+    }
+}
+
+/// Starting the browser: in a process group of its own, killed with the thread that
+/// started it, so neither it nor its renderers outlive camless.
+#[cfg(not(windows))]
+mod unix {
+    use anyhow::{Context, Result};
+    use std::cell::Cell;
+    use std::os::unix::process::CommandExt;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    pub struct Process {
+        pid: libc::pid_t,
+        /// Its exit code once it has been reaped.
+        code: Cell<Option<u32>>,
+    }
+
+    impl Process {
+        pub fn exit_code(&self) -> Option<u32> {
+            if self.code.get().is_none() {
+                let mut status = 0;
+                if unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) } == self.pid {
+                    let code = if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { 128 + libc::WTERMSIG(status) };
+                    self.code.set(Some(code as u32));
+                }
+            }
+            self.code.get()
+        }
+
+        pub fn wait(&self, timeout: Duration) -> bool {
+            let until = Instant::now() + timeout;
+            while self.exit_code().is_none() {
+                if Instant::now() >= until {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            true
+        }
+    }
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            // The whole group: the renderers too, whether the browser is still there or not.
+            unsafe { libc::kill(-self.pid, libc::SIGKILL) };
+            if self.code.get().is_none() {
+                let mut status = 0;
+                unsafe { libc::waitpid(self.pid, &mut status, 0) };
+            }
+        }
+    }
+
+    pub fn is_elevated() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    pub fn spawn(exe: &Path, args: &[String]) -> Result<Process> {
+        let mut cmd = Command::new(exe);
+        cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+        // Safe after fork: prctl only sets a flag of the new process.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        let child = cmd.spawn().with_context(|| format!("starting {}", exe.display()))?;
+        // Reaped by Process from here on.
+        Ok(Process { pid: child.id() as libc::pid_t, code: Cell::new(None) })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_browser_group_ends_with_its_process() {
+            let p = spawn(Path::new("/bin/sh"), &["-c".into(), "sleep 30 & exit 3".into()]).unwrap();
+            assert!(p.wait(Duration::from_secs(5)));
+            assert_eq!(p.exit_code(), Some(3));
+            let pid = p.pid;
+            // The sleep left behind is in the group, and dropping the process ends it.
+            assert_eq!(unsafe { libc::kill(-pid, 0) }, 0);
+            drop(p);
+            std::thread::sleep(Duration::from_millis(100));
+            assert_eq!(unsafe { libc::kill(-pid, 0) }, -1);
         }
     }
 }

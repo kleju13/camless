@@ -1,0 +1,22 @@
+# The camless service as a systemd user service: it runs as the user, at login,
+# with the devices through camless's udev rules. linux/install.sh puts it in
+# ~/.config/systemd/user and fills in where the programs are.
+[Unit]
+Description=camless: pump, fan, lighting and LCD control for NZXT devices
+Documentation=https://github.com/kleju13/camless
+# A service that keeps failing gives up after five tries in a minute.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# The default config, ~/.config/camless/camless.toml.
+ExecStart="@BIN@/camless" run
+# On SIGTERM it sets the fans to their safe speed and the LCD back to its own screen.
+TimeoutStopSec=15
+# Stopped from the app it exits with 0, and stays stopped.
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

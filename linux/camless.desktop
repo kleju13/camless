@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=camless
+GenericName=Cooling and lighting
+Comment=Pump, fan, lighting and LCD control for NZXT devices
+Exec="@BIN@/camless-gui"
+Icon=camless
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+Keywords=NZXT;Kraken;cooler;fan;pump;RGB;LCD;
+StartupWMClass=camless

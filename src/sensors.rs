@@ -1,19 +1,23 @@
-//! Host sensors without CAM: GPU through NVML, CPU temperature and power through the
-//! PawnIO driver that LibreHardwareMonitor and FanControl already install, CPU load
-//! and memory through plain Win32 calls.
+//! Host sensors without CAM: GPU through NVML, and on Linux AMD GPUs through amdgpu;
+//! CPU temperature and power through PawnIO on Windows, the one LibreHardwareMonitor
+//! and FanControl already install, and through hwmon and RAPL on Linux; CPU load and
+//! memory from the system. [`os`] holds what differs.
 
 use anyhow::{bail, Context, Result};
 use camless_core::status::{Sensor, Unit};
 use libloading::Library;
 use serde::Serialize;
 use std::ffi::c_void;
-use std::time::Instant;
-use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
-use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ};
-use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-use windows_sys::Win32::System::Threading::{
-    CreateMutexW, GetSystemTimes, ReleaseMutex, WaitForSingleObject,
-};
+
+#[cfg(target_os = "linux")]
+#[path = "sensors/linux.rs"]
+mod os;
+#[cfg(windows)]
+#[path = "sensors/windows.rs"]
+mod os;
+#[cfg(windows)]
+pub use os::{reg_dword, reg_string};
+pub use os::{cpu_name, NO_CPU_TEMP};
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Readings {
@@ -50,30 +54,72 @@ impl Readings {
     }
 }
 
+/// The GPU the `gpu.*` sensors read.
+enum Gpu {
+    Nvidia(Nvml),
+    #[cfg(target_os = "linux")]
+    Amd(os::AmdGpu),
+}
+
+impl Gpu {
+    fn open() -> Result<Gpu> {
+        #[cfg(target_os = "linux")]
+        if let Err(e) = Nvml::open() {
+            return os::AmdGpu::open().map(Gpu::Amd).map_err(|amd| anyhow::anyhow!("{e:#}; {amd:#}"));
+        }
+        Nvml::open().map(Gpu::Nvidia)
+    }
+
+    fn name(&self) -> Option<String> {
+        match self {
+            Gpu::Nvidia(n) => n.name().ok(),
+            #[cfg(target_os = "linux")]
+            Gpu::Amd(a) => Some(a.name.clone()),
+        }
+    }
+
+    fn read(&self, r: &mut Readings) {
+        match self {
+            Gpu::Nvidia(n) => {
+                r.gpu_temp_c = n.temperature().ok();
+                r.gpu_load_pct = n.utilization().ok();
+                r.gpu_power_w = n.power_w().ok();
+            }
+            #[cfg(target_os = "linux")]
+            Gpu::Amd(a) => {
+                r.gpu_temp_c = a.temperature();
+                r.gpu_load_pct = a.utilization();
+                r.gpu_power_w = a.power_w();
+            }
+        }
+    }
+}
+
 pub struct Sensors {
     pub cpu_name: String,
     pub gpu_name: Option<String>,
     /// Why CPU temperature and power are off, when they are.
     pub cpu_error: Option<String>,
-    nvml: Option<Nvml>,
-    cpu: Option<AmdCpu>,
+    gpu: Option<Gpu>,
+    cpu: Option<os::Cpu>,
     times: Option<(u64, u64)>,
 }
 
 impl Sensors {
     /// `pawnio_module` is the signed `AMDFamily17.bin`, or why it could not be read;
-    /// without it, or without admin rights, CPU temperature and power are absent.
+    /// without it, or without admin rights, CPU temperature and power are absent on
+    /// Windows. Linux reads hwmon, which needs neither.
     pub fn open(pawnio_module: std::result::Result<Vec<u8>, String>) -> Sensors {
-        let nvml = Nvml::open().map_err(|e| eprintln!("gpu sensors off: {e:#}")).ok();
-        let (cpu, cpu_error) = match pawnio_module.and_then(|m| AmdCpu::open(&m).map_err(|e| format!("{e:#}"))) {
+        let gpu = Gpu::open().map_err(|e| eprintln!("gpu sensors off: {e:#}")).ok();
+        let (cpu, cpu_error) = match os::cpu(pawnio_module) {
             Ok(cpu) => (Some(cpu), None),
             Err(e) => {
                 eprintln!("cpu temperature off: {e}");
                 (None, Some(e))
             }
         };
-        let gpu_name = nvml.as_ref().and_then(|n| n.name().ok());
-        Sensors { cpu_name: cpu_name().unwrap_or_else(|| "CPU".into()), gpu_name, cpu_error, nvml, cpu, times: None }
+        let gpu_name = gpu.as_ref().and_then(Gpu::name);
+        Sensors { cpu_name: os::cpu_name().unwrap_or_else(|| "CPU".into()), gpu_name, cpu_error, gpu, cpu, times: None }
     }
 
     pub fn has_cpu_temp(&self) -> bool {
@@ -82,74 +128,30 @@ impl Sensors {
 
     pub fn read(&mut self) -> Readings {
         let mut r = Readings::default();
-        if let Some(n) = &self.nvml {
-            r.gpu_temp_c = n.temperature().ok();
-            r.gpu_load_pct = n.utilization().ok();
-            r.gpu_power_w = n.power_w().ok();
+        if let Some(g) = &self.gpu {
+            g.read(&mut r);
         }
         if let Some(c) = &mut self.cpu {
             r.cpu_temp_c = c.temperature().ok();
             r.cpu_power_w = c.package_power_w();
         }
         r.cpu_load_pct = self.cpu_load();
-        let mut m: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
-        m.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
-        if unsafe { GlobalMemoryStatusEx(&mut m) } != 0 {
+        if let Some((total, used, pct)) = os::memory() {
             let gb = |b: u64| b as f32 / (1u64 << 30) as f32;
-            r.ram_total_gb = Some(gb(m.ullTotalPhys));
-            r.ram_used_gb = Some(gb(m.ullTotalPhys - m.ullAvailPhys));
-            r.ram_used_pct = Some(m.dwMemoryLoad as f32);
+            r.ram_total_gb = Some(gb(total));
+            r.ram_used_gb = Some(gb(used));
+            r.ram_used_pct = Some(pct);
         }
         r
     }
 
     fn cpu_load(&mut self) -> Option<f32> {
-        let (mut idle, mut kernel, mut user) = (zero_ft(), zero_ft(), zero_ft());
-        if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
-            return None;
-        }
-        let (idle, busy_and_idle) = (ft(idle), ft(kernel) + ft(user));
+        let (idle, busy_and_idle) = os::cpu_times()?;
         let prev = self.times.replace((idle, busy_and_idle));
         let (pi, pt) = prev?;
         let total = busy_and_idle.checked_sub(pt)?;
-        (total > 0).then(|| 100.0 * (1.0 - (idle - pi) as f32 / total as f32))
+        (total > 0).then(|| 100.0 * (1.0 - idle.saturating_sub(pi) as f32 / total as f32))
     }
-}
-
-fn cpu_name() -> Option<String> {
-    reg_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString")
-}
-
-/// A string value under HKEY_LOCAL_MACHINE.
-pub fn reg_string(key: &str, value: &str) -> Option<String> {
-    let mut buf = [0u16; 256];
-    let mut size = std::mem::size_of_val(&buf) as u32;
-    if reg_value(key, value, RRF_RT_REG_SZ, buf.as_mut_ptr().cast(), &mut size) != 0 {
-        return None;
-    }
-    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    Some(String::from_utf16_lossy(&buf[..len]).trim().to_string())
-}
-
-/// A DWORD value under HKEY_LOCAL_MACHINE.
-pub fn reg_dword(key: &str, value: &str) -> Option<u32> {
-    let mut v = 0u32;
-    let mut size = std::mem::size_of::<u32>() as u32;
-    (reg_value(key, value, RRF_RT_REG_DWORD, (&mut v as *mut u32).cast(), &mut size) == 0).then_some(v)
-}
-
-fn reg_value(key: &str, value: &str, kind: u32, out: *mut c_void, size: &mut u32) -> u32 {
-    let key: Vec<u16> = key.encode_utf16().chain([0]).collect();
-    let value: Vec<u16> = value.encode_utf16().chain([0]).collect();
-    unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), value.as_ptr(), kind, std::ptr::null_mut(), out, size) }
-}
-
-fn zero_ft() -> FILETIME {
-    FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }
-}
-
-fn ft(t: FILETIME) -> u64 {
-    (t.dwHighDateTime as u64) << 32 | t.dwLowDateTime as u64
 }
 
 type NvmlDevice = *mut c_void;
@@ -176,7 +178,7 @@ fn nvml_ok(code: i32, what: &str) -> Result<()> {
 impl Nvml {
     fn open() -> Result<Nvml> {
         unsafe {
-            let lib = Library::new("nvml.dll").context("nvml.dll not found")?;
+            let lib = Library::new(os::NVML).with_context(|| format!("{} not found", os::NVML))?;
             let init: unsafe extern "C" fn() -> i32 = *lib.get(b"nvmlInit_v2\0")?;
             nvml_ok(init(), "nvmlInit")?;
             let by_index: unsafe extern "C" fn(u32, *mut NvmlDevice) -> i32 =
@@ -217,106 +219,5 @@ impl Nvml {
         let mut mw = 0;
         nvml_ok(unsafe { (self.get_power)(self.device, &mut mw) }, "power")?;
         Ok(mw as f32 / 1000.0)
-    }
-}
-
-const SMN_THM_TCON_CUR_TMP: u64 = 0x0005_9800;
-const MSR_PWR_UNIT: u64 = 0xc001_0299;
-const MSR_PKG_ENERGY_STAT: u64 = 0xc001_029b;
-
-type PawnExecute = unsafe extern "system" fn(
-    HANDLE,
-    *const u8,
-    *const u64,
-    usize,
-    *mut u64,
-    usize,
-    *mut usize,
-) -> i32;
-
-/// AMD Zen temperature (SMN) and package energy (RAPL MSRs) through PawnIO.
-struct AmdCpu {
-    _lib: Library,
-    handle: HANDLE,
-    execute: PawnExecute,
-    pci_mutex: HANDLE,
-    energy_unit_j: Option<f64>,
-    last_energy: Option<(u32, Instant)>,
-}
-
-unsafe impl Send for AmdCpu {}
-
-impl AmdCpu {
-    fn open(module: &[u8]) -> Result<AmdCpu> {
-        unsafe {
-            let lib = Library::new(r"C:\Program Files\PawnIO\PawnIOLib.dll")
-                .context("PawnIO is not installed")?;
-            let open: unsafe extern "system" fn(*mut HANDLE) -> i32 = *lib.get(b"pawnio_open\0")?;
-            let load: unsafe extern "system" fn(HANDLE, *const u8, usize) -> i32 =
-                *lib.get(b"pawnio_load\0")?;
-            let execute: PawnExecute = *lib.get(b"pawnio_execute\0")?;
-            let mut handle: HANDLE = std::ptr::null_mut();
-            let hr = open(&mut handle);
-            if hr < 0 {
-                bail!("pawnio_open failed ({hr:#x}); camless needs administrator rights for this");
-            }
-            let hr = load(handle, module.as_ptr(), module.len());
-            if hr < 0 {
-                bail!("pawnio_load of AMDFamily17 failed ({hr:#x})");
-            }
-            // The PCI index/data pair is shared with HWiNFO, LHM and others; they all
-            // serialize on this named mutex.
-            let name: Vec<u16> = "Global\\Access_PCI\0".encode_utf16().collect();
-            let pci_mutex = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
-            let mut cpu = AmdCpu {
-                _lib: lib,
-                handle,
-                execute,
-                pci_mutex,
-                energy_unit_j: None,
-                last_energy: None,
-            };
-            cpu.energy_unit_j = cpu
-                .call("ioctl_read_msr", MSR_PWR_UNIT)
-                .ok()
-                .map(|v| 1.0 / (1u64 << ((v >> 8) & 0x1f)) as f64);
-            cpu.temperature()?;
-            Ok(cpu)
-        }
-    }
-
-    fn call(&self, function: &str, arg: u64) -> Result<u64> {
-        let name = format!("{function}\0");
-        let mut out = 0u64;
-        let mut written = 0usize;
-        let hr = unsafe {
-            (self.execute)(self.handle, name.as_ptr(), &arg, 1, &mut out, 1, &mut written)
-        };
-        if hr < 0 {
-            bail!("{function}({arg:#x}) failed ({hr:#x})");
-        }
-        Ok(out)
-    }
-
-    fn temperature(&self) -> Result<f32> {
-        let locked = !self.pci_mutex.is_null()
-            && matches!(unsafe { WaitForSingleObject(self.pci_mutex, 20) }, WAIT_OBJECT_0 | WAIT_ABANDONED);
-        let raw = self.call("ioctl_read_smn", SMN_THM_TCON_CUR_TMP);
-        if locked {
-            unsafe { ReleaseMutex(self.pci_mutex) };
-        }
-        let raw = raw? as u32;
-        // Bits 31:21 are the temperature in 1/8 °C; bit 19 selects the -49 °C range.
-        let offset = if raw & 0x8_0000 != 0 { -49.0 } else { 0.0 };
-        Ok((raw >> 21) as f32 * 0.125 + offset)
-    }
-
-    fn package_power_w(&mut self) -> Option<f32> {
-        let unit = self.energy_unit_j?;
-        let now = Instant::now();
-        let energy = self.call("ioctl_read_msr", MSR_PKG_ENERGY_STAT).ok()? as u32;
-        let prev = self.last_energy.replace((energy, now))?;
-        let dt = now.duration_since(prev.1).as_secs_f64();
-        (dt > 0.05).then(|| (energy.wrapping_sub(prev.0) as f64 * unit / dt) as f32)
     }
 }

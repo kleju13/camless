@@ -6,10 +6,11 @@
 //!
 //! Read only: standard USB descriptor reads, no commands sent to the devices. Serial
 //! numbers, device paths and the user's and the PC's names stay out; `scrub` takes
-//! them out of error messages too.
+//! them out of error messages too, and user folders, `C:\Users\…` and `/home/…`.
 
 use crate::api;
 use crate::drivers::{Model, MODELS, NZXT_VID};
+#[cfg(windows)]
 use crate::sensors::{reg_dword, reg_string};
 use anyhow::Result;
 use camless_core::status::Status;
@@ -33,7 +34,8 @@ pub struct Report {
 
 /// Everything the report says, gathered first so that rendering it can be tested.
 struct Facts {
-    windows: Option<String>,
+    /// The system and its version.
+    os: Option<String>,
     cpu: Option<String>,
     /// The running service's status, or why there is none.
     service: std::result::Result<Status, String>,
@@ -91,20 +93,28 @@ pub fn collect(api_addr: Option<&str>, other_brands: bool) -> Report {
         }
         Err(e) => (Vec::new(), Err(e.to_string())),
     };
-    for var in ["USERPROFILE", "USERNAME", "COMPUTERNAME", "USERDOMAIN"] {
+    for var in SECRET_VARS {
         secrets.extend(std::env::var(var).ok());
     }
+    #[cfg(target_os = "linux")]
+    secrets.extend(std::fs::read_to_string("/proc/sys/kernel/hostname").ok().map(|h| h.trim().to_string()));
     let service = match api_addr {
         Some(addr) => fetch_status(addr),
         None => Err("Local API is off in the config, so the report cannot ask the service".into()),
     };
-    let cpu = reg_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString");
-    let mut facts = Facts { windows: windows_version(), cpu, service, found, usb, hid, secrets };
+    let mut facts = Facts { os: os_version(), cpu: crate::sensors::cpu_name(), service, found, usb, hid, secrets };
     scrub_facts(&mut facts);
     Report { title: title(&facts), text: render(&facts) }
 }
 
-fn windows_version() -> Option<String> {
+/// The user's and the PC's names, and the user folder, which has the user's name.
+#[cfg(windows)]
+const SECRET_VARS: [&str; 4] = ["USERPROFILE", "USERNAME", "COMPUTERNAME", "USERDOMAIN"];
+#[cfg(not(windows))]
+const SECRET_VARS: [&str; 4] = ["HOME", "USER", "LOGNAME", "HOSTNAME"];
+
+#[cfg(windows)]
+fn os_version() -> Option<String> {
     const KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
     let build = reg_string(KEY, "CurrentBuild")?;
     // Windows 11 still calls itself Windows 10 in ProductName.
@@ -112,6 +122,26 @@ fn windows_version() -> Option<String> {
     let release = reg_string(KEY, "DisplayVersion").map(|v| format!(" {v}")).unwrap_or_default();
     let ubr = reg_dword(KEY, "UBR").map(|u| format!(".{u}")).unwrap_or_default();
     Some(format!("{name}{release}, build {build}{ubr}"))
+}
+
+/// The distribution's name and the kernel, as in "Fedora Linux 43, kernel 6.17.1".
+#[cfg(target_os = "linux")]
+fn os_version() -> Option<String> {
+    let release = std::fs::read_to_string("/etc/os-release").or_else(|_| std::fs::read_to_string("/usr/lib/os-release")).ok();
+    let name = release.as_deref().and_then(pretty_name).unwrap_or_else(|| "Linux".into());
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok();
+    Some(match kernel {
+        Some(k) => format!("{name}, kernel {}", k.trim()),
+        None => name,
+    })
+}
+
+/// `PRETTY_NAME` from an os-release file.
+#[cfg(any(target_os = "linux", test))]
+fn pretty_name(release: &str) -> Option<String> {
+    let value = release.lines().find_map(|l| l.strip_prefix("PRETTY_NAME="))?.trim();
+    let value = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')).unwrap_or(value);
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// `GET /v1/status` from the service, the way the app asks it.
@@ -128,6 +158,7 @@ fn usb_devices(secrets: &mut Vec<String>, other_brands: bool) -> std::result::Re
     for d in list {
         secrets.extend(d.serial_number().map(String::from));
         // Instance ids end in the serial number or in an id Windows made up for the port.
+        #[cfg(windows)]
         for id in [d.instance_id(), d.parent_instance_id()] {
             let id = id.to_string_lossy().into_owned();
             secrets.extend(id.rsplit('\\').next().map(String::from));
@@ -151,8 +182,20 @@ fn usb_devices(secrets: &mut Vec<String>, other_brands: bool) -> std::result::Re
 }
 
 /// The configuration descriptor, which Windows reads through the hub without
-/// claiming the device.
+/// claiming the device. Linux keeps the descriptors in sysfs, which any user can
+/// read, so a device without camless's udev rules is in the report too.
 fn interfaces(d: &nusb::DeviceInfo) -> std::result::Result<Vec<Interface>, String> {
+    #[cfg(target_os = "linux")]
+    return std::fs::read(d.sysfs_path().join("descriptors"))
+        .map_err(|e| e.to_string())
+        // The device descriptor comes first, 18 bytes.
+        .and_then(|raw| config_interfaces(raw.get(18..).unwrap_or_default()));
+    #[cfg(windows)]
+    return opened_interfaces(d);
+}
+
+#[cfg(windows)]
+fn opened_interfaces(d: &nusb::DeviceInfo) -> std::result::Result<Vec<Interface>, String> {
     let dev = d.open().map_err(|e| e.to_string())?;
     let config = dev.active_configuration().ok().or_else(|| dev.configurations().next()).ok_or("no configuration descriptor")?;
     Ok(config
@@ -169,8 +212,52 @@ fn interfaces(d: &nusb::DeviceInfo) -> std::result::Result<Vec<Interface>, Strin
         .collect())
 }
 
+/// The interfaces and endpoints in a configuration descriptor, the first one if
+/// there are more, as the USB spec lays them out.
+#[cfg(any(target_os = "linux", test))]
+fn config_interfaces(raw: &[u8]) -> std::result::Result<Vec<Interface>, String> {
+    const CONFIG: u8 = 2;
+    const INTERFACE: u8 = 4;
+    const ENDPOINT: u8 = 5;
+    if raw.get(1) != Some(&CONFIG) {
+        return Err("no configuration descriptor".into());
+    }
+    let mut out: Vec<Interface> = Vec::new();
+    let mut at = 0;
+    while let [len, kind, ..] = raw[at..] {
+        let d = raw.get(at..at + usize::from(len)).filter(|_| len >= 2).ok_or("a cut descriptor")?;
+        match kind {
+            CONFIG if at > 0 => break,
+            INTERFACE if d.len() >= 9 => out.push(Interface { number: d[2], alt: d[3], class: [d[5], d[6], d[7]], endpoints: Vec::new() }),
+            ENDPOINT if d.len() >= 7 => {
+                let kind = match d[3] & 3 {
+                    0 => EndpointType::Control,
+                    1 => EndpointType::Isochronous,
+                    2 => EndpointType::Bulk,
+                    _ => EndpointType::Interrupt,
+                };
+                let max_packet = usize::from(u16::from_le_bytes([d[4], d[5]]) & 0x7ff);
+                if let Some(i) = out.last_mut() {
+                    i.endpoints.push(Endpoint { address: d[2], kind, max_packet });
+                }
+            }
+            _ => {}
+        }
+        at += d.len();
+    }
+    Ok(out)
+}
+
+/// The report descriptor Linux keeps for a hidraw node, which any user can read.
+#[cfg(target_os = "linux")]
+fn sysfs_report_descriptor(path: &std::ffi::CStr) -> Option<Vec<u8>> {
+    let node = std::path::Path::new(path.to_str().ok()?).file_name()?.to_owned();
+    std::fs::read(std::path::Path::new("/sys/class/hidraw").join(node).join("device").join("report_descriptor")).ok()
+}
+
 /// Opening a HID device sends it nothing; Windows rebuilds the report descriptor
-/// from what it parsed when the device was plugged in.
+/// from what it parsed when the device was plugged in. Linux has it in sysfs, as
+/// the device sent it.
 fn hid_collections(api: &HidApi, secrets: &mut Vec<String>, other_brands: bool) -> Vec<Hid> {
     let mut list: Vec<_> = api.device_list().filter(|d| listed(d.vendor_id(), d.product_id(), other_brands)).collect();
     list.sort_by_key(|d| d.path().to_owned());
@@ -179,6 +266,19 @@ fn hid_collections(api: &HidApi, secrets: &mut Vec<String>, other_brands: bool) 
         secrets.extend(d.serial_number().map(String::from));
         let key = (d.vendor_id(), d.product_id(), d.interface_number(), d.usage_page(), d.usage());
         if out.iter().any(|h| (h.vid, h.pid, h.interface, h.usage_page, h.usage) == key) {
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(descriptor) = sysfs_report_descriptor(d.path()) {
+            out.push(Hid {
+                vid: d.vendor_id(),
+                pid: d.product_id(),
+                product: d.product_string().map(String::from),
+                interface: d.interface_number(),
+                usage_page: d.usage_page(),
+                usage: d.usage(),
+                descriptor: Ok(descriptor),
+            });
             continue;
         }
         let descriptor = d
@@ -246,7 +346,7 @@ fn title(f: &Facts) -> String {
 
 fn render(f: &Facts) -> String {
     let mut s = String::new();
-    let head: Vec<String> = [Some(format!("camless {}", env!("CARGO_PKG_VERSION"))), f.windows.clone(), f.cpu.clone()].into_iter().flatten().collect();
+    let head: Vec<String> = [Some(format!("camless {}", env!("CARGO_PKG_VERSION"))), f.os.clone(), f.cpu.clone()].into_iter().flatten().collect();
     let _ = writeln!(s, "{}", head.join(" · "));
     match &f.service {
         Ok(st) => {
@@ -536,13 +636,13 @@ fn report_lines(desc: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// Runs `scrub` over every string that came from Windows, a device or the service.
+/// Runs `scrub` over every string that came from the system, a device or the service.
 /// Descriptors and numbers are formatted here and stay as they are, so a short serial
 /// number cannot garble them.
 fn scrub_facts(f: &mut Facts) {
     let secrets = std::mem::take(&mut f.secrets);
     let clean = |t: &mut String| *t = scrub(t, &secrets);
-    f.windows.iter_mut().chain(f.cpu.iter_mut()).for_each(clean);
+    f.os.iter_mut().chain(f.cpu.iter_mut()).for_each(clean);
     match &mut f.service {
         Ok(st) => {
             clean(&mut st.version);
@@ -599,7 +699,9 @@ fn scrub(text: &str, secrets: &[String]) -> String {
         out = mask(&out, marker, false, |c| c.is_whitespace() || "\"'(),:".contains(c), "<device path>");
     }
     // Windows user names cannot hold these, but can hold spaces.
-    mask(&out, r"\users\", true, |c| "\\/\"':;|,<>[]=+*?\n".contains(c), "<user>")
+    let out = mask(&out, r"\users\", true, |c| "\\/\"':;|,<>[]=+*?\n".contains(c), "<user>");
+    // Linux user names hold none of these.
+    mask(&out, "/home/", true, |c| c.is_whitespace() || "/\"':;,()".contains(c), "<user>")
 }
 
 /// `text` with every `needle` replaced, ignoring ASCII case.
@@ -681,6 +783,41 @@ mod tests {
     }
 
     #[test]
+    fn interfaces_come_from_the_configuration_descriptor() {
+        #[rustfmt::skip]
+        let raw = [
+            // Configuration: 2 interfaces.
+            9, 2, 48, 0, 2, 1, 0, 0xc0, 0x32,
+            // Interface 0, vendor class, one bulk endpoint of 512 bytes.
+            9, 4, 0, 0, 1, 0xff, 0, 0, 0,
+            7, 5, 0x02, 2, 0x00, 0x02, 0,
+            // Interface 1, HID with its class descriptor between, two interrupt endpoints.
+            9, 4, 1, 0, 2, 3, 0, 0, 0,
+            9, 0x21, 0x11, 0x01, 0, 1, 0x22, 0x30, 0,
+            7, 5, 0x81, 3, 64, 0, 1,
+            7, 5, 0x01, 3, 64, 0, 1,
+            // A second configuration, which is not the active one.
+            9, 2, 18, 0, 1, 2, 0, 0xc0, 0x32,
+            9, 4, 7, 0, 0, 0xff, 0, 0, 0,
+        ];
+        let ints = config_interfaces(&raw).unwrap();
+        assert_eq!(ints.iter().map(|i| (i.number, i.class[0], i.endpoints.len())).collect::<Vec<_>>(), [(0, 0xff, 1), (1, 3, 2)]);
+        let e = &ints[0].endpoints[0];
+        assert_eq!((e.address, e.kind, e.max_packet), (0x02, EndpointType::Bulk, 512));
+        assert_eq!(ints[1].endpoints[0].kind, EndpointType::Interrupt);
+        assert!(config_interfaces(&raw[..20]).is_err(), "a cut interface descriptor");
+        assert!(config_interfaces(&raw[9..]).is_err(), "no configuration first");
+    }
+
+    #[test]
+    fn linux_is_named_by_its_os_release() {
+        let release = "NAME=\"Fedora Linux\"\nVERSION_ID=43\nPRETTY_NAME=\"Fedora Linux 43 (Workstation Edition)\"\n";
+        assert_eq!(pretty_name(release).as_deref(), Some("Fedora Linux 43 (Workstation Edition)"));
+        assert_eq!(pretty_name("PRETTY_NAME=Arch Linux\n").as_deref(), Some("Arch Linux"));
+        assert_eq!(pretty_name("NAME=x\n"), None);
+    }
+
+    #[test]
     fn scrub_takes_out_serials_paths_and_names() {
         let secrets = vec![
             "A1B2C3D4E5F6A7B8C9D0E1F2".to_string(),
@@ -693,6 +830,7 @@ mod tests {
 serial a1b2c3d4e5f6a7b8c9d0e1f2 on desktop-k7q2
 reading C:\Users\Jan Kowalski\AppData\Roaming\camless\camless.toml
 reading D:\users\Other Name\x.bin: missing
+reading /home/someone/.config/camless/camless.toml: missing
 about the table";
         let out = scrub(text, &secrets);
         assert_eq!(
@@ -701,6 +839,7 @@ about the table";
 serial <hidden> on <hidden>
 reading <hidden>\AppData\Roaming\camless\camless.toml
 reading D:\users\<user>\x.bin: missing
+reading /home/<user>/.config/camless/camless.toml: missing
 about the table"
         );
     }
@@ -744,7 +883,7 @@ about the table"
             endpoints: eps.into_iter().map(|(address, kind, max_packet)| Endpoint { address, kind, max_packet }).collect(),
         };
         Facts {
-            windows: Some("Windows 11 25H2, build 26200.9711".into()),
+            os: Some("Windows 11 25H2, build 26200.9711".into()),
             cpu: Some("Example CPU".into()),
             service: Ok(status),
             found: Vec::new(),
