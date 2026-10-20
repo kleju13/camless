@@ -21,6 +21,8 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="2433", ATTR{idProduct}=="b200", TAG+="uaccess
 
 # Other brands' hubs, which camless drives only with [devices] other_brands on.
 
-# Lian Li Uni Hubs.
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0cf2", ATTRS{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="0cf2", ATTR{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106", TAG+="uaccess"
+# Lian Li: Uni Hubs and the Strimer Plus V2's controller; the Uni Fan TL controller.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0cf2", ATTRS{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106|a200", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0cf2", ATTR{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106|a200", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="7372", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0416", ATTR{idProduct}=="7372", TAG+="uaccess"

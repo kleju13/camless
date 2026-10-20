@@ -20,7 +20,9 @@ pub mod kraken2;
 pub mod kraken3;
 pub mod kraken_elite_v2;
 pub mod lianli;
+pub mod lianli_tl;
 pub mod serial;
+pub mod strimer;
 pub mod usb;
 pub mod vendor;
 #[cfg(windows)]
@@ -56,6 +58,8 @@ pub const MODELS: &[Model] = &[
     lianli::UNI_HUB_AL_V2,
     lianli::UNI_HUB_SL_V2_A105,
     lianli::UNI_HUB_SL_REDRAGON,
+    lianli_tl::MODEL,
+    strimer::MODEL,
 ];
 
 pub type Open = fn(&HidApi, &Found) -> Result<Box<dyn Driver>>;
