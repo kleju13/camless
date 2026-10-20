@@ -527,18 +527,40 @@
     return out;
   }
   const lightCfg = (id) => ((st.config && st.config.light) || []).find((l) => l.channel === id) || null;
-  // What a channel shows: its entry, or off when camless leaves it alone.
-  const lightOf = (id) => lightCfg(id) || { channel: id, mode: 'off', colors: [], unmanaged: true };
+  // What a channel shows: its entry, or off when camless leaves it alone. An entry
+  // without a mode only names the channel.
+  const lightOf = (id) => { const l = lightCfg(id); return l && l.mode ? l : { channel: id, mode: 'off', colors: [], unmanaged: true }; };
+  const lightName = (id) => { const l = lightCfg(id); return (l && l.name) || ''; };
+  // The entry for a channel, made if it has none yet.
+  function ensureLight(c, id) {
+    c.light = c.light || [];
+    let l = c.light.find((x) => x.channel === id);
+    if (!l) { l = { channel: id }; c.light.push(l); c.light.sort((a, b) => (a.channel < b.channel ? -1 : 1)); }
+    return l;
+  }
   function editLight(id, fn, o) {
     edit((c) => {
-      c.light = c.light || [];
-      let l = c.light.find((x) => x.channel === id);
-      if (!l) { l = { channel: id, mode: 'off', colors: [] }; c.light.push(l); c.light.sort((a, b) => (a.channel < b.channel ? -1 : 1)); }
-      l.mode = effectKey(l.mode) === l.mode ? l.mode : effectKey(l.mode);
+      const l = ensureLight(c, id);
+      l.colors = l.colors || [];
+      l.mode = effectKey(l.mode);
       fn(l);
       if (!l.backward) delete l.backward;
       if (!l.speed || l.speed === 'normal') delete l.speed;
     }, Object.assign({ what: 'lighting' }, o));
+  }
+  // camless stops setting the channel; a name it was given stays.
+  function leaveLight(id) {
+    edit((c) => {
+      c.light = (c.light || []).flatMap((l) => (l.channel !== id ? [l] : l.name ? [{ channel: id, name: l.name }] : []));
+    }, { what: 'lighting' });
+  }
+  function setLightName(id, name) {
+    if (name === lightName(id)) return;
+    edit((c) => {
+      const l = ensureLight(c, id);
+      if (name) l.name = name; else delete l.name;
+      if (!l.name && !l.mode) c.light = c.light.filter((x) => x !== l);
+    }, { what: 'lighting', now: true });
   }
 
   function hexToRgb(h) {
@@ -708,7 +730,7 @@
     devices, device, devOf,
     curves, curve, fans, fan, fanCfg, fanName, fanValue, curveValue, users, defaultSensor, preset,
     ensureFan, tidyFans, setPreset, setSource, setCurveSensor, fork, useCurve, renameCurve, newCurve, deleteCurve, uniqueCurveName, carryMemo,
-    EFFECTS, SPEEDS, effectKey, lights, lightCfg, lightOf, editLight, renderLight, describeLight,
+    EFFECTS, SPEEDS, effectKey, lights, lightCfg, lightOf, lightName, editLight, leaveLight, setLightName, renderLight, describeLight,
     color: { hexToRgb, mix, scale, hsl, css },
     screens, lcdOf, editLcd,
     cfg,

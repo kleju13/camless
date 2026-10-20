@@ -232,7 +232,12 @@ fn check(path: &Path) -> Result<()> {
         }
     }
     for l in &cfg.lights {
-        println!("light {}: {:?}", l.channel, l.to_lighting()?);
+        let name = if l.name.is_empty() { String::new() } else { format!(" ({})", l.name) };
+        if l.managed() {
+            println!("light {}{name}: {:?}", l.channel, l.to_lighting()?);
+        } else {
+            println!("light {}{name}: left as it is", l.channel);
+        }
     }
     for l in &cfg.lcds {
         println!("lcd {}: {:?} at {} %, {}°", l.device, l.mode, l.brightness, l.orientation);

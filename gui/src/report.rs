@@ -161,7 +161,7 @@ fn encode(s: &str) -> String {
 
 /// ShellExecuteExW hands the browser the whole URL. `explorer.exe <url>`, which
 /// opens the release notes, drops URLs with a query and cuts others at 260 characters.
-fn open_url(url: &str) -> Result<()> {
+pub fn open_url(url: &str) -> Result<()> {
     use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW};
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();

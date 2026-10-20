@@ -79,8 +79,10 @@ step_down = 5                 # % per second at most
 
 [[light]]
 channel = "kraken-elite-v2/ring"
+name = "Top"                  # shown in camless only
 # mode: off | fixed | fading | spectrum-wave | covering-marquee | pulse | breathing
 #       candle | rainbow-flow | super-rainbow | rainbow-pulse | tai-chi | water-cooler
+# Without a mode, camless leaves the channel as it is and the entry only names it.
 mode = "tai-chi"
 colors = ["3232de", "ffffff"] # hex RGB
 speed = "normal"              # slowest | slower | normal | faster | fastest

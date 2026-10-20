@@ -138,6 +138,7 @@ impl Backend {
             ("POST", "report") => report::start(&self.path()).map(|_| json!(report::state())).map_err(Refused::from),
             ("GET", "report") => Ok(json!(report::state())),
             ("POST", "report/issue") => self.report_issue(),
+            ("POST", "open-link") => self.open_link(body),
             ("POST", "window/closed") => {
                 if let Some(f) = &self.on_closed {
                     f();
@@ -421,6 +422,18 @@ impl Backend {
         Ok(json!({ "filled": report::open_issue()? }))
     }
 
+    /// Opens a page the window links to. The window names it, so it cannot send the
+    /// browser anywhere else.
+    fn open_link(&self, body: &[u8]) -> Answer {
+        let Name { name } = parse(body)?;
+        let url = link(&name).ok_or_else(|| Refused(400, format!("there is no link {name:?}")))?;
+        if self.sandbox {
+            bail_refused("the sandbox does not open a browser")?;
+        }
+        report::open_url(url)?;
+        Ok(json!({}))
+    }
+
     fn open_folder(&self) -> Answer {
         if self.sandbox {
             bail_refused("the sandbox does not open Explorer")?;
@@ -435,6 +448,14 @@ impl Backend {
 #[derive(Deserialize)]
 struct Name {
     name: String,
+}
+
+/// The pages the window opens in the browser, by the name it asks for.
+fn link(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "krakendial" => "https://github.com/kleju13/krakendial",
+        _ => return None,
+    })
 }
 
 fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> std::result::Result<T, Refused> {
@@ -501,7 +522,7 @@ fn profile_name_from(file: &str) -> String {
 /// What a profile sets up, for the list of profiles.
 fn summary(s: &Setup) -> String {
     let managed = s.fans.iter().filter(|f| f.curve.is_some()).count();
-    let lights = s.lights.iter().filter(|l| l.mode != "off").count();
+    let lights = s.lights.iter().filter(|l| l.managed() && l.mode != "off").count();
     let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let mut parts = vec![plural(managed, "fan", "fans"), plural(lights, "light", "lights")];
     for l in &s.lcds {
@@ -569,6 +590,25 @@ mod tests {
         let saved = Config::load(&cfg).unwrap();
         let Some(config::CurveSpec::Graph(g)) = saved.curve("GPU") else { panic!("GPU curve missing") };
         assert_eq!(g.points, vec![(30.0, 25), (50.0, 30), (65.0, 45), (75.0, 70), (85.0, 100)]);
+    }
+
+    #[test]
+    fn a_light_keeps_its_name_without_a_mode() {
+        let (b, cfg) = fixture("camless-gui-light-name");
+        let (_, state) = call(&b, "GET", "/api/state", Value::Null);
+        let mut config = state["config"].clone();
+        config["light"] = json!([{ "channel": "demo-hub/led2", "name": "Front" }]);
+        assert_eq!(call(&b, "PUT", "/api/config", config).0, 200);
+        let saved = Config::load(&cfg).unwrap();
+        assert_eq!((saved.lights[0].name.as_str(), saved.lights[0].managed()), ("Front", false));
+        assert!(summary(&saved.setup()).contains("0 lights"), "a name alone sets no light");
+    }
+
+    #[test]
+    fn the_window_opens_only_its_own_links() {
+        let (b, _) = fixture("camless-gui-links");
+        assert_eq!(call(&b, "POST", "/api/open-link", json!({ "name": "https://example.com" })).0, 400);
+        assert_eq!(call(&b, "POST", "/api/open-link", json!({ "name": "krakendial" })).0, 409, "the sandbox opens no browser");
     }
 
     #[test]

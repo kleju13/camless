@@ -443,9 +443,11 @@ impl Daemon {
         let s = &mut self.slots[i];
         let id = s.found.id.clone();
         let Some(dev) = s.dev.as_mut() else { return };
-        for l in &self.cfg.lights {
+        for l in self.cfg.lights.iter().filter(|l| l.managed()) {
             let Some(light) = local(&s.found.id, &l.channel) else { continue };
-            if s.lights_sent.get(light) == Some(l) {
+            // A new name alone changes nothing on the device.
+            let sent = Light { name: String::new(), ..l.clone() };
+            if s.lights_sent.get(light) == Some(&sent) {
                 continue;
             }
             if !s.info.lights.iter().any(|x| x.id == light) {
@@ -454,7 +456,7 @@ impl Daemon {
             }
             match l.to_lighting().and_then(|lighting| dev.set_lighting(light, &lighting)) {
                 Ok(()) => {
-                    s.lights_sent.insert(light.to_string(), l.clone());
+                    s.lights_sent.insert(light.to_string(), sent);
                 }
                 Err(e) => notes.push(format!("light {}: {e:#}", l.channel)),
             }
