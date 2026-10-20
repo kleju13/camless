@@ -1,6 +1,6 @@
 ; Builds camless-setup.exe, which installs camless.exe and camless-gui.exe for the current user,
 ; without administrator rights. scripts\package.ps1 builds both exes and runs this with the version:
-;   ISCC /DAppVersion=0.2.0 installer\camless.iss
+;   ISCC /DAppVersion=0.5.0-beta.1 /DAppNumericVersion=0.5.0 installer\camless.iss
 ;
 ; Running it over an installed camless updates it in place: it closes the app, stops the service
 ; through its loopback API, replaces both exes and opens the app again, which starts the service.
@@ -8,6 +8,13 @@
 
 #ifndef AppVersion
   #error Pass the version: ISCC /DAppVersion=x.y.z camless.iss
+#endif
+; The file version takes numbers only; a beta's is its version without the suffix.
+#ifndef AppNumericVersion
+  #if Pos("-", AppVersion) > 0 || Pos("+", AppVersion) > 0
+    #error Pass the number part of a pre-release too: ISCC /DAppVersion=x.y.z-beta.n /DAppNumericVersion=x.y.z camless.iss
+  #endif
+  #define AppNumericVersion AppVersion
 #endif
 
 [Setup]
@@ -19,7 +26,7 @@ AppPublisher=kleju13
 AppPublisherURL=https://github.com/kleju13/camless
 AppSupportURL=https://github.com/kleju13/camless/issues
 AppUpdatesURL=https://github.com/kleju13/camless/releases
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#AppNumericVersion}
 DefaultDirName={localappdata}\Programs\camless
 DisableDirPage=yes
 DisableProgramGroupPage=yes

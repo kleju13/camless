@@ -126,6 +126,6 @@ The app asks GitHub for the latest release once each time it starts. *Update* do
 
 *Settings → About → Update channel* picks what the app offers:
 - **Stable**, the default, offers releases.
-- **Beta** offers betas too. A version that changes only the last number, such as 0.4.1, comes out first as a GitHub pre-release. It becomes a release once it has been tried.
+- **Beta** offers betas too: GitHub pre-releases such as 0.5.0-beta.1, then beta.2 and so on. Once they have been tried, the version itself comes out as the release, 0.5.0.
 
 Back on Stable, camless keeps the version it has until a newer release comes out. `install.ps1` always installs the latest release, never a beta. In `camless.toml` the channel is `updates = "beta"`.
