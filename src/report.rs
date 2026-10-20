@@ -265,7 +265,11 @@ fn render(f: &Facts) -> String {
                 let slug = d.id.split('#').next().unwrap_or_default();
                 let ids = MODELS.iter().find(|m| m.slug == slug).map(|m| format!(" `{:04x}:{:04x}`", m.vid, m.pid)).unwrap_or_default();
                 let firmware = d.firmware.as_deref().unwrap_or("unknown");
-                let tested = if d.verified { "verified" } else { "not verified yet" };
+                let tested = match (d.verified, d.experimental) {
+                    (true, _) => "verified",
+                    (false, true) => "experimental",
+                    (false, false) => "not verified yet",
+                };
                 let connected = if d.connected { "connected" } else { "not connected" };
                 let _ = writeln!(s, "- {}{ids}: firmware {firmware}, {tested}, {connected}", d.name);
                 if !d.fans.is_empty() {
@@ -753,7 +757,8 @@ about the table"
                 },
                 Usb {
                     vid: ASETEK_VID,
-                    pid: 0xb200,
+                    // An Asetek id with no driver; b200 has one.
+                    pid: 0xb201,
                     count: 1,
                     product: Some("Asetek cooler".into()),
                     bcd: 0x0100,
@@ -779,16 +784,16 @@ about the table"
         assert!(text.contains("  - fans: pump (pump, min 20 %, stores curves), fan (stores curves)\n"));
         assert!(text.contains("  - LCD 640×640, round\n"));
         assert!(text.contains("**NZXT devices without a driver**\n- NZXT Smart Device V2 `1e71:2006`\n"));
-        assert!(text.contains("**Asetek devices (Asetek made the older Krakens: X31, X41, X61, X40, X60)**\n- Asetek cooler `2433:b200`\n"));
+        assert!(text.contains("**Asetek devices (Asetek made the older Krakens: X31, X41, X61, X40, X60)**\n- Asetek cooler `2433:b201`\n"));
         assert!(text.contains(&format!("**USB descriptors** ({READ_ONLY})\n```text\n")));
         assert!(text.contains("1e71:3012 NZXT Kraken Elite V2, bcdDevice 0102, high speed\n  interface 0: class ff/00/00, bulk out 02 (512 B)\n"));
         assert!(text.contains("    HID usage ff00:0001\n      in: 11 13 f5"));
         assert!(text.contains("      in: no id (64 B)\n      out: no id (64 B)\n      descriptor (23 B): 0600ff09"));
-        assert!(text.contains("2433:b200 Asetek cooler, bcdDevice 0100, full speed\n  descriptors: no configuration descriptor\n"));
+        assert!(text.contains("2433:b201 Asetek cooler, bcdDevice 0100, full speed\n  descriptors: no configuration descriptor\n"));
         // Descriptors of supported devices are known; only new ones carry the raw bytes.
         assert_eq!(text.matches("descriptor (").count(), 1);
         assert!(text.ends_with("```\n"));
-        assert_eq!(title(&f), "Hardware: NZXT Smart Device V2 (1e71:2006), Asetek cooler (2433:b200)");
+        assert_eq!(title(&f), "Hardware: NZXT Smart Device V2 (1e71:2006), Asetek cooler (2433:b201)");
     }
 
     #[test]

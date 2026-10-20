@@ -17,13 +17,12 @@ use camless_core::status::{Device, FanChannel, LcdInfo, LightChannel, Unit};
 use hidapi::{HidApi, HidDevice};
 use std::time::{Duration, Instant};
 
-pub const X3: Model = Model { vid: NZXT_VID, pid: 0x2007, interface: None, slug: "kraken-x3", name: "Kraken X3", open };
+pub const X3: Model = Model::hid(NZXT_VID, 0x2007, "kraken-x3", "Kraken X3", open);
 /// A later X3; liquidctl and the Linux driver treat it as the same cooler.
-pub const X3_2014: Model = Model { vid: NZXT_VID, pid: 0x2014, interface: None, slug: "kraken-x3-2014", name: "Kraken X3", open };
-pub const Z3: Model = Model { vid: NZXT_VID, pid: 0x3008, interface: None, slug: "kraken-z3", name: "Kraken Z3", open };
-pub const KRAKEN_2023: Model = Model { vid: NZXT_VID, pid: 0x300e, interface: None, slug: "kraken-2023", name: "Kraken (2023)", open };
-pub const ELITE_2023: Model =
-    Model { vid: NZXT_VID, pid: 0x300c, interface: None, slug: "kraken-elite-2023", name: "Kraken Elite (2023)", open };
+pub const X3_2014: Model = Model::hid(NZXT_VID, 0x2014, "kraken-x3-2014", "Kraken X3", open);
+pub const Z3: Model = Model::hid(NZXT_VID, 0x3008, "kraken-z3", "Kraken Z3", open);
+pub const KRAKEN_2023: Model = Model::hid(NZXT_VID, 0x300e, "kraken-2023", "Kraken (2023)", open);
+pub const ELITE_2023: Model = Model::hid(NZXT_VID, 0x300c, "kraken-elite-2023", "Kraken Elite (2023)", open);
 
 /// How a picture reaches the screen without the memory buckets, which are flash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,13 +298,13 @@ impl Driver for Kraken3 {
                 let a = self.accessories.get(c).cloned().unwrap_or_default();
                 // The pump's own LEDs are fixed; the header has whatever is plugged in.
                 let leds = if l.channel == 0b001 { a.leds() } else { l.leds };
-                LightChannel { id: l.id.into(), name: l.name.into(), leds, accessories: a.names() }
+                LightChannel { id: l.id.into(), name: l.name.into(), leds, accessories: a.names(), ..Default::default() }
             })
             .collect();
         Device {
             name: self.model.name.into(),
             firmware: self.firmware.map(|(a, b, c)| format!("{a}.{b}.{c}")),
-            verified: camless_core::hardware::is_verified(self.model.vid, self.model.pid),
+            verified: self.model.verified(),
             fans,
             lights,
             lcd: self.kind.lcd.map(|(side, _)| LcdInfo { width: side, height: side, round: true, frames: self.stream() != Stream::None }),

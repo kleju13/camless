@@ -138,6 +138,9 @@
   /* The devices camless drives that hardware/verified.toml does not list. The sidebar
      asks how they work until the person says they submitted a report about this setup. */
   const unverified = () => S.devices().filter((d) => !d.verified);
+  // Experimental: unverified, and no other app drives it the way camless does.
+  const verifyTitle = (list) => (list.some((d) => d.experimental) ? 'Experimental hardware' : 'Unverified hardware');
+  const EXPERIMENTAL = 'Experimental: no other app drives this model the way camless does, and its driver follows liquidctl alone.';
   const setupKey = (list) => list.map((d) => `${d.id}@${d.firmware || ''}`).sort().join(',');
   const UNVERIFIED = 'We’ve detected that your hardware configuration hasn’t been verified yet.';
 
@@ -148,13 +151,14 @@
     let closed = false;
     const note = h('<p class="cam-hint" aria-live="polite"></p>');
     const m = modal({
-      title: 'Unverified hardware',
+      title: verifyTitle(list),
       render(body) {
         body.appendChild(h(`<p class="cam-lead"><b>${UNVERIFIED}</b></p>`));
         const rows = h('<div class="cam-rows cam-box"></div>');
-        for (const d of list) rows.appendChild(row(d.name, `Firmware ${esc(d.firmware || 'unknown')}`, null));
+        for (const d of list) rows.appendChild(row(d.name, `Firmware ${esc(d.firmware || 'unknown')}${d.experimental ? '. Experimental' : ''}`, null));
         body.appendChild(rows);
-        body.appendChild(h(`<p class="cam-hint">camless drives ${list.length > 1 ? 'these devices' : 'this device'} from other projects’ notes and captures of CAM, not from a test on the same hardware, so something may be off. Tell us how it goes. Either button gathers a hardware report and opens a GitHub issue with it filled in. You check it there before you submit; nothing is sent from here.</p>`));
+        const exp = list.some((d) => d.experimental) ? ' An experimental driver goes further: no other app drives that model the way camless does, and the driver follows liquidctl alone.' : '';
+        body.appendChild(h(`<p class="cam-hint">camless drives ${list.length > 1 ? 'these devices' : 'this device'} from other projects’ notes and captures of CAM, not from a test on the same hardware, so something may be off.${exp} Tell us how it goes. Either button gathers a hardware report and opens a GitHub issue with it filled in. You check it there before you submit; nothing is sent from here.</p>`));
         body.appendChild(note);
       },
       actions: [
@@ -381,6 +385,9 @@
     const upd = () => {
       const list = S.status ? unverified() : [];
       el.hidden = !list.length || (K.prefs.verifyReported || []).includes(setupKey(list));
+      const t = verifyTitle(list);
+      el.querySelector('.lbl b').textContent = t;
+      el.setAttribute('aria-label', `${t}: tell us if it works`);
     };
     S.on('state', upd);
     K.on('prefs', upd);
@@ -1476,7 +1483,10 @@
     const cv = el.querySelector('canvas'), cap1 = el.querySelector('.cam-light-prev p');
     const ctl = el.querySelector('.cam-light-ctl');
     const ring = isRing(id);
-    const opts = [{ value: LEAVE, label: 'Not set by camless' }].concat(EFFECT_ORDER.map((k) => ({ value: k, label: S.EFFECTS[k].label })));
+    // A light that lists its modes takes only those; NZXT's Hue 2 lights take them all.
+    const hw = (S.lights().find((x) => x.id === id) || {}).hw;
+    const takes = (k) => !(hw && hw.modes && hw.modes.length) || hw.modes.includes(k);
+    const opts = [{ value: LEAVE, label: 'Not set by camless' }].concat(EFFECT_ORDER.filter(takes).map((k) => ({ value: k, label: S.EFFECTS[k].label })));
     const fx = select({
       options: opts, value: LEAVE, label: 'Effect',
       onChange: (m) => {
@@ -2582,7 +2592,7 @@
       row('Config folder', `<code>${esc(sv.config_path)}</code>`, sv.sandbox ? null : button('Open folder', { small: true, onClick: () => act('open-folder', {}) })),
     ]);
 
-    const devRows = S.devices().map((d) => row(d.name, `Firmware ${esc(d.firmware || 'unknown')}. ${d.verified ? 'Verified: reported working on this model.' : 'Not verified yet: this driver follows other projects’ notes and captures of CAM. <button type="button" class="cam-link" data-a="verify">Tell us how it works</button>'}`, deviceStatus(d.id)));
+    const devRows = S.devices().map((d) => row(d.name, `Firmware ${esc(d.firmware || 'unknown')}. ${d.verified ? 'Verified: reported working on this model.' : `${d.experimental ? EXPERIMENTAL : 'Not verified yet: this driver follows other projects’ notes and captures of CAM.'} <button type="button" class="cam-link" data-a="verify">Tell us how it works</button>`}`, deviceStatus(d.id)));
     for (const r of devRows) r.addEventListener('click', (e) => { if (e.target.closest('[data-a=verify]')) verifyDialog(); });
     const unsupported = ((S.status && S.status.unsupported) || []).map((u) => row(u.product || 'NZXT device', `No camless driver yet (${usbId(u)}).`, null));
     panel('Devices', devRows.concat(unsupported, [

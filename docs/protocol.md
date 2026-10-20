@@ -3,6 +3,7 @@
 Sources:
 - liquidctl's `kraken3.py` and PRs #882 (lighting, 2024 Elite), #927 and #932;
 - the Linux `nzxt-kraken3` driver;
+- liquidctl's `kraken2.py` and `asetek.py` with their guides, and the Linux `nzxt-kraken2` driver, for the Kraken X2, the M22 and the Asetek-made Krakens, which Nexus leaves out;
 - [Nexus](https://github.com/hello-nexus/nexus) (`KrakenModel.cs`, `KrakenProtocol.cs`, `KrakenHub.cs`), for the Krakens camless has not run on. Nexus says only its Elite 2024 rows were run on hardware;
 - strings and tables in CAM 4.76.6's `@nzxt/cam-core` 71.9.3 (`index.node`, a napi-rs Rust addon), `service.exe` and the Electron bundles, inspected statically with [rea](https://github.com/morluto/rea) and plain string extraction;
 - CAM's own profile files.
@@ -57,6 +58,24 @@ Sources:
   - RGB565 byte order on the Kraken 2023: liquidctl sends the high byte first, Nexus the low byte. CAM's own format list names format 6 `Rgb565Be`, so camless follows liquidctl.
   - Before streaming to the Elite 2023, Nexus deletes all 16 memory buckets. camless leaves them alone, since that writes flash. If the cooler refuses frames while a stored picture is up, that is the likely reason.
   - Replies: liquidctl reads one report after `36 01` and after `36 02` and does not look at it. Nexus waits up to 150 ms and needs none. It says the Elite 2023 on firmware 2 answers successful commands with `05` in byte 14, where the Elite 2024 sends `01`, and that a refusal comes as report `ff` with the command in bytes 14 and 15. camless waits up to 200 ms, takes any `37` or `39` reply as success, and fails only on that refusal. On the Elite 2024, `ff` reports after lighting commands are acknowledgements (see below), so camless reads `ff` as a refusal only for LCD commands on these models.
+
+**Kraken X2 and M22** (`1e71:170e`, `1715`; experimental)
+- An older command set than the X3's: no `10 01` firmware request, no `74 01` status, no `72` curves. Nexus leaves the X2 out for that reason. Everything here follows liquidctl's `kraken2.py`.
+- Writes are padded to 65 bytes, report id `02` first. The cooler keeps every setting while it has power, even in S5 (liquidctl's guide), so none of them is flash.
+- Status: report `04`, sent twice a second without being asked (the Linux driver). Liquid = `[1] + [2]/10`, fan rpm BE at `[3]`, pump rpm BE at `[5]`, firmware at `[0xb..0xf]`. No duties. CAM's short version is `fw0.fw3` from firmware 5 on, `fw0.fw2.fw3` before. The M22 sends the report too, as liquidctl reads its firmware from it, but has no sensor or speeds.
+- Curves, from firmware 3 (liquidctl's check; its guide says 4): 36 points `02 4d <base + i> <temp> <duty>`, base `80` for the fan and `c0` for the pump, at 20..49 °C, then 50, 52, 54, 56, 58 and 60. Both channels must use the same temperatures, a firmware limit liquidctl names, so on opening camless stores liquidctl's reset curves on both, as liquidctl's initialization does. The safety floor of the later Krakens goes under every point, which reaches 100 % at 55 °C.
+- A fixed duty is a flat curve, as liquidctl sets one, so the floor still holds if camless stops. camless sends it only when the duty changes, as it is 36 writes. On firmware before 3, `02 4d <base & 70> 00 <duty>`, which liquidctl says does not persist.
+- Minimum duties from liquidctl's guide: 25 % fan, 50 % pump. The code accepts 0..100; camless follows the guide.
+- Lighting: `02 4c <dir | ch> <mode> <speed | step << 5>`, then the logo as G, R, B and eight ring LEDs as R, G, B. Channels: logo `01`, ring `02`. A backward direction adds `10`. One report per color step, each setting all nine LEDs to its color. Modes camless uses: fixed and off `00`, fading `01`, spectrum wave `02`, covering marquee `04`, breathing `06`, pulse `07`, tai chi `08`, water cooler `09`; the last three and covering marquee run on the ring only. The X2 has none of the Hue 2 effects that came later (candle, the rainbows), so its lights list the modes they take and the app offers only those.
+- Nexus says lighting writes are limited to one per 500 ms, without a source; liquidctl sends the steps back to back. camless sends lighting only when it changes, as liquidctl does.
+
+**Kraken X31, X41, X61, X40 and X60** (`2433:b200`; experimental)
+- Asetek 690LC pumps behind a Silicon Labs USBXpress bridge: vendor class, not HID. Bulk out `02`, bulk in `82` with 32-byte replies. On Windows the cooler needs WinUSB bound to it (Zadig), as liquidctl's guide says; camless says so when it finds another driver there. EVGA's CLC coolers share the id with newer 690LC firmware; camless sends only the legacy commands, liquidctl's `Legacy690Lc`.
+- Vendor request `02` to the device: value `02` (clear to send) once on opening, value `01` (flush) before every transaction. A transaction is the writes, then one 32-byte read.
+- Setup and lighting: `10` + color 1, color 2, the alert color (R, G, B) + alert temperature, interval 1, interval 2, on, fading, blinking, alert, `00 01`. camless keeps the lights on and the alert at liquidctl's 45 °C in red: liquidctl's blackout would also hide the alert. Off is a fixed black. Fading takes 1 to 10 s per color from the speed, liquidctl's default being 5.
+- Duties: `13 <duty>` for the pump (50..100 %) and `12 <duty>` for the fan (0..100 %). They store no curves, so camless drives both from the host and sends both with every poll, as liquidctl does with every status read. Until the first duty, 100 %.
+- Reply: fan rpm BE at `[0]`, pump rpm BE at `[8]`, liquid = `[10] + [14]/10`, firmware `[0x17..0x1b]`.
+- Command `21` stores the settings in flash on the newer 690LC. camless never sends it.
 
 **Control Hub**
 - Init: `60 02 01 E8 01 01 E8 01`, then `66 01`.

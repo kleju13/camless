@@ -66,6 +66,10 @@ pub struct Device {
     /// Tested on real hardware by someone. Unverified drivers follow other projects'
     /// documentation or captures of CAM.
     pub verified: bool,
+    /// Not verified, and no other program drives it the way camless does: its driver
+    /// follows liquidctl alone.
+    #[serde(default)]
+    pub experimental: bool,
     pub connected: bool,
     pub error: Option<String>,
     pub fans: Vec<FanChannel>,
@@ -112,6 +116,9 @@ pub struct LightChannel {
     pub leds: u16,
     /// What the device reports on this channel, e.g. accessory ids.
     pub accessories: Vec<String>,
+    /// The modes it takes, by config name; empty for every NZXT Hue 2 effect.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
