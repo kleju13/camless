@@ -1238,8 +1238,9 @@
   const PALETTE = ['ffffff', 'bf4cbf', '3232de', '21d373', 'ff8a00', 'ff022d', '00c8ff', 'ffd400'];
   const LEAVE = '';
 
-  // CAM's names: Ring, Channel 1, RGB connector.
-  function lightLabel(id) {
+  // The name given in camless, else CAM's: Ring, Channel 1, RGB connector.
+  const lightLabel = (id) => S.lightName(id) || defaultLightLabel(id);
+  function defaultLightLabel(id) {
     const ch = id.split('/')[1];
     if (ch === 'ring') return 'Ring';
     if (ch === 'rgb') return 'RGB connector';
@@ -1393,7 +1394,7 @@
     const fx = select({
       options: opts, value: LEAVE, label: 'Effect',
       onChange: (m) => {
-        if (m === LEAVE) { memoColors(id); S.edit((c) => { c.light = (c.light || []).filter((l) => l.channel !== id); }, { what: 'lighting' }); }
+        if (m === LEAVE) { memoColors(id); S.leaveLight(id); }
         else S.editLight(id, (x) => { x.mode = m; fitColors(x); });
       },
     });
@@ -1405,13 +1406,21 @@
     const rSpeed = row('Speed', null, sp);
     const dir = toggle({ checked: !!S.lightOf(id).backward, label: 'Invert direction', onChange: (v) => S.editLight(id, (x) => { x.backward = v; }) });
     const rDir = row('Direction', null, [dir, h('<span class="cam-small">Invert direction</span>')]);
+    const nameIn = input({ value: S.lightName(id), placeholder: defaultLightLabel(id), label: 'Channel name', width: '200px', onChange: (v) => S.setLightName(id, v.trim()) });
+    const rName = row('Name', 'Shown in camless only.', nameIn);
     const fanLbl = h('<span class="cam-fanname"></span>');
     const rFans = ring ? null : row('Fans', '', [fanLbl, button('Change', { small: true, onClick: () => fanDialog(id) })]);
+    ctl.appendChild(rName);
     if (rFans) ctl.appendChild(rFans);
     ctl.append(rEffect, rColors, rSpeed, rDir);
     const l = S.lights().find((x) => x.id === id);
     cap1.textContent = ring ? `${(l && l.leds) || 24} LEDs around the screen` : (l && l.hw && l.hw.name) || '';
 
+    // The preview's label follows every edit, a new name or color included.
+    function label() {
+      const x = S.lightOf(id), plain = !ring && fanSpec(id).model === 'plain';
+      cv.setAttribute('aria-label', `${lightLabel(id)}${rFans ? ', ' + fanText(id) : ''}: ${plain ? 'no LEDs' : S.describeLight(x)}`);
+    }
     function refresh() {
       const x = S.lightOf(id), k = S.effectKey(x.mode), E = S.EFFECTS[k];
       const plain = !ring && fanSpec(id).model === 'plain';
@@ -1427,12 +1436,13 @@
         fanLbl.textContent = fanText(id);
         rFans.hint(plain ? 'These fans have no LEDs, so this channel has nothing to light.' : '');
       }
-      cv.setAttribute('aria-label', `${lightLabel(id)}${rFans ? ', ' + fanText(id) : ''}: ${plain ? 'no LEDs' : S.describeLight(x)}`);
+      label();
+      if (document.activeElement !== nameIn) nameIn.value = S.lightName(id);
       sw.paint();
     }
     // Only a change of effect rebuilds the controls, so a color picker stays open while it is dragged.
     let lastMode = null;
-    track(S.on('config', (what) => { const x = S.lightOf(id); const m = x.unmanaged ? LEAVE : x.mode; if (what !== 'lighting' || m !== lastMode) { lastMode = m; refresh(); } }));
+    track(S.on('config', (what) => { const x = S.lightOf(id); const m = x.unmanaged ? LEAVE : x.mode; if (what !== 'lighting' || m !== lastMode) { lastMode = m; refresh(); } else label(); }));
     track(K.on('prefs', (k) => { if (k === 'fans') refresh(); }));
     lastMode = S.lightOf(id).unmanaged ? LEAVE : S.lightOf(id).mode;
     refresh();
@@ -1481,6 +1491,13 @@
     });
   }
 
+  // KrakenDial is made for the Kraken Elite's round 640 × 640 screen.
+  function dialHint(dev) {
+    const d = S.device(dev), lcd = d && d.lcd;
+    const fits = !lcd || (lcd.width === 640 && lcd.height === 640 && lcd.round);
+    return ` We recommend checking out <button type="button" class="cam-link" data-a="krakendial">KrakenDial</button>: temperatures, loads and your own faces on the screen.${fits ? '' : ' It is made for the Kraken Elite’s round 640 × 640 screen, so on this one it may not fit.'}`;
+  }
+
   function lcdEditor(host, dev) {
     const el = h('<div class="cam-panel cam-lcd"><div class="cam-light-prev"><div class="cam-prev-box"><canvas role="img"></canvas><p></p></div></div><div class="cam-light-ctl cam-rows"></div></div>');
     const cv = el.querySelector('canvas'), cap1 = el.querySelector('.cam-light-prev p');
@@ -1496,6 +1513,7 @@
       }),
     });
     const rMode = row('Display mode', '', mode);
+    rMode.addEventListener('click', (e) => { if (e.target.closest('[data-a=krakendial]')) act('open-link', { name: 'krakendial' }); });
     const url = input({
       value: L().url || '', label: 'Page address', width: '100%', placeholder: KRAKENDIAL,
       onChange: (v, inp) => {
@@ -1524,7 +1542,7 @@
       rMode.hint(l.mode === 'liquid'
         ? 'The cooler draws this screen itself, so it stays on when camless is closed.'
         : l.mode === 'web'
-          ? 'camless shows the page the way CAM’s Web Integration does, so pages made for CAM, such as KrakenDial, work. It runs in a hidden Edge window, which takes memory and CPU; the other modes need none.'
+          ? `camless shows the page the way CAM’s Web Integration does, so pages made for CAM work. It runs in a hidden Edge window, which takes memory and CPU; the other modes need none.${dialHint(dev)}`
           : `A program on this PC posts frames to <code>http://${esc(api.listen)}/v1/lcd/frame</code>. When they stop, the screen goes back to the cooler’s own display.${api.enabled === false ? ' <b>Turn on Local API in Settings first.</b>' : ''}`);
       cap1.textContent = l.mode === 'liquid' ? 'Liquid temperature, drawn by the cooler' : l.mode === 'web' ? 'A web page' : 'Frames from a program';
       cv.setAttribute('aria-label', `Screen preview: ${cap1.textContent}, ${l.brightness}% brightness, rotated ${l.orientation}°`);
@@ -1641,6 +1659,11 @@
       }
     }
     renderDevice();
+    // A channel renamed in its tab: only the tab labels change.
+    track(S.on('config', (what) => {
+      if (what !== 'lighting' && what !== 'replace') return;
+      for (const b of tabsHost.querySelectorAll('[role=tab]')) if (b.dataset.id !== 'lcd') b.textContent = lightLabel(b.dataset.id);
+    }));
   }
 
   /* ------------------------------------------------------------ monitoring */

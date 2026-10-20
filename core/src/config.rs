@@ -548,7 +548,11 @@ fn validate_setup(curves: &[CurveSpec], fans: &[Fan], lights: &[Light], lcds: &[
         if !seen.insert(&l.channel) {
             bail!("light {} is listed twice", l.channel);
         }
-        l.to_lighting().with_context(|| format!("light {}", l.channel))?;
+        if l.managed() {
+            l.to_lighting().with_context(|| format!("light {}", l.channel))?;
+        } else if l.name.is_empty() {
+            bail!("light {} has neither a mode nor a name", l.channel);
+        }
     }
     let mut seen = HashSet::new();
     for l in lcds {
@@ -900,6 +904,18 @@ url = "http://127.0.0.1:30640/lcd"
         assert_eq!(c.updates, Updates::Beta);
         assert_eq!(Config::parse(&c.to_toml().unwrap()).unwrap(), c);
         assert!(Config::parse("updates = \"nightly\"\n").is_err());
+    }
+
+    #[test]
+    fn a_light_can_be_only_named() {
+        let c = Config::parse("[[light]]\nchannel = \"control-hub/led1\"\nname = \"Front\"\n").unwrap();
+        assert!(!c.lights[0].managed());
+        let text = c.to_toml().unwrap();
+        assert!(text.contains("Front") && !text.contains("mode"));
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        assert!(Config::parse("[[light]]\nchannel = \"control-hub/led1\"\n").is_err());
+        let named = Config::parse("[[light]]\nchannel = \"x/ring\"\nname = \"Top\"\nmode = \"fixed\"\ncolors = [\"ffffff\"]\n").unwrap();
+        assert!(named.lights[0].managed());
     }
 
     #[test]

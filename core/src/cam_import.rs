@@ -262,13 +262,7 @@ fn light_from_cam(channel: &str, mode: &Value, brightness: f64) -> Option<Light>
         let ch = |k: &str| ((c[k].as_f64().unwrap_or(0.0) * brightness).round() as u32).min(255);
         Some(format!("{:02x}{:02x}{:02x}", ch("r"), ch("g"), ch("b")))
     };
-    let light = |mode: &str, colors: Vec<String>| Light {
-        channel: channel.into(),
-        mode: mode.into(),
-        colors,
-        speed: Speed::default(),
-        backward: false,
-    };
+    let light = |mode: &str, colors: Vec<String>| Light { channel: channel.into(), mode: mode.into(), colors, ..Default::default() };
     let effect = mode["effect"].as_str()?;
     if effect == "Fixed" {
         let c = if mode["color"].is_object() { &mode["color"] } else { &mode["colors"][0] };

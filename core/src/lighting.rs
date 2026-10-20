@@ -120,12 +120,17 @@ impl Effect {
 }
 
 /// One lighting channel in the config.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Light {
     /// `<device>/<light>`, e.g. `kraken-elite-v2/ring` or `control-hub/led1`.
     pub channel: String,
-    /// `off`, `fixed`, or an effect name such as `tai-chi`.
+    /// What camless's window calls the channel; nothing else reads it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// `off`, `fixed`, or an effect name such as `tai-chi`. Left out, camless leaves
+    /// the channel as it is and the entry only names it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub mode: String,
     /// RRGGBB.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -149,6 +154,11 @@ pub enum Lighting {
 }
 
 impl Light {
+    /// Whether camless sets this channel, rather than only naming it.
+    pub fn managed(&self) -> bool {
+        !self.mode.is_empty()
+    }
+
     pub fn to_lighting(&self) -> Result<Lighting> {
         let colors = self.colors.iter().map(|c| parse_color(c)).collect::<Result<Vec<_>>>()?;
         Ok(match self.mode.as_str() {
@@ -194,7 +204,7 @@ mod tests {
 
     #[test]
     fn effect_colors_are_checked() {
-        let l = Light { channel: "x/ring".into(), mode: "water-cooler".into(), colors: vec!["ff0000".into()], speed: Speed::Normal, backward: false };
+        let l = Light { channel: "x/ring".into(), mode: "water-cooler".into(), colors: vec!["ff0000".into()], ..Default::default() };
         assert!(l.to_lighting().is_err());
         let l = Light { colors: vec!["ff0000".into(), "00ff00".into(), "0000ff".into()], ..l };
         let Lighting::Effect { colors, .. } = l.to_lighting().unwrap() else { panic!() };
