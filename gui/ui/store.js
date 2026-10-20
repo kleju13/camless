@@ -355,6 +355,13 @@
   function keepMemo() {
     try { localStorage.setItem(MEMO_KEY, JSON.stringify(memos)); } catch (e) { /* storage off */ }
   }
+  // A profile saved from the running setup, or renamed, takes the memos along.
+  function carryMemo(from, to, move) {
+    if (!memos[from] || from === to) return;
+    memos[to] = JSON.parse(JSON.stringify(memos[from]));
+    if (move) delete memos[from];
+    keepMemo();
+  }
   on('config', (what) => {
     if (what === 'replace') { const book = memoBook(); for (const k of Object.keys(book)) if (!curve(k)) delete book[k]; }
     if (what === 'replace' || what === 'cooling' || what === 'curve') keepMemo();
@@ -432,11 +439,9 @@
     edit((c) => {
       const x = (c.curve || []).find((k) => k.name === name);
       if (!x || x.kind !== 'graph' || x.sensor === sensorId) return;
-      if (unitOf(sensorId) !== unitOf(x.sensor)) {
-        const m = memoOf(name);
-        m.custom[x.sensor] = clone(x.points);
-        x.points = clone(m.custom[sensorId] || presets(sensorId).custom);
-      }
+      const m = memoOf(name);
+      m.custom[x.sensor] = clone(x.points);
+      if (unitOf(sensorId) !== unitOf(x.sensor)) x.points = clone(m.custom[sensorId] || presets(sensorId).custom);
       x.sensor = sensorId;
     }, { what: 'curve' });
   }
@@ -485,7 +490,7 @@
   }
 
   function deleteCurve(name) {
-    edit((c) => { c.curve = (c.curve || []).filter((x) => x.name !== name); }, { what: 'cooling' });
+    edit((c) => { c.curve = (c.curve || []).filter((x) => x.name !== name); delete memoBook()[name]; }, { what: 'cooling' });
   }
 
   /* -------------------------------------------------------------- lighting */
@@ -702,7 +707,7 @@
     UNIT, sensors, sensor, value, unitOf, isLiquid, sourceLabel, range, presets,
     devices, device, devOf,
     curves, curve, fans, fan, fanCfg, fanName, fanValue, curveValue, users, defaultSensor, preset,
-    ensureFan, tidyFans, setPreset, setSource, setCurveSensor, fork, useCurve, renameCurve, newCurve, deleteCurve, uniqueCurveName,
+    ensureFan, tidyFans, setPreset, setSource, setCurveSensor, fork, useCurve, renameCurve, newCurve, deleteCurve, uniqueCurveName, carryMemo,
     EFFECTS, SPEEDS, effectKey, lights, lightCfg, lightOf, editLight, renderLight, describeLight,
     color: { hexToRgb, mix, scale, hsl, css },
     screens, lcdOf, editLcd,
