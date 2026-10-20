@@ -29,7 +29,7 @@ The service records every sensor, and the speed and duty of every fan, while it 
 
 ## Games
 
-The service follows the game in front:
+Games is an experimental feature, off until you turn it on in *Settings → Experimental*. Not everyone wants a program that watches which game they play. Until then the service does not look at the program in front, and *Games* is not in the sidebar. Once it is on, the service follows the game in front:
 - A program is a game when it runs from a Steam library (`steamapps\common`), an Xbox games folder (`XboxGames`) or an Epic Games install. `[games]` in `camless.toml` adds others and leaves some out (see [Configuration](config.md#games)).
 - A session starts when a game comes to the front. It ends when the game closes, when another game comes to the front, or after 3 minutes in the background. Only time in front counts.
 - Each session keeps its play time, its average frame rate, its 1 % and 0.1 % lows, and the average and highest value of each temperature. Sessions shorter than a minute are dropped. The others go to `history/sessions.jsonl`, one JSON object a line, and stay there.
@@ -39,7 +39,7 @@ Frame rates come from the presents that the graphics kernel reports through ETW:
 
 ETW hands events over in batches, up to a second late, so frames are counted 2 s after they are shown. The 1 % low is the frame rate of the frame time that 1 % of frames took at least as long as: with 1 000 frames, the 10th slowest. Frame times are counted in buckets 1 % wide, so a low is within 1 %. A gap of more than a second between two frames is a pause, such as a loading screen, not a frame.
 
-*Games* shows the game being played, each game's totals and every session. *Monitoring → History → FPS* charts the frame rate. `camless fps` prints the frame rate of the program in front once a second, to check that frames are counted. `camless run --demo` makes up a game in front and three past sessions.
+*Games*, at the bottom of the sidebar, shows the game being played, each game's totals and every session. *Monitoring → History → FPS* charts the frame rate. `camless fps` prints the frame rate of the program in front once a second, to check that frames are counted. `camless run --demo` makes up a game in front, once Games is on, and three past sessions.
 
 ## AI assistants (MCP)
 

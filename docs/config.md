@@ -98,10 +98,11 @@ orientation = 0
 
 ## Games
 
-Games from Steam, Epic Games and Xbox are found by where they run. `[games]` adds others and leaves some out, by a program's file name or by a folder:
+Game sessions are off until you turn them on, in the app under *Settings → Experimental → Games* or here. Games from Steam, Epic Games and Xbox are found by where they run. `[games]` adds others and leaves some out, by a program's file name or by a folder:
 
 ```toml
 [games]
+enabled = true                       # follow the game in front; off by default
 add = ["javaw.exe", 'D:\Emulators']   # count these as games too
 skip = ["wallpaper64.exe"]            # never these, even from a store
 ```

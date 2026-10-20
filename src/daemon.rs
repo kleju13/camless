@@ -269,7 +269,13 @@ impl Daemon {
                 self.engine.duties().iter().filter_map(|(c, d)| Some(format!("{c} {} %", d.value()?))).collect();
             self.log(&format!("{} | {}", shown.join(", "), duties.join(", ")));
         }
-        let fps = self.games.tick(dt, &sensors, &self.cfg.games);
+        let fps = if self.cfg.games.enabled {
+            self.games.tick(dt, &sensors, &self.cfg.games)
+        } else {
+            // Off, or just turned off: an open session ends, and the ETW session with it.
+            self.games.finish();
+            None
+        };
         for n in self.games.notes() {
             self.log(&n);
         }
@@ -705,7 +711,7 @@ impl Daemon {
                 pid: std::process::id(),
                 elevated: self.elevated,
                 cpu_sensor_error: self.sensors.cpu_error.clone(),
-                fps_error: self.games.error(),
+                fps_error: if self.cfg.games.enabled { self.games.error() } else { None },
             }),
             game: self.games.now(),
         };
