@@ -15,12 +15,12 @@ use crate::history::{self, History};
 use crate::q565;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
-use std::io::Read;
-use std::net::SocketAddr;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 pub fn spawn(
@@ -124,6 +124,24 @@ fn handle(
         }
         _ => Ok(req.respond(Response::empty(404))?),
     }
+}
+
+/// The body of `GET path` from the service at `addr`, for commands that ask the
+/// running service, the way the app asks it.
+pub fn get(addr: &str, path: &str) -> Result<String> {
+    let sock: SocketAddr = addr.parse().with_context(|| format!("{addr:?} is not ip:port"))?;
+    let mut s = TcpStream::connect_timeout(&sock, Duration::from_millis(500)).context("nothing answers")?;
+    s.set_read_timeout(Some(Duration::from_secs(3)))?;
+    write!(s, "GET {path} HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n")?;
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf)?;
+    let text = String::from_utf8(buf).context("reply is not UTF-8")?;
+    let (head, body) = text.split_once("\r\n\r\n").context("malformed reply")?;
+    let code = head.split_whitespace().nth(1).unwrap_or_default();
+    if code != "200" {
+        bail!("answered {code}");
+    }
+    Ok(body.to_string())
 }
 
 /// `span` in seconds, 600 by default, and `ids`, a comma-separated list of series.

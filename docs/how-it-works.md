@@ -41,6 +41,47 @@ ETW hands events over in batches, up to a second late, so frames are counted 2 s
 
 *Games* shows the game being played, each game's totals and every session. *Monitoring → History → FPS* charts the frame rate. `camless fps` prints the frame rate of the program in front once a second, to check that frames are counted. `camless run --demo` makes up a game in front and three past sessions.
 
+## AI assistants (MCP)
+
+`camless mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin and stdout. An assistant such as Claude can use it to read the sensors and set fan curves. It asks the running service through the local API. It changes the config the service runs, or the selected profile if there is one. Like the app, it rewrites the whole file, so comments in it are lost.
+
+| Tool | |
+|---|---|
+| `get_cooling_state` | the sensors; each fan and pump channel with its speed, duty and curve; the curves; `failsafe_duty` |
+| `get_sensor_history` | up to 8 series over 10 minutes to 30 days: average, lowest, highest, last, and up to 30 points |
+| `get_game_sessions` | the latest game sessions, with frame rates and temperatures |
+| `set_fan_curve` | adds or replaces a graph curve on a temperature sensor and puts fans on it |
+| `assign_curve` | puts fans on a curve the config already has, such as the one they had before |
+
+A curve from `set_fan_curve` must speed the fans up as it gets hot:
+- It has 2 to 16 points, and the temperature rises from each point to the next, up to 90 °C.
+- The duty never falls as the temperature rises.
+- The last point is at `failsafe_duty` or more.
+- It takes at most 10 s to follow a rise and 60 s to follow a fall, with at most 5 °C of hysteresis.
+
+The safeguards under [Fan control](#fan-control) still apply on top. The server cannot change fan limits, lighting, the LCD or any other setting. After a change, it waits for the service to read the config, then reports any error and the curve's duty.
+
+To add it to Claude Code:
+
+```
+claude mcp add camless -- C:\Users\<you>\AppData\Local\Programs\camless\camless.exe mcp
+```
+
+Or to Claude Desktop, in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "camless": {
+      "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\camless\\camless.exe",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Nexus has an MCP server for its cooling too, and this one was inspired by it.
+
 ## Web pages on the LCD
 
 `mode = "web"` shows a page the way CAM's Web Integration does, so pages made for CAM, such as [KrakenDial](https://github.com/kleju13/krakendial), work unchanged:

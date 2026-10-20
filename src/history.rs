@@ -11,7 +11,7 @@
 //! whenever the set of series changes, e.g. when a device is plugged in, and after
 //! each start of the service. A line that a crash cut short is skipped.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -73,7 +73,7 @@ pub struct History {
 
 /// What a query returns: `count` points `step` seconds apart from `from`, and each
 /// series' average and highest value at every point, `null` where there was none.
-#[derive(Debug, Default, PartialEq, Serialize)]
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct Range {
     pub from: i64,
     pub step: i64,
@@ -81,7 +81,7 @@ pub struct Range {
     pub series: BTreeMap<String, Series>,
 }
 
-#[derive(Debug, Default, PartialEq, Serialize)]
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct Series {
     pub avg: Vec<Option<f32>>,
     pub max: Vec<Option<f32>>,

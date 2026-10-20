@@ -115,6 +115,7 @@ camless list                 NZXT HID devices that are connected
 camless watch [seconds]      listen to input reports without sending anything (--raw for hex)
 camless sensors              read CPU, GPU and memory sensors once
 camless fps [seconds]        print the frame rate of the program in front once a second (needs administrator rights)
+camless mcp [config]         an MCP server on stdin and stdout for AI assistants (see How it works)
 camless import-cam [dir]     print a camless.toml built from CAM's active profiles (-o FILE to write it)
 camless check [config]       validate a config and show what each fan follows, without opening a device
 camless run [config]         apply the config and keep fans on their curves (--verbose, --demo, --for SECONDS)
