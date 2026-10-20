@@ -26,3 +26,7 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0cf2", ATTRS{idProduct}=="7750|a100|a101|
 SUBSYSTEM=="usb", ATTR{idVendor}=="0cf2", ATTR{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106|a200", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="7372", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="0416", ATTR{idProduct}=="7372", TAG+="uaccess"
+
+# Asiahorse Umbra V2.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="fe04", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="fe04", TAG+="uaccess"

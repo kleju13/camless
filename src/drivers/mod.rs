@@ -23,6 +23,7 @@ pub mod lianli;
 pub mod lianli_tl;
 pub mod serial;
 pub mod strimer;
+pub mod umbra;
 pub mod usb;
 pub mod vendor;
 #[cfg(windows)]
@@ -60,6 +61,7 @@ pub const MODELS: &[Model] = &[
     lianli::UNI_HUB_SL_REDRAGON,
     lianli_tl::MODEL,
     strimer::MODEL,
+    umbra::MODEL,
 ];
 
 pub type Open = fn(&HidApi, &Found) -> Result<Box<dyn Driver>>;
