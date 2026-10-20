@@ -3,7 +3,9 @@
 //! from Steam has one there. Nothing is downloaded: a game without one gets none.
 
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+#[cfg(windows)]
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
 
 /// Pictures larger than this are not Steam's covers.
@@ -38,6 +40,7 @@ fn find(cache: &Path, id: u32) -> Option<PathBuf> {
 }
 
 /// Where Steam is: what the Steam client wrote down, or its usual folder.
+#[cfg(windows)]
 fn steam_dir() -> Option<PathBuf> {
     let found = string(HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath")
         .or_else(|| string(HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"))
@@ -46,7 +49,19 @@ fn steam_dir() -> Option<PathBuf> {
     found.filter(|p| p.is_dir()).or_else(usual).filter(|p| p.is_dir())
 }
 
+/// Where Steam is on Linux: the link the Steam client keeps to its folder, then its
+/// usual folder, then the Flatpak's.
+#[cfg(not(windows))]
+fn steam_dir() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let data = camless_core::config::xdg_dir("XDG_DATA_HOME", ".local/share");
+    [home.join(".steam").join("steam"), data.join("Steam"), home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam")]
+        .into_iter()
+        .find(|p| p.join("appcache").is_dir())
+}
+
 /// A string value from the registry.
+#[cfg(windows)]
 fn string(root: HKEY, key: &str, value: &str) -> Option<String> {
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (key, value) = (wide(key), wide(value));
@@ -80,16 +95,17 @@ mod tests {
         put("10_header.jpg");
         put("10_library_600x900.jpg");
         // A newer one: a folder for each app, a picture a folder further down.
-        put(r"20\library_600x900.jpg");
-        put(r"20\0a1b2c\header.jpg");
-        put(r"30\library_hero.jpg");
-        put(r"30\logo.png");
+        put("20/library_600x900.jpg");
+        put("20/0a1b2c/header.jpg");
+        put("30/library_hero.jpg");
+        put("30/logo.png");
         std::fs::create_dir_all(cache.join("40")).unwrap();
-        std::fs::write(cache.join(r"40\header.jpg"), b"").unwrap();
-        let found = |id| find(&cache, id).map(|p| p.strip_prefix(&cache).unwrap().to_string_lossy().into_owned());
+        std::fs::write(cache.join("40").join("header.jpg"), b"").unwrap();
+        // In `/` parts, which Windows takes too.
+        let found = |id| find(&cache, id).map(|p| p.strip_prefix(&cache).unwrap().components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/"));
         assert_eq!(found(10).as_deref(), Some("10_header.jpg"));
-        assert_eq!(found(20).as_deref(), Some(r"20\0a1b2c\header.jpg"));
-        assert_eq!(found(30).as_deref(), Some(r"30\library_hero.jpg"));
+        assert_eq!(found(20).as_deref(), Some("20/0a1b2c/header.jpg"));
+        assert_eq!(found(30).as_deref(), Some("30/library_hero.jpg"));
         // An empty file is not a picture.
         assert_eq!(found(40), None);
         assert_eq!(found(50), None);

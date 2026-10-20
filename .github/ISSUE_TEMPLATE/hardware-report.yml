@@ -15,7 +15,7 @@ body:
         & "$env:LOCALAPPDATA\Programs\camless\camless.exe" report
         ```
 
-        **With an older camless, or without camless:** give the device's name and its *Hardware Ids* from Device Manager (the device → Properties → Details → Hardware Ids), for example `USB\VID_1E71&PID_3012&REV_0102`. Not the *Device instance path*: that one holds the serial number.
+        **With an older camless, or without camless:** give the device's name and its *Hardware Ids* from Device Manager (the device → Properties → Details → Hardware Ids), for example `USB\VID_1E71&PID_3012&REV_0102`. Not the *Device instance path*: that one holds the serial number. On Linux, the device's line from `lsusb`, such as `ID 1e71:3012 NZXT`.
 
         The report is read only: standard USB descriptor reads, no commands sent to the devices. It leaves out serial numbers, device paths, and your user and PC names. Read it before you submit; everything here is public.
   - type: textarea

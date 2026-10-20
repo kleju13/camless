@@ -1,6 +1,6 @@
 //! Just enough of the Chrome DevTools Protocol to drive one headless page: a
-//! WebSocket client for the browser's loopback debugging port, commands with
-//! replies, and events in between.
+//! WebSocket client for the browser's loopback debugging port, or on Linux the
+//! browser's own pipes, commands with replies, and events in between.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -15,7 +15,7 @@ const MAX_MESSAGE: usize = 32 << 20;
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct Cdp {
-    stream: TcpStream,
+    link: Link,
     /// Bytes read but not yet parsed into frames.
     buf: Vec<u8>,
     chunk: Vec<u8>,
@@ -26,8 +26,31 @@ pub struct Cdp {
     mask_seed: u32,
 }
 
+/// How the messages travel.
+enum Link {
+    /// WebSocket frames on the debugging port.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Socket(TcpStream),
+    /// `--remote-debugging-pipe`: JSON messages, each ending in a NUL byte, written to
+    /// the browser's fd 3 and read from its fd 4. No other user can reach a pipe, as
+    /// they can a port on 127.0.0.1.
+    #[cfg(unix)]
+    Pipe { to: std::fs::File, from: std::fs::File },
+}
+
 impl Cdp {
+    fn new(link: Link, buf: Vec<u8>, mask_seed: u32) -> Cdp {
+        Cdp { link, buf, chunk: vec![0; 256 << 10], partial: Vec::new(), events: VecDeque::new(), next_id: 1, mask_seed }
+    }
+
+    /// Talks to a browser started with `--remote-debugging-pipe` over its two pipes.
+    #[cfg(unix)]
+    pub fn pipe(to: std::fs::File, from: std::fs::File) -> Cdp {
+        Cdp::new(Link::Pipe { to, from }, Vec::new(), 1)
+    }
+
     /// Connects to `ws://127.0.0.1:{port}{path}`, as written in `DevToolsActivePort`.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn connect(port: u16, path: &str) -> Result<Cdp> {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).with_context(|| format!("connecting to port {port}"))?;
         stream.set_nodelay(true)?;
@@ -58,7 +81,7 @@ impl Cdp {
         if !head.starts_with("HTTP/1.1 101") {
             bail!("the browser refused the WebSocket: {}", head.lines().next().unwrap_or_default());
         }
-        Ok(Cdp { stream, buf: buf[end..].to_vec(), chunk: vec![0; 256 << 10], partial: Vec::new(), events: VecDeque::new(), next_id: 1, mask_seed: seed | 1 })
+        Ok(Cdp::new(Link::Socket(stream), buf[end..].to_vec(), seed | 1))
     }
 
     /// Sends a command and returns its id without waiting for the reply.
@@ -69,7 +92,7 @@ impl Cdp {
         if let Some(s) = session {
             msg["sessionId"] = json!(s);
         }
-        self.write_frame(0x1, msg.to_string().as_bytes())?;
+        self.write_message(msg.to_string().as_bytes())?;
         Ok(id)
     }
 
@@ -77,18 +100,25 @@ impl Cdp {
     /// kept for `next_event`.
     pub fn call(&mut self, method: &str, params: Value, session: Option<&str>) -> Result<Value> {
         let id = self.send(method, params, session)?;
-        let deadline = Instant::now() + CALL_TIMEOUT;
+        let reply = self.reply(id, CALL_TIMEOUT)?.ok_or_else(|| anyhow!("{method}: no reply"))?;
+        if let Some(e) = reply.get("error") {
+            bail!("{method}: {}", e["message"].as_str().unwrap_or("failed"));
+        }
+        Ok(reply["result"].clone())
+    }
+
+    /// The reply to command `id`, or None if it did not come within `timeout`.
+    /// Events that arrive meanwhile are kept for `next_event`.
+    pub fn reply(&mut self, id: u64, timeout: Duration) -> Result<Option<Value>> {
+        let deadline = Instant::now() + timeout;
         loop {
-            let left = deadline.checked_duration_since(Instant::now()).ok_or_else(|| anyhow!("{method}: no reply"))?;
-            let Some(msg) = self.read_message(left)? else { continue };
-            if msg["id"].as_u64() == Some(id) {
-                if let Some(e) = msg.get("error") {
-                    bail!("{method}: {}", e["message"].as_str().unwrap_or("failed"));
-                }
-                return Ok(msg["result"].clone());
-            }
-            if msg.get("method").is_some() {
-                self.events.push_back(msg);
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.read_message(left)? {
+                Some(msg) if msg["id"].as_u64() == Some(id) => return Ok(Some(msg)),
+                Some(msg) if msg.get("method").is_some() => self.events.push_back(msg),
+                Some(_) => {}
+                None if left.is_zero() => return Ok(None),
+                None => {}
             }
         }
     }
@@ -112,6 +142,14 @@ impl Cdp {
 
     /// One whole message, or None if none arrived within `timeout`.
     fn read_message(&mut self, timeout: Duration) -> Result<Option<Value>> {
+        #[cfg(unix)]
+        if let Link::Pipe { from, .. } = &mut self.link {
+            return read_piped(from, &mut self.buf, &mut self.chunk, timeout);
+        }
+        self.read_frames(timeout)
+    }
+
+    fn read_frames(&mut self, timeout: Duration) -> Result<Option<Value>> {
         let deadline = Instant::now() + timeout;
         loop {
             while let Some((opcode, fin, payload, used)) = parse_frame(&self.buf)? {
@@ -133,9 +171,14 @@ impl Cdp {
                 }
             }
             let left = deadline.saturating_duration_since(Instant::now());
+            let stream = match &mut self.link {
+                Link::Socket(s) => s,
+                #[cfg(unix)]
+                Link::Pipe { .. } => unreachable!("frames come on the socket only"),
+            };
             // A zero timeout means "block" to the socket, so wait at least a moment.
-            self.stream.set_read_timeout(Some(left.max(Duration::from_millis(1))))?;
-            match self.stream.read(&mut self.chunk) {
+            stream.set_read_timeout(Some(left.max(Duration::from_millis(1))))?;
+            match stream.read(&mut self.chunk) {
                 Ok(0) => bail!("the browser closed the DevTools connection"),
                 Ok(n) => self.buf.extend_from_slice(&self.chunk[..n]),
                 Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
@@ -148,6 +191,14 @@ impl Cdp {
         }
     }
 
+    fn write_message(&mut self, text: &[u8]) -> Result<()> {
+        #[cfg(unix)]
+        if let Link::Pipe { to, .. } = &mut self.link {
+            return to.write_all(&[text, b"\0"].concat()).context("writing to the browser");
+        }
+        self.write_frame(0x1, text)
+    }
+
     fn write_frame(&mut self, opcode: u8, payload: &[u8]) -> Result<()> {
         // Clients must mask what they send. The mask only matters to proxies, and
         // there are none on loopback, so a cheap generator will do.
@@ -155,7 +206,49 @@ impl Cdp {
         self.mask_seed ^= self.mask_seed >> 17;
         self.mask_seed ^= self.mask_seed << 5;
         let frame = encode_frame(opcode, payload, self.mask_seed.to_le_bytes());
-        self.stream.write_all(&frame).context("writing to the browser")
+        let stream = match &mut self.link {
+            Link::Socket(s) => s,
+            #[cfg(unix)]
+            Link::Pipe { .. } => unreachable!("frames go on the socket only"),
+        };
+        stream.write_all(&frame).context("writing to the browser")
+    }
+}
+
+/// One message from the browser's pipe, or None if none arrived within `timeout`.
+#[cfg(unix)]
+fn read_piped(from: &mut std::fs::File, buf: &mut Vec<u8>, chunk: &mut [u8], timeout: Duration) -> Result<Option<Value>> {
+    use std::os::fd::AsRawFd;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(end) = buf.iter().position(|&b| b == 0) {
+            let msg: Vec<u8> = buf.drain(..=end).take(end).collect();
+            return Ok(Some(serde_json::from_slice(&msg).context("a DevTools message that is not JSON")?));
+        }
+        if buf.len() > MAX_MESSAGE {
+            bail!("a DevTools message over {} MB", MAX_MESSAGE >> 20);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        let mut fd = libc::pollfd { fd: from.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let ms = left.as_millis().min(i32::MAX as u128) as i32;
+        // SAFETY: one pollfd that lives through the call.
+        let ready = unsafe { libc::poll(&mut fd, 1, ms) };
+        if ready < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e).context("waiting for the browser");
+        }
+        if ready == 0 {
+            return Ok(None);
+        }
+        match from.read(chunk) {
+            Ok(0) => bail!("the browser closed the DevTools connection"),
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e).context("reading from the browser"),
+        }
     }
 }
 

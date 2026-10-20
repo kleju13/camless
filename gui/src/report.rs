@@ -1,4 +1,4 @@
-//! A hardware report for a GitHub issue. `camless.exe report --json` gathers it in
+//! A hardware report for a GitHub issue. `camless report --json` gathers it in
 //! the background, as asking the service and the devices takes a few seconds. The
 //! page shows all of it; Open on GitHub opens a new issue with the report filled in.
 //! Nothing is sent from here: the issue exists once the person submits it on GitHub.
@@ -53,7 +53,7 @@ pub fn state() -> State {
 
 /// Gathers a report for the service that runs `config`, in the background.
 pub fn start(config: &Path) -> Result<()> {
-    let exe = client::daemon_exe().context("camless.exe is not next to camless-gui.exe")?;
+    let exe = client::daemon_exe().context(client::NO_DAEMON)?;
     {
         let mut s = lock();
         if s.busy {
@@ -88,21 +88,29 @@ struct Report {
 /// maintainer's PC it takes under half a second.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Where to run the report by hand when it takes too long here.
+#[cfg(windows)]
+const BY_HAND: &str = r#"Run it in PowerShell instead, where it can take as long as it needs: & "$env:LOCALAPPDATA\Programs\camless\camless.exe" report"#;
+#[cfg(not(windows))]
+const BY_HAND: &str = "Run it in a terminal instead, where it can take as long as it needs: camless report";
+
 fn run(exe: &Path, config: &Path) -> Result<Report> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut command = Command::new(exe);
-    command.arg("report").arg(config).arg("--json").creation_flags(CREATE_NO_WINDOW);
-    let Some(out) = output_within(&mut command, TIMEOUT).context("running camless.exe report")? else {
-        bail!(
-            r#"The report took more than {} seconds, so camless stopped it. Run it in PowerShell instead, where it can take as long as it needs: & "$env:LOCALAPPDATA\Programs\camless\camless.exe" report"#,
-            TIMEOUT.as_secs()
-        );
+    command.arg("report").arg(config).arg("--json");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let what = format!("{} report", client::DAEMON);
+    let Some(out) = output_within(&mut command, TIMEOUT).with_context(|| format!("running {what}"))? else {
+        bail!("The report took more than {} seconds, so camless stopped it. {BY_HAND}", TIMEOUT.as_secs());
     };
     if !out.status.success() {
-        bail!("camless.exe report failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!("{what} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
-    serde_json::from_slice(&out.stdout).context("reading what camless.exe report printed")
+    serde_json::from_slice(&out.stdout).with_context(|| format!("reading what {what} printed"))
 }
 
 /// `Command::output`, but the child is killed after `limit`, and then this gives `None`.
@@ -120,6 +128,9 @@ fn output_within(command: &mut Command, limit: Duration) -> std::io::Result<Opti
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
+            // Linux keeps a killed child until it is waited for.
+            #[cfg(not(windows))]
+            thread::spawn(move || child.wait());
             return Ok(None);
         }
         thread::sleep(Duration::from_millis(50));
@@ -177,6 +188,7 @@ fn encode(s: &str) -> String {
 
 /// ShellExecuteExW hands the browser the whole URL. `explorer.exe <url>`, which
 /// opens the release notes, drops URLs with a query and cuts others at 260 characters.
+#[cfg(windows)]
 pub fn open_url(url: &str) -> Result<()> {
     use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW};
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -193,6 +205,22 @@ pub fn open_url(url: &str) -> Result<()> {
             bail!("opening the browser: {}", std::io::Error::last_os_error());
         }
     }
+    Ok(())
+}
+
+/// The desktop's browser for a URL, or its file manager for a folder, through
+/// xdg-open, which every desktop has.
+#[cfg(not(windows))]
+pub fn open_url(target: &str) -> Result<()> {
+    let mut child = Command::new("xdg-open")
+        .arg(target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("running xdg-open")?;
+    // It hands the target over and exits; reaped so no zombie stays.
+    thread::spawn(move || child.wait());
     Ok(())
 }
 
@@ -231,9 +259,17 @@ mod tests {
 
     #[test]
     fn a_report_that_hangs_is_stopped() {
-        // ping waits a second between pings, so this one would take about 30 s.
+        // Both would take about 30 s: ping waits a second between pings.
         let start = Instant::now();
-        let out = output_within(Command::new("ping").args(["-n", "31", "127.0.0.1"]), Duration::from_millis(500)).unwrap();
+        #[cfg(windows)]
+        let mut hangs = Command::new("ping");
+        #[cfg(windows)]
+        hangs.args(["-n", "31", "127.0.0.1"]);
+        #[cfg(not(windows))]
+        let mut hangs = Command::new("sleep");
+        #[cfg(not(windows))]
+        hangs.arg("30");
+        let out = output_within(&mut hangs, Duration::from_millis(500)).unwrap();
         assert!(out.is_none());
         assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
     }
@@ -243,7 +279,10 @@ mod tests {
         // 4 MB. Read only after the child exits, this much holds `type` up until the kill.
         let file = std::env::temp_dir().join(format!("camless-report-pipe-{}.txt", std::process::id()));
         std::fs::write(&file, "0123456789abcdef".repeat(1 << 18)).unwrap();
+        #[cfg(windows)]
         let out = output_within(Command::new("cmd").arg("/C").arg("type").arg(&file), TIMEOUT);
+        #[cfg(not(windows))]
+        let out = output_within(Command::new("cat").arg(&file), TIMEOUT);
         let _ = std::fs::remove_file(&file);
         let out = out.unwrap().expect("cmd finished");
         assert!(out.status.success());

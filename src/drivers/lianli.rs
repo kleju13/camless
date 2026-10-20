@@ -12,13 +12,16 @@
 //! Every command is a 7-byte feature report with id `E0` on the hub's vendor
 //! collection (usage page `FF72`, usage `A1`). The speeds and the firmware version
 //! come back as input reports read on request, which hidapi's Windows backend
-//! cannot do: see `winhid`.
+//! cannot do: see `winhid`, and `hidraw` on Linux.
 //!
 //! Sources: Nexus (`src/Peripherals/LianLi`, `src/Cooling/LianLiCoolingProvider.cs`),
 //! which follows FanControl.LianLi and L-Connect 3. Nexus calls its Lian Li support
 //! experimental, and ran the SL-Infinity and SL hubs only; the other families come
 //! from its tables. Not verified on hardware.
 
+#[cfg(target_os = "linux")]
+use super::hidraw::Hid;
+#[cfg(windows)]
 use super::winhid::Hid;
 use super::{Driver, FanReading, Found, Model, Reading, Vendor};
 use anyhow::{bail, Context, Result};
@@ -183,10 +186,10 @@ pub struct LianLi {
     last_poll: SystemTime,
 }
 
-fn open(_: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
+fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
     let m = found.model;
     let profile = profile(m.pid).context("no profile for this hub")?;
-    let hid = Hid::open(&found.path)?;
+    let hid = Hid::open(api, &found.path)?;
     let mut d = LianLi {
         model: m,
         profile,

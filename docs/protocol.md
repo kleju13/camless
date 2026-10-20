@@ -13,6 +13,12 @@ Sources:
 - Reports are numbered, and the report ID is the first command byte. Payloads go out as they are, padded to at least 64 bytes. Some are longer: the Control Hub's static colour is 76 bytes.
 - The NZXT CAM app opens both devices exclusively. Another process can open them but gets `Access is denied` on the first read. CAM Service (`service.exe`) does not hold them: camless drives both devices while it runs.
 
+**On Linux** (not yet run on hardware)
+- The same bytes go out. HID goes through hidapi's hidraw backend (hidapi 0.15, built in). A hidraw node is a whole USB interface, and hidapi lists each top-level collection in its report descriptor, so camless matches a usage page as on Windows, then opens the interface's node. The LCD's bulk interface and the Asetek-made Krakens go through usbfs, where Windows needs WinUSB.
+- The device files belong to root. `linux/71-camless.rules` tags the hidraw and USB nodes of the drivers' models, and no others, with `uaccess`, as liquidctl's `71-liquidctl.rules` does: systemd then gives them to the user at the seat. liquidctl's file notes that a hidraw node can keep its old rights until the device is plugged in again or the PC restarts, so `install.sh` says so.
+- `camless report` reads the configuration descriptor from sysfs (`descriptors`) and the report descriptor from `/sys/class/hidraw/<node>/device/report_descriptor`, which need no access to the device.
+- Kernel drivers: `nzxt-kraken3` and `nzxt-kraken2` bind to the Krakens as hwmon drivers and start them with `HID_CONNECT_HIDRAW`, so the hidraw node stays, and camless reaches the device beside them.
+
 **Kraken Elite V2**
 - Init: `70 02 01 B8 01`, then `70 01`.
 - Firmware: `10 01` → `11 01`, version in bytes 17..19.
@@ -94,7 +100,7 @@ Sources:
 - After sleep the hub is out of manual mode (Nexus re-enters it on resume). camless takes a gap of over 30 s between polls for a wake-up and enters manual mode again.
 - L-Connect: Nexus leaves the hubs alone while `L-Connect 3`, `L-Connect`, `LConnect3` or `LConnect` runs, by process name. camless does the same, checks every 5 s, and sends the ports it drives back to the motherboard before it lets go. Nexus does not count L-Connect's service (`LConnectService`) as the app running, and neither does camless; nobody has checked whether it drives the fans with the app closed.
 - Not done: lighting, which goes in 353-byte output reports, over `HidD_SetOutputReport` on the SL-Infinity and the interrupt pipe on the SL; the TL, Strimer and wireless controllers, which Nexus drives with other handlers.
-- hidapi's native Windows backend has no `get_input_report`, and it trims output reports to the feature report length. `winhid.rs` makes these calls itself.
+- hidapi's native Windows backend has no `get_input_report`, and it trims output reports to the feature report length. `winhid.rs` makes these calls itself. On Linux, `hidraw.rs` sends the 7-byte feature report as it is (`HIDIOCSFEATURE`) and reads the speeds with `HIDIOCGINPUT`, as Nexus's `LinuxHidDevice.cs` does.
 
 **Hue 2 accessories** (the Krakens since the X3, and the Control Hub)
 - `20 03` → `21 03`: the channel count at `[14]`, then six accessory ids per channel from `[15]`; `00` ends a channel.

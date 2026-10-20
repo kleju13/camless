@@ -12,14 +12,28 @@ const MAX_REPORT_LEN: usize = 512;
 /// The devices answer in a few milliseconds; status broadcasts arrive in between.
 pub const REPLY_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Why a device does not open on Linux, where the device files belong to root: the
+/// udev rules give them to the user at the desk.
+#[cfg(target_os = "linux")]
+pub const NO_ACCESS: &str =
+    "cannot open the device; install.sh's udev rules give access to it (/etc/udev/rules.d/71-camless.rules), and after installing them, plug it in again";
+
 /// Opens one HID interface and makes sure it can be read. An exclusive holder (NZXT
 /// CAM) lets the open succeed without access rights, and only the first read fails.
 pub fn open(api: &HidApi, path: &CStr) -> Result<HidDevice> {
+    #[cfg(windows)]
     let dev = api.open_path(path)?;
+    #[cfg(target_os = "linux")]
+    let dev = api.open_path(path).context(NO_ACCESS)?;
     let mut buf = [0u8; REPORT_LEN];
-    dev.read_timeout(&mut buf, 0).context("held by another program; close NZXT CAM first")?;
+    dev.read_timeout(&mut buf, 0).context(HELD)?;
     Ok(dev)
 }
+
+#[cfg(windows)]
+const HELD: &str = "held by another program; close NZXT CAM first";
+#[cfg(not(windows))]
+const HELD: &str = "held by another program";
 
 /// Reports are numbered and the report ID is the first command byte, so payloads go
 /// out as they are, padded to at least 64 bytes like liquidctl does.

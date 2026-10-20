@@ -17,6 +17,13 @@
   const devName = (id) => { const d = S.device(id); return d ? d.name : id; };
   const hasSetup = (c) => !!c && ['curve', 'fan', 'light', 'lcd'].some((k) => (c[k] || []).length);
   const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+  // On Linux the service runs as the user, with the devices through udev rules, so
+  // administrator rights, the admin task and Start with Windows do not apply.
+  const linux = () => !!S.server && S.server.platform === 'linux';
+  const needsAdmin = (info) => !linux() && !!info && !info.elevated;
+  const daemonExe = () => (linux() ? 'camless' : 'camless.exe');
+  // A message from the service as a sentence, for text that goes on after it.
+  const sentence = (t) => (/[.!?]$/.test(t) ? t : `${t}.`);
 
   // A sensor value with its unit, temperatures in the unit picked in Settings.
   function reading(id, v, dp = 0) {
@@ -178,7 +185,7 @@
       note.textContent = 'Gathering the report…';
       const r = await gatherReport(() => !closed);
       if (closed) return;
-      if (r.error || !r.text) return fail(`<span class="cam-err">The report could not be made: ${esc(r.error || 'camless.exe printed nothing')}</span>`);
+      if (r.error || !r.text) return fail(`<span class="cam-err">The report could not be made: ${esc(r.error || `${daemonExe()} printed nothing`)}</span>`);
       if (!r.fits) {
         try { await navigator.clipboard.writeText(r.text); } catch (e) { return fail(`<span class="cam-err">The report could not be copied: ${esc(e.message)}</span>`); }
       }
@@ -224,7 +231,7 @@
       if (closed) return;
       if (r.error || !r.text) {
         pre.textContent = 'The report could not be made.';
-        note.innerHTML = `<span class="cam-err">${esc(r.error || 'camless.exe printed nothing')}</span>`;
+        note.innerHTML = `<span class="cam-err">${esc(r.error || `${daemonExe()} printed nothing`)}</span>`;
         return;
       }
       report = r;
@@ -331,9 +338,9 @@
       const [text, tone, tip] = busy ? [`${cap(busy)}…`, 'busy', `The camless service is ${busy}.`]
         : apiOff ? ['Not visible', 'off', 'Local API is off, so this window cannot see the service.']
         : !s ? ['Not running', 'bad', 'The camless service is not running. Curves that camless sets are not applied.']
-        : info && !info.elevated ? ['Not as admin', 'warn', 'Running without administrator rights, so CPU temperature and power are off. Restart it and answer Yes when Windows asks.']
+        : needsAdmin(info) ? ['Not as admin', 'warn', 'Running without administrator rights, so CPU temperature and power are off. Restart it and answer Yes when Windows asks.']
         : info && info.cpu_sensor_error ? ['CPU temp off', 'warn', `Running, but CPU temperature is off: ${info.cpu_sensor_error}`]
-        : ['Running', 'ok', info ? 'Running as administrator, with CPU temperature and power.' : 'Running.'];
+        : ['Running', 'ok', info && !linux() ? 'Running as administrator, with CPU temperature and power.' : 'Running.'];
       small.textContent = text;
       el.dataset.tone = tone;
       st.title = tip + ' Open Settings for more.';
@@ -342,7 +349,7 @@
       if (path && act_.dataset.path !== path) {
         act_.dataset.path = path;
         act_.innerHTML = s ? I.rotate : I.play;
-        act_.title = s ? (info && !info.elevated ? 'Restart as administrator' : 'Restart the service') : 'Start the service';
+        act_.title = s ? (needsAdmin(info) ? 'Restart as administrator' : 'Restart the service') : 'Start the service';
         act_.setAttribute('aria-label', act_.title);
       }
     };
@@ -431,7 +438,7 @@
     const status = S.status;
     if (!status) {
       const apiOff = S.config && S.config.api && S.config.api.enabled === false;
-      if (sv.service_busy) out.push({ kind: 'info', html: `<b>${cap(sv.service_busy)} the camless service…</b> If Windows asks for administrator rights, answer Yes for CPU temperature.` });
+      if (sv.service_busy) out.push({ kind: 'info', html: `<b>${cap(sv.service_busy)} the camless service…</b>${linux() ? '' : ' If Windows asks for administrator rights, answer Yes for CPU temperature.'}` });
       else if (apiOff) out.push({ kind: 'warn', html: '<b>Local API is off, so this window cannot see the camless service.</b> Changes are still saved, and the service applies them. Turn Local API on in Settings; it takes effect when the service restarts.' });
       else {
         out.push({
@@ -443,7 +450,7 @@
       return out;
     }
     if (sv.service_busy) out.push({ kind: 'info', html: `<b>${cap(sv.service_busy)} the camless service…</b>` });
-    else if (status.service && !status.service.elevated) {
+    else if (needsAdmin(status.service)) {
       out.push({
         kind: 'warn',
         html: '<b>The service runs without administrator rights, so CPU temperature and power are off.</b> Curves on CPU temperature hold the failsafe speed. Restart it and answer Yes when Windows asks.',
@@ -651,10 +658,11 @@
       },
       actions: [
         { label: 'New profile', onClick: () => { newProfile(); return false; } },
-        { label: 'Import from NZXT CAM', onClick: () => { importCam(); return false; } },
+        // CAM runs on Windows only, so on Linux there are no CAM files to read.
+        linux() ? null : { label: 'Import from NZXT CAM', onClick: () => { importCam(); return false; } },
         { label: 'Import file', onClick: () => { importFile(); return false; } },
         { label: 'Done', primary: true },
-      ],
+      ].filter(Boolean),
     });
   }
 
@@ -1644,7 +1652,7 @@
         : l.mode === 'liquid'
         ? 'The cooler draws this screen itself, so it stays on when camless is closed.'
         : l.mode === 'web'
-          ? `camless shows the page the way CAM’s Web Integration does, so pages made for CAM work. It runs in a hidden Edge window, which takes memory and CPU; the other modes need none.${dialHint(dev)}`
+          ? `camless shows the page the way CAM’s Web Integration does, so pages made for CAM work. It runs in a hidden ${linux() ? 'Chrome, Chromium, Edge or Brave' : 'Edge'} window, which takes memory and CPU; the other modes need none.${dialHint(dev)}`
           : `A program on this PC posts frames to <code>http://${esc(api.listen)}/v1/lcd/frame</code>. When they stop, the screen goes back to the cooler’s own display.${api.enabled === false ? ' <b>Turn on Local API in Settings first.</b>' : ''}`);
       cap1.textContent = l.mode === 'liquid' ? 'Liquid temperature, drawn by the cooler' : l.mode === 'web' ? 'A web page' : 'Frames from a program';
       cv.setAttribute('aria-label', `Screen preview: ${cap1.textContent}, ${l.brightness}% brightness, rotated ${l.orientation}°`);
@@ -2444,7 +2452,9 @@
       let art = null;
       const lists = h('<div></div>');
       const hint = h('<p class="cam-hint cam-gamehint"></p>');
-      hint.innerHTML = 'Games from Steam, Epic Games and Xbox are found on their own. For another one, add its program or folder to <code>[games] add</code> in camless.toml; <code>[games] skip</code> leaves one out. A session ends when the game closes or after 3 minutes in the background. Sessions under a minute are not kept. Covers come from Steam\'s own cache on this PC; camless downloads none.';
+      hint.innerHTML = linux()
+        ? 'Games from Steam, Proton\'s included, are found on their own. For another one, add its program or folder to <code>[games] add</code> in camless.toml; <code>[games] skip</code> leaves one out. Linux does not say which window is in front, so a session lasts while the game runs. Sessions under a minute are not kept. Covers come from Steam\'s own cache on this PC; camless downloads none.'
+        : 'Games from Steam, Epic Games and Xbox are found on their own. For another one, add its program or folder to <code>[games] add</code> in camless.toml; <code>[games] skip</code> leaves one out. A session ends when the game closes or after 3 minutes in the background. Sessions under a minute are not kept. Covers come from Steam\'s own cache on this PC; camless downloads none.';
       el.append(lists, hint);
 
       function live() {
@@ -2452,6 +2462,8 @@
         off.hidden = !why;
         off.textContent = !why ? '' : why === 'needs administrator rights'
           ? 'Frame rates need the service to run as administrator. Play time and temperatures are still recorded.'
+          : why === 'frame rates are counted on Windows only'
+          ? 'camless counts frame rates on Windows only. Play time and temperatures are still recorded.'
           : `No frame rates: ${why}. Play time and temperatures are still recorded.`;
         now.querySelector('h3').textContent = g ? g.name : 'Now playing';
         head.children[1].textContent = g ? (g.in_front ? g.exe : `${g.exe}, in the background`) : '';
@@ -2525,15 +2537,18 @@
     const panel = (title, rows) => { const s = K.section(host, title); const p = h('<div class="cam-panel cam-rows"></div>'); p.append(...rows.filter(Boolean)); s.appendChild(p); return s; };
     const editCfg = (fn, o) => S.edit(fn, Object.assign({ what: 'settings' }, o));
 
-    // The switches show what Windows has, read again every second.
-    const sandboxHint = 'In this test copy the switch changes nothing in Windows.';
-    const autoHint = () => sv.sandbox ? sandboxHint : `camless starts in the tray when you sign in, and starts the service${S.server.admin_task ? ' as administrator.' : ', asking Windows for administrator rights.'}`;
-    const autoRow = row('Start with Windows', autoHint(), null);
-    const autoT = toggle({ checked: sv.autostart, label: 'Start with Windows', onChange: (v) => setAutostart(v, autoT) });
+    // The switches show what the system has, read again every second.
+    const sandboxHint = linux() ? 'In this test copy the switch changes nothing on this PC.' : 'In this test copy the switch changes nothing in Windows.';
+    const autoHint = () => sv.sandbox ? sandboxHint
+      : linux() ? 'camless starts in the tray when you log in, and starts the service if it does not run yet.'
+      : `camless starts in the tray when you sign in, and starts the service${S.server.admin_task ? ' as administrator.' : ', asking Windows for administrator rights.'}`;
+    const autoTitle = linux() ? 'Start at login' : 'Start with Windows';
+    const autoRow = row(autoTitle, autoHint(), null);
+    const autoT = toggle({ checked: sv.autostart, label: autoTitle, onChange: (v) => setAutostart(v, autoT) });
     autoRow.lastElementChild.appendChild(autoT);
     track(S.on('state', () => { if (!autoT.dataset.busy) autoT.set(S.server.autostart); autoRow.hint(autoHint()); }));
 
-    panel('Service', [serviceRow(), adminRow()]);
+    panel('Service', [serviceRow(), linux() ? null : adminRow()]);
 
     panel('General', [
       row('Temperature display', null, choice({ options: [{ value: 'c', label: 'Celsius' }, { value: 'f', label: 'Fahrenheit' }], value: K.prefs.unit, label: 'Temperature display', onChange: (v) => K.setPref('unit', v) })),
@@ -2543,7 +2558,9 @@
         value: K.prefs.motion || 'balanced', label: 'Animations', onChange: (v) => K.setPref('motion', v),
       })),
       autoRow,
-      row('Closing the window', 'camless stays in the tray, and fans keep following their curves. Exit from the tray icon’s menu; the service keeps running either way.', null),
+      row('Closing the window', linux()
+        ? 'camless stays in the tray if the desktop shows tray icons, and closes if not. Fans keep following their curves either way: the service runs on its own.'
+        : 'camless stays in the tray, and fans keep following their curves. Exit from the tray icon’s menu; the service keeps running either way.', null),
     ]);
 
     if (S.config) {
@@ -2582,13 +2599,15 @@
           toast(v ? 'Games is at the bottom of the sidebar now.' : 'Games is off. Sessions recorded so far stay on this PC.');
         },
       }));
-      gamesRow.hint('New, and off until you turn it on. The service then watches which program is in front and keeps each game session: play time, frame rates and temperatures. Frame rates need the service to run as administrator. Sessions stay on this PC.');
+      gamesRow.hint(linux()
+        ? 'New, and off until you turn it on. The service then watches which games run and keeps each game session: play time and temperatures. Frame rates are counted on Windows only. Sessions stay on this PC.'
+        : 'New, and off until you turn it on. The service then watches which program is in front and keeps each game session: play time, frame rates and temperatures. Frame rates need the service to run as administrator. Sessions stay on this PC.');
       panel('Experimental', [gamesRow]);
     }
 
     panel('Profiles and backup', [
       S.config ? row('Profiles', `Running: <b>${esc((S.config.profile) || 'no profile')}</b>.`, button('Manage profiles', { small: true, onClick: profilesDialog })) : null,
-      S.config ? row('Import from NZXT CAM', "Make a profile from CAM's curves, fan names, lighting and LCD mode.", button('Import', { small: true, onClick: importCam })) : null,
+      S.config && !linux() ? row('Import from NZXT CAM', "Make a profile from CAM's curves, fan names, lighting and LCD mode.", button('Import', { small: true, onClick: importCam })) : null,
       S.config ? row('Import a file', 'Make a profile from a <code>camless.toml</code> saved earlier.', button('Import file', { small: true, onClick: importFile })) : null,
       row('Config folder', `<code>${esc(sv.config_path)}</code>`, sv.sandbox ? null : button('Open folder', { small: true, onClick: () => act('open-folder', {}) })),
     ]);
@@ -2608,7 +2627,7 @@
       !devRows.length && !unsupported.length ? row(S.status ? 'No devices found' : 'The service is not running', null, null) : null,
       brands,
       row('Hardware report', 'A device camless does not drive yet, a wrong reading, or an LCD that stays dark: a report opens a GitHub issue with what a fix needs. You see all of it first.', button('Create report', { small: true, onClick: reportDialog })),
-      row('Firmware updates', 'camless shows firmware versions but does not install updates. To update, open NZXT CAM once.', null),
+      row('Firmware updates', `camless shows firmware versions but does not install updates. To update, open NZXT CAM${linux() ? ' on Windows' : ''} once.`, null),
     ]));
 
     panel('About', [
@@ -2663,7 +2682,7 @@
     const sv = S.server, v = esc(sv.update.latest);
     const ok = await confirmBox({
       title: `Update to camless ${sv.update.latest}`,
-      text: `camless downloads ${v}, closes, installs the app and the service together, and opens again.${sv.admin_task ? '' : ' Windows then asks for administrator rights for the service, as at every start.'} For those few seconds, fans that camless sets run at the failsafe speed; curves stored on a cooler keep running.`,
+      text: `camless downloads ${v}, closes, installs the app and the service together, and opens again.${sv.admin_task || linux() ? '' : ' Windows then asks for administrator rights for the service, as at every start.'} For those few seconds, fans that camless sets run at the failsafe speed; curves stored on a cooler keep running.`,
       ok: 'Update',
     });
     if (ok) act('update/install', {});
@@ -2682,8 +2701,9 @@
       if (busy) hint = `${cap(busy)}…`;
       else if (!st) hint = 'Not running, so curves that camless sets are not applied. Curves stored on a cooler keep running.';
       else if (!info) hint = 'Running. This service is older than the app, so it does not say whether it has administrator rights.';
+      else if (linux()) hint = info.cpu_sensor_error ? `Running, but CPU temperature is off: ${esc(sentence(info.cpu_sensor_error))}` : 'Running as you, with the devices through camless’s udev rules.';
       else if (!info.elevated) hint = 'Running without administrator rights, so CPU temperature and power are off. Restart asks Windows for them.';
-      else if (info.cpu_sensor_error) hint = `Running as administrator, but CPU temperature is off: ${esc(info.cpu_sensor_error)}`;
+      else if (info.cpu_sensor_error) hint = `Running as administrator, but CPU temperature is off: ${esc(sentence(info.cpu_sensor_error))}`;
       else hint = 'Running as administrator, with CPU temperature and power.';
       if (info) hint += ` Process ${info.pid}.`;
       r.hint(hint);

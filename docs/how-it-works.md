@@ -1,10 +1,10 @@
 # How camless works
 
-camless is two programs:
+camless is two programs, `camless` and `camless-gui` on [Linux](#linux):
 - `camless.exe` is the service. It finds NZXT devices, runs the curves, sets lighting and drives the LCD.
 - `camless-gui.exe` is the app. It edits `camless.toml`, and the service applies every change within a second. Closing its window keeps it in the tray, and *Exit* in the tray menu quits it. Closing the app never stops fan control.
 
-The app starts the service if it is not running. It asks Windows for administrator rights (UAC), so CPU temperature works. If the answer is no, the service runs without them and the app says so. The bottom of the sidebar always shows the service's state with a start or restart button, and *Settings → Service* starts, restarts and stops it.
+The app starts the service if it is not running. On Windows, it asks for administrator rights (UAC), so CPU temperature works. If the answer is no, the service runs without them and the app says so. The bottom of the sidebar always shows the service's state with a start or restart button, and *Settings → Service* starts, restarts and stops it.
 
 *Settings → Service → Start as administrator without asking* stops the prompts. It is off until you turn it on, and Windows asks once then. The app sets up a scheduled task, `camless (<your user name>)`, that runs `camless-gui.exe --start-service` with your full rights, and from then on starts the service through it, also at logon with *Start with Windows*. The task has no trigger of its own. You may run and delete it without administrator rights, so turning the switch off and uninstalling need none. The trade-off: camless sits in a folder you can write to, so any program you run could replace it and use the task to get administrator rights without a prompt. On a standard account the switch refuses: a task that runs as you could not give the service administrator rights.
 
@@ -78,6 +78,8 @@ To add it to Claude Code:
 claude mcp add camless -- C:\Users\<you>\AppData\Local\Programs\camless\camless.exe mcp
 ```
 
+On Linux, the command is `~/.local/bin/camless mcp`.
+
 Or to Claude Desktop, in `claude_desktop_config.json`:
 
 ```json
@@ -96,12 +98,12 @@ Nexus has an MCP server for its cooling too, and this one was inspired by it.
 ## Web pages on the LCD
 
 `mode = "web"` shows a page the way CAM's Web Integration does, so pages made for CAM, such as [KrakenDial](https://github.com/kleju13/krakendial), work unchanged:
-- a headless Microsoft Edge (or Chrome, if there is no Edge) renders it at the screen's size, 640×640 on a Kraken Elite;
+- a headless Microsoft Edge (or Chrome, if there is no Edge) renders it at the screen's size, 640×640 on a Kraken Elite. On Linux it is the first of Chrome, Chromium, Edge and Brave that is installed, or Ubuntu's Chromium snap, which has not been tried yet;
 - the URL gets `?kraken=1`, which tells a page it is on the cooler;
 - `window.nzxt.v1` has `width`, `height`, `shape` and `targetFps`, and `window.nzxt.v1.onMonitoringDataUpdate` gets CAM's monitoring object every second;
 - what the page draws goes to the screen at up to `fps` frames per second, and a page that stops changing is sent again every second.
 
-The browser runs as the signed-in user even when camless runs as administrator, with its own profile in `%LOCALAPPDATA%\camless\browser`, and it ends with camless. If the page does not load, the screen shows liquid temperature and camless tries again every 10 s. `camless lcd page URL` renders a page once, without a device, to check it.
+The browser runs as the signed-in user even when camless runs as administrator, with its own profile in `%LOCALAPPDATA%\camless\browser` (on Linux `~/.local/share/camless/browser`), and it ends with camless. On Linux camless drives it through two pipes (`--remote-debugging-pipe`) rather than a debugging port on 127.0.0.1, which other users of the computer could reach too. If the page does not load, the screen shows liquid temperature and camless tries again every 10 s. `camless lcd page URL` renders a page once, without a device, to check it.
 
 A browser is the heavy part of camless: KrakenDial with a video background takes Edge about 170 MB of memory and 40 % of one CPU core. Edge runs without a GPU, as CAM's Web Integration does, which saves it about 150 MB. The other LCD modes need no browser.
 
@@ -137,4 +139,27 @@ The app asks GitHub for the latest release once each time it starts. *Update* do
 - **Stable**, the default, offers releases.
 - **Beta** offers betas too: GitHub pre-releases such as 0.5.0-beta.1, then beta.2 and so on. Once they have been tried, the version itself comes out as the release, 0.5.0.
 
-Back on Stable, camless keeps the version it has until a newer release comes out. `install.ps1` always installs the latest release, never a beta. In `camless.toml` the channel is `updates = "beta"`.
+Back on Stable, camless keeps the version it has until a newer release comes out. `install.ps1` always installs the latest release, never a beta. In `camless.toml` the channel is `updates = "beta"`. On Linux, `install.sh` installs and updates camless; [Linux](#linux) has the details.
+
+## Linux
+
+The same service and app, built for Linux. They have not run on NZXT hardware yet. What was tested: the build and the tests on Ubuntu 22.04, and on 24.04 `install.sh`, the systemd service, updates over it, `uninstall.sh` and the app with `camless run --demo`. What differs from Windows:
+
+- **The service** runs as you, as the systemd user service `camless.service`, which `install.sh` sets up to start when you log in. Without a systemd user session, the app starts it, as on Windows. *Settings → Service* starts, restarts and stops it either way. `systemctl --user status camless` and `journalctl --user -u camless` show how it runs.
+- **Devices.** camless opens their hidraw nodes, and usbfs for the LCD and the Asetek-made Krakens. The device files belong to root. `71-camless.rules` tags the models camless has a driver for, and no others, with `uaccess`, which gives them to the user logged in at the computer, as liquidctl's `71-liquidctl.rules` does. A test checks that the rules list exactly the drivers' models. The service drives the devices while you are logged in at the computer, not at the login screen or over SSH alone; a Kraken runs its stored curves meanwhile. CAM does not run on Linux, so nothing holds the devices. A kernel hwmon driver such as `nzxt-kraken3` can stay bound, as hidraw reaches the device beside it.
+- **Sensors**, read as Nexus reads them on Linux. CPU temperature comes from hwmon: Tctl from k10temp or zenpower on AMD, the package from coretemp on Intel. Load comes from `/proc/stat` and memory from `/proc/meminfo`. CPU power comes from RAPL's energy counter, which only root can read since the PLATYPUS side channel, so the service usually has none. NVIDIA GPUs are read through NVML (`libnvidia-ml.so.1`, from the driver), AMD GPUs through amdgpu's files in sysfs.
+- **Other brands.** A Lian Li hub's feature reports go out as they are, 7 bytes, where Windows pads them to the hub's report length, and its speeds come back through `HIDIOCGINPUT`, as in Nexus's `LinuxHidDevice`.
+- **Games** come from Steam libraries (`steamapps/common`): native games, and Windows games under Proton or Wine, whose path camless reads from the Windows path Wine runs them by, where `Z:\` is `/`. Proton and the Steam Linux Runtime are not games. Epic and Xbox games are not found; `[games] add` adds others. camless does not ask which window is in front (Wayland does not say), so a game counts as played while it runs, and its session ends when it closes. There are no frame rates, which come from ETW on Windows, and no `camless fps`. Covers come from Steam's cache in `~/.steam/steam`, `~/.local/share/Steam` or the Flatpak's `~/.var/app/com.valvesoftware.Steam/.local/share/Steam`, where Nexus looks for Steam.
+- **The app** is a GTK window with the page in WebKitGTK, and a tray icon through AppIndicator. The icon shows only on a desktop that shows such icons (it asks for `org.kde.StatusNotifierWatcher` on the session bus): KDE Plasma, or GNOME with the AppIndicator extension. Without one, the window is the app, and closing it quits the app while the service keeps running. A second launch brings the open window to the front. *Start at login* writes `~/.config/autostart/camless.desktop`, which opens the app in the tray. WebKit draws the page on the CPU, which takes its web process about 200 MB instead of 430 MB (measured on Xvfb): the app sets `WEBKIT_DISABLE_COMPOSITING_MODE=1` unless it is set already. If the window stays blank on NVIDIA's driver, start the app with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+- **Updates.** The app downloads `camless-linux-x86_64.tar.gz`, checks it against the release's SHA-256, unpacks it in `~/.cache/camless/update`, quits and runs its `install.sh --update`. That replaces both programs, restarts the systemd service (without one, it restarts the service the app started, from the new program, with the same config), installs changed udev rules if the desktop can ask for your password (pkexec), and opens the app again. It logs to `~/.local/state/camless/update.log`. Releases without the Linux tarball are not offered. The app updates itself only if it can write the folder it runs from.
+
+| Linux | |
+|---|---|
+| `~/.local/bin` | `camless` and `camless-gui` (`CAMLESS_BIN_DIR` for `install.sh` puts them elsewhere) |
+| `~/.config/camless` | `camless.toml`, the history and the game sessions (`$XDG_CONFIG_HOME/camless`) |
+| `~/.config/systemd/user/camless.service` | the service, when there is a systemd user session |
+| `/etc/udev/rules.d/71-camless.rules` | access to the devices camless drives |
+| `~/.local/share/camless` | the app's WebKit data, the LCD browser's profile and `uninstall.sh` |
+| `~/.cache/camless/update`, `~/.local/state/camless/update.log` | the last update and its log |
+
+`~/.local/share/camless/uninstall.sh` removes all of it except `~/.config/camless`.

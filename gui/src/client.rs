@@ -80,19 +80,32 @@ pub fn spawn(addr: String) -> Arc<Mutex<Link>> {
     link
 }
 
-/// `camless.exe` next to this program.
+/// The service's program, next to this one.
+#[cfg(windows)]
+pub const DAEMON: &str = "camless.exe";
+#[cfg(not(windows))]
+pub const DAEMON: &str = "camless";
+
+/// What the app says when the service's program is missing.
+#[cfg(windows)]
+pub const NO_DAEMON: &str = "camless.exe is not next to camless-gui.exe";
+#[cfg(not(windows))]
+pub const NO_DAEMON: &str = "camless is not next to camless-gui";
+
+/// `camless.exe` next to this program, `camless` on Linux.
 pub fn daemon_exe() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?.parent()?.join("camless.exe");
+    let exe = std::env::current_exe().ok()?.parent()?.join(DAEMON);
     exe.exists().then_some(exe)
 }
 
 /// Starts `camless run <config>` without a console window. It keeps running when
 /// the app exits, so the fans stay on their curves.
+#[cfg(windows)]
 pub fn start_daemon(config: &Path) -> Result<()> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
-    let exe = daemon_exe().context("camless.exe is not next to camless-gui.exe")?;
+    let exe = daemon_exe().context(NO_DAEMON)?;
     std::process::Command::new(exe)
         .arg("run")
         .arg(config)
@@ -102,5 +115,26 @@ pub fn start_daemon(config: &Path) -> Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .context("starting camless.exe")?;
+    Ok(())
+}
+
+/// Starts `camless run <config>` in a session of its own, so it outlives the app and
+/// the terminal the app was started from, and keeps the fans on their curves.
+#[cfg(not(windows))]
+pub fn start_daemon(config: &Path) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let exe = daemon_exe().context(NO_DAEMON)?;
+    let mut command = std::process::Command::new(exe);
+    command.arg("run").arg(config).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // SAFETY: setsid is async-signal-safe, as code between fork and exec must be.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().context("starting camless")?;
+    // Reaped when it exits, so no zombie stays while the app runs.
+    std::thread::spawn(move || child.wait());
     Ok(())
 }

@@ -19,10 +19,12 @@ serde_json = "1"
 tiny_http = "0.12"
 # The tray icon and its menu.
 tray-icon = "0.26"
+# The page inside the window: WebView2 on Windows, WebKitGTK on Linux.
+wry = { version = "0.57", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
 # The window. tray-icon and wry both run on its event loop.
 winit = "0.30"
-# The page inside the window, in the WebView2 that ships with Windows.
-wry = { version = "0.57", default-features = false }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Networking_WinHttp",
@@ -36,6 +38,20 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The window and the main loop: wry's WebKitGTK and tray-icon's AppIndicator menu
+# both run on GTK 3.
+gtk = "0.18"
+# WebKitGTK, and the bodies of the page's POST and PUT requests (WebKitGTK 2.40).
+wry = { version = "0.57", default-features = false, features = ["os-webview", "linux-body"] }
+# camless.png for the tray and the window.
+png = "0.18"
+# Checks a downloaded update; Windows has BCrypt for it.
+sha2 = "0.10"
+# The user id, for the socket that keeps the app to one copy.
+libc = "0.2"
+
 [build-dependencies]
 # Puts camless.ico into the exe, for Explorer, the taskbar, the tray and the window.
+# Does nothing when building for Linux.
 embed-resource = "3"

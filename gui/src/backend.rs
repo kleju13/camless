@@ -1,6 +1,6 @@
 //! What the page asks of the app: the daemon's status, `camless.toml` and the
 //! profiles beside it, and a few things only a desktop program can do. The window
-//! reaches it through WebView2's custom protocol, `--serve` through loopback HTTP;
+//! reaches it through the webview's custom protocol, `--serve` through loopback HTTP;
 //! both pass every request to [`Backend::handle`].
 //!
 //! The page keeps the draft and sends the whole config to save; the daemon applies
@@ -194,6 +194,8 @@ impl Backend {
             .collect();
         json!({
             "app_version": env!("CARGO_PKG_VERSION"),
+            // The page words what differs: administrator rights, the tray, Start with Windows.
+            "platform": if cfg!(windows) { "windows" } else { "linux" },
             "config_path": path.display().to_string(),
             "config": config,
             "load_error": load_error,
@@ -411,7 +413,10 @@ impl Backend {
             bail_refused("the sandbox does not open a browser")?;
         }
         let page = update::page().ok_or_else(|| anyhow!("no release found yet; check for updates first"))?;
+        #[cfg(windows)]
         std::process::Command::new("explorer.exe").arg(page).spawn().context("opening the browser")?;
+        #[cfg(not(windows))]
+        report::open_url(&page)?;
         Ok(json!({}))
     }
 
@@ -448,7 +453,10 @@ impl Backend {
         }
         let path = self.path();
         let dir = path.parent().filter(|d| d.exists()).ok_or_else(|| anyhow!("{} has no folder yet", path.display()))?;
+        #[cfg(windows)]
         std::process::Command::new("explorer.exe").arg(dir).spawn().context("starting Explorer")?;
+        #[cfg(not(windows))]
+        report::open_url(&dir.to_string_lossy())?;
         Ok(json!({}))
     }
 }

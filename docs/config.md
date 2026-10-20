@@ -2,7 +2,7 @@
 
 The app writes the config for you. This page is for reading or editing it by hand.
 
-The config is `camless.toml` next to `camless.exe` if there is one, else `%APPDATA%\camless\camless.toml`. Device ids and channel names come from `camless status`.
+The config is `camless.toml` next to `camless.exe` if there is one, else `%APPDATA%\camless\camless.toml`. On Linux it is next to `camless`, else `~/.config/camless/camless.toml` (in `$XDG_CONFIG_HOME` if that is set). Device ids and channel names come from `camless status`.
 
 ## Profiles
 
@@ -96,7 +96,7 @@ brightness = 100
 orientation = 0
 ```
 
-`camless import-cam` builds this from CAM's files in `%APPDATA%\NZXT CAM\DataStorage\latest\user`: the active profile's curves (identical ones shared), fan nicknames, lighting and the LCD mode.
+`camless import-cam` builds this from CAM's files in `%APPDATA%\NZXT CAM\DataStorage\latest\user`: the active profile's curves (identical ones shared), fan nicknames, lighting and the LCD mode. CAM runs on Windows only; on Linux, give it that folder copied from Windows.
 
 ## Games
 
@@ -108,6 +108,8 @@ enabled = true                       # follow the game in front; off by default
 add = ["javaw.exe", 'D:\Emulators']   # count these as games too
 skip = ["wallpaper64.exe"]            # never these, even from a store
 ```
+
+On Linux, Steam games are found the same way, and a folder in `add` is a Linux path, such as `'/home/you/Games'`. A Windows game under Wine goes by its `.exe` name.
 
 ## Other brands
 
@@ -122,14 +124,14 @@ camless opens only a hub's vendor-defined HID collection, never a keyboard, mous
 
 ## Commands
 
-`camless.exe` is also a command-line tool:
+`camless.exe` (`camless` on Linux) is also a command-line tool:
 
 ```
 camless status               open every supported device and print its channels, sensors and readings (other brands' with [devices] other_brands on)
 camless list                 NZXT HID devices that are connected
 camless watch [seconds]      listen to input reports without sending anything (--raw for hex)
 camless sensors              read CPU, GPU and memory sensors once
-camless fps [seconds]        print the frame rate of the program in front once a second (needs administrator rights)
+camless fps [seconds]        print the frame rate of the program in front once a second (Windows, with administrator rights)
 camless mcp [config]         an MCP server on stdin and stdout for AI assistants (see How it works)
 camless import-cam [dir]     print a camless.toml built from CAM's active profiles (-o FILE to write it)
 camless check [config]       validate a config and show what each fan follows, without opening a device

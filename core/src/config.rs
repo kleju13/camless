@@ -426,14 +426,32 @@ fn default_fps() -> u8 {
 }
 
 /// `camless.toml` next to camless.exe if there is one (a portable setup), else
-/// `%APPDATA%\camless\camless.toml`.
+/// `%APPDATA%\camless\camless.toml`, on Linux `~/.config/camless/camless.toml`.
 pub fn default_path() -> PathBuf {
     let beside = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("camless.toml")));
     if let Some(p) = beside.filter(|p| p.exists()) {
         return p;
     }
-    let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default();
-    appdata.join("camless").join("camless.toml")
+    app_config_dir().join("camless").join("camless.toml")
+}
+
+/// Where apps keep their settings: `%APPDATA%`, or `$XDG_CONFIG_HOME` and else
+/// `~/.config` on Linux.
+pub fn app_config_dir() -> PathBuf {
+    #[cfg(windows)]
+    return std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default();
+    #[cfg(not(windows))]
+    return xdg_dir("XDG_CONFIG_HOME", ".config");
+}
+
+/// An XDG base directory: the variable if it holds an absolute path, else `fallback`
+/// in the home folder.
+#[cfg(not(windows))]
+pub fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
+    match std::env::var_os(var).map(PathBuf::from) {
+        Some(dir) if dir.is_absolute() => dir,
+        _ => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(fallback),
+    }
 }
 
 fn split_channel(channel: &str) -> Option<(&str, &str)> {

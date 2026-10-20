@@ -11,7 +11,6 @@ publish = false
 
 [dependencies]
 camless-core = { path = "core" }
-hidapi = { version = "2", default-features = false, features = ["windows-native"] }
 nusb = "0.1"
 libloading = "0.8"
 anyhow = "1"
@@ -23,6 +22,9 @@ tiny_http = "0.12"
 png = "0.18"
 # Packs the frames of a background a page hands over; png uses the same version.
 miniz_oxide = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+hidapi = { version = "2", default-features = false, features = ["windows-native"] }
 windows-sys = { version = "0.61", features = [
     # Lian Li hubs: input reports on request, which hidapi's Windows backend lacks.
     "Win32_Devices_HumanInterfaceDevice",
@@ -41,6 +43,12 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Time",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# hidapi's own C library on hidraw, the backend liquidctl uses on Linux.
+hidapi = { version = "2", default-features = false, features = ["linux-static-hidraw"] }
+# Signals, the browser's process group and hidraw.
+libc = "0.2"
 
 [build-dependencies]
 # Puts gui/camless.ico into camless.exe.

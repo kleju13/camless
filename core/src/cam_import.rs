@@ -53,9 +53,10 @@ fn device(uid: &str) -> Option<&'static CamDevice> {
     DEVICES.iter().find(|d| uid.starts_with(d.prefix))
 }
 
+/// CAM's state folder. CAM runs on Windows only; on Linux this is where its Electron
+/// shell would keep it, for a copy of the Windows folder.
 pub fn default_dir() -> PathBuf {
-    let appdata = std::env::var_os("APPDATA").unwrap_or_default();
-    PathBuf::from(appdata).join(r"NZXT CAM\DataStorage\latest\user")
+    crate::config::app_config_dir().join("NZXT CAM").join("DataStorage").join("latest").join("user")
 }
 
 fn read(dir: &Path, name: &str) -> Result<Value> {

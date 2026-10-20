@@ -5,19 +5,27 @@
 //! `camless-gui --serve 127.0.0.1:<port> --config <camless.toml> [--ui-dir <dir>]`
 //! serves the same page to a browser instead, as a sandbox, to work on the UI.
 //! `camless-gui --start-service` starts the service and exits; see [`task`].
+//!
+//! On Linux the window is GTK's and the page WebKitGTK's ([`app`]), the tray icon an
+//! AppIndicator ([`tray`]), and the service a systemd user service ([`service`]).
 
 #![windows_subsystem = "windows"]
 
+// What differs on Linux has a file of its own, under the same module name.
+#[cfg_attr(target_os = "linux", path = "app_gtk.rs")]
 mod app;
 mod art;
 mod assets;
 mod backend;
 mod client;
+#[cfg_attr(target_os = "linux", path = "http_curl.rs")]
 mod http;
 mod report;
 mod serve;
 mod service;
+#[cfg_attr(target_os = "linux", path = "task_none.rs")]
 mod task;
+#[cfg_attr(target_os = "linux", path = "tray_linux.rs")]
 mod tray;
 mod update;
 

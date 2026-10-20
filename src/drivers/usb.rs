@@ -66,6 +66,13 @@ pub fn location(d: &nusb::DeviceInfo) -> String {
     return format!("{}-{}", d.bus_number(), d.device_address());
 }
 
+#[cfg(windows)]
+pub const OPEN_FAILED: &str = "cannot open the USB device";
+/// On Linux the device files belong to root, and the udev rules give them to the user.
+#[cfg(not(windows))]
+pub const OPEN_FAILED: &str =
+    "cannot open the USB device; install.sh's udev rules give access to it (/etc/udev/rules.d/71-camless.rules), and after installing them, plug it in again";
+
 /// Opens the device at `location` and claims its first interface. On Windows that
 /// works only with WinUSB bound to it, which the error says.
 pub fn open(vid: u16, pid: u16, location: &str) -> Result<nusb::Interface> {
@@ -76,6 +83,6 @@ pub fn open(vid: u16, pid: u16, location: &str) -> Result<nusb::Interface> {
     if let Some(driver) = info.driver().filter(|d| !d.eq_ignore_ascii_case("winusb")) {
         bail!("Windows has the {driver} driver on it; camless needs WinUSB there (Zadig installs it)");
     }
-    let dev = info.open().context("cannot open the USB device")?;
+    let dev = info.open().context(OPEN_FAILED)?;
     dev.claim_interface(0).context("cannot claim the USB interface (does another program have it?)")
 }

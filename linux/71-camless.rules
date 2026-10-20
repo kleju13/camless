@@ -1,0 +1,24 @@
+# camless: lets the user at the desk open the devices camless drives, the way
+# liquidctl's 71-liquidctl.rules does, so the service runs as that user and needs no
+# root. `uaccess` hands a device to whoever is logged in at the seat, through the
+# seat rules that run after this file (73-seat-late.rules); the name sorts after
+# systemd's 70-uaccess.rules too, as liquidctl's does. At the login screen the
+# greeter's user has them; over SSH alone, nobody.
+#
+# Only these devices. Access to the hidraw or USB node of a keyboard or mouse would
+# let any program of that user read what is typed, so NZXT's and Lian Li's other
+# products are not in here. A test in src/drivers/mod.rs checks that these lines
+# match the drivers' models.
+#
+# linux/install.sh puts this file in /etc/udev/rules.d.
+
+# NZXT: Kraken X2, M22, X3, Z3, 2023, Elite 2023, Elite 2024, Plus 2024; Control Hub.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="170e|1715|2007|2014|3008|300e|300c|3012|3014|2022", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="170e|1715|2007|2014|3008|300e|300c|3012|3014|2022", TAG+="uaccess"
+
+# Asetek-made Krakens X31, X41 and X61: a USB device, not HID.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2433", ATTR{idProduct}=="b200", TAG+="uaccess"
+
+# Lian Li Uni Hubs, which camless drives only with [devices] other_brands on.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0cf2", ATTRS{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0cf2", ATTR{idProduct}=="7750|a100|a101|a102|a103|a104|a105|a106", TAG+="uaccess"

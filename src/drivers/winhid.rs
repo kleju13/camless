@@ -20,7 +20,7 @@ pub struct Hid {
 
 impl Hid {
     /// Opens the collection at a hidapi path, shared, as hidapi does.
-    pub fn open(path: &CStr) -> Result<Hid> {
+    pub fn open(_: &hidapi::HidApi, path: &CStr) -> Result<Hid> {
         let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain([0]).collect();
         let handle = unsafe {
             CreateFileW(

@@ -200,9 +200,9 @@ impl Daemon {
             let Some(sensor) = c.sensor() else { continue };
             let is_host = host.iter().any(|s| s.id == sensor);
             let why = if sensor == "cpu.temp" && !self.sensors.has_cpu_temp() {
-                "no CPU temperature (needs PawnIO and administrator rights)"
+                crate::sensors::NO_CPU_TEMP
             } else if sensor.starts_with("gpu.") && !is_host {
-                "no NVIDIA GPU sensors"
+                if cfg!(windows) { "no NVIDIA GPU sensors" } else { "no NVIDIA or AMD GPU sensors" }
             } else {
                 continue;
             };

@@ -12,6 +12,8 @@ pub mod control_hub;
 pub mod demo;
 pub mod asetek;
 pub mod hid;
+#[cfg(target_os = "linux")]
+pub mod hidraw;
 pub mod hue2;
 pub mod kraken2;
 pub mod kraken3;
@@ -19,6 +21,7 @@ pub mod kraken_elite_v2;
 pub mod lianli;
 pub mod usb;
 pub mod vendor;
+#[cfg(windows)]
 pub mod winhid;
 
 use anyhow::Result;
@@ -266,6 +269,34 @@ mod tests {
         // Nexus badges its Lian Li support experimental.
         assert!(MODELS.iter().filter(|m| m.vendor.is_some()).all(|m| m.experimental));
         assert!(MODELS.iter().filter(|m| m.bus == Bus::Usb).all(|m| m.interface.is_none()));
+    }
+
+    /// linux/71-camless.rules gives the user every model's hidraw nodes and USB
+    /// device, and nothing else: no keyboard or mouse of the same brands.
+    #[test]
+    fn the_udev_rules_name_every_model_and_nothing_else() {
+        use std::collections::BTreeSet;
+        let (mut hidraw, mut usb) = (BTreeSet::new(), BTreeSet::new());
+        let rules = include_str!("../../linux/71-camless.rules");
+        for line in rules.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            assert!(line.ends_with(r#"TAG+="uaccess""#), "{line}");
+            let value = |key: &str| {
+                let rest = line.split(&format!("{key}==\"")).nth(1).unwrap_or_else(|| panic!("no {key} in {line}"));
+                rest.split('"').next().unwrap()
+            };
+            let (set, attr) = match value("SUBSYSTEM") {
+                "hidraw" => (&mut hidraw, "ATTRS"),
+                "usb" => (&mut usb, "ATTR"),
+                other => panic!("subsystem {other} in {line}"),
+            };
+            let vid = u16::from_str_radix(value(&format!("{attr}{{idVendor}}")), 16).unwrap();
+            for pid in value(&format!("{attr}{{idProduct}}")).split('|') {
+                set.insert((vid, u16::from_str_radix(pid, 16).unwrap()));
+            }
+        }
+        let ids = |bus: Option<Bus>| -> BTreeSet<_> { MODELS.iter().filter(|m| bus.is_none_or(|b| m.bus == b)).map(|m| (m.vid, m.pid)).collect() };
+        assert_eq!(hidraw, ids(Some(Bus::Hid)));
+        assert_eq!(usb, ids(None));
     }
 
     #[test]

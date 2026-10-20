@@ -228,7 +228,7 @@ pub fn open_lcd_interface(model: &Model) -> Result<nusb::Interface> {
     let info = nusb::list_devices()?
         .find(|d| d.vendor_id() == model.vid && d.product_id() == model.pid)
         .context("the Kraken's USB device is not visible")?;
-    let dev = info.open().context("cannot open the Kraken's USB device")?;
+    let dev = info.open().context(super::usb::OPEN_FAILED)?;
     dev.claim_interface(0).context("cannot claim the LCD interface (is CAM still running?)")
 }
 
