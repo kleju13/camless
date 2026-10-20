@@ -175,7 +175,7 @@ impl Driver for KrakenEliteV2 {
         Device {
             name: MODEL.name.into(),
             firmware: self.firmware.clone(),
-            verified: true,
+            verified: camless_core::hardware::is_verified(MODEL.vid, MODEL.pid),
             fans: vec![fan("pump", "Pump", true), fan("fan", "Radiator fans", false)],
             lights: vec![
                 LightChannel { id: "ring".into(), name: "Pump ring".into(), leds: self.leds[0], accessories: self.accessories[0].clone() },

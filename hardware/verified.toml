@@ -1,0 +1,26 @@
+# Hardware camless was run on and reported working. The app and `camless status`
+# read this list from the build.
+#
+# A setup is verified when every device camless drives in it is listed here. On any
+# other, the app says the setup has not been verified yet, and offers two reports:
+# "It works" and "Something is wrong". Both open a GitHub issue with the hardware
+# report filled in. A "works" report adds its device here, with that issue as the
+# source.
+#
+# usb       the USB id, vendor:product in lowercase hex, as in `camless report`
+# name      what people call the device
+# firmware  the firmware versions it was reported on; leave it out if unknown
+# checked   what was tried on it: pump, fans, lighting, lcd
+# source    the issue that reported it, or who ran it
+
+[[device]]
+usb = "1e71:3012"
+name = "Kraken Elite 2024 (Kraken Elite V2)"
+checked = ["pump", "fans", "lighting", "lcd"]
+source = "the maintainer's hardware"
+
+[[device]]
+usb = "1e71:2022"
+name = "Control Hub"
+checked = ["fans", "lighting"]
+source = "the maintainer's hardware"

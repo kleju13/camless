@@ -4,6 +4,7 @@
 pub mod cam_import;
 pub mod config;
 pub mod curve;
+pub mod hardware;
 pub mod lighting;
 pub mod status;
 

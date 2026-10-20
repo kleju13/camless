@@ -17,7 +17,7 @@ camless was built with a coding agent, and new devices will mostly come the same
 - **Send only bytes you have a source for:** liquidctl, the Linux drivers, or a capture of CAM made with `tools/capture/`. Don't guess commands on someone's cooler.
 - **Never write flash.** Flash uploads have left Kraken Elites stuck in the bootloader (liquidctl #774, #907, #927). No firmware updates, no images or settings saved to flash: streaming and runtime commands only.
 - **Fail safe.** A curve stored on a device must still speed up when it gets hot.
-- **Mark only what you ran.** Set `verified: true` only for what was tested on the hardware, and say what was tested in the module comment and the pull request.
+- **Mark only what you ran.** Add a device to `hardware/verified.toml` only for what was tested on the hardware, and say what was tested in the module comment and the pull request. `describe()` reads `verified` from that list; don't set it by hand. An "It works" issue from the app is a report from someone who ran it, and its report has the USB id and firmware for the entry.
 
 ## Write down what you learned
 

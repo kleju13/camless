@@ -41,7 +41,7 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
    - pure functions that build and parse reports, with unit tests against captured bytes.
 3. **List it** in `MODELS` in `src/drivers/mod.rs`.
 4. **Check it** with `camless status`. It opens the device once and prints every channel and sensor. Then use `camless run --verbose` with a small config.
-5. **Set `verified: true`** in `describe()` only for what you ran on the hardware. The app shows unverified devices as such. Say in the module comment and the pull request what you tested.
+5. **Add it to `hardware/verified.toml`** only for what you ran on the hardware, with what you checked and the issue or pull request as the source. `describe()` takes `verified` from that list: `camless_core::hardware::is_verified(MODEL.vid, MODEL.pid)`. The app shows any other device as unverified and asks its owner how it works. Say in the module comment and the pull request what you tested.
 6. **Add a section** to `docs/protocol.md`.
 
 Rules for drivers:
