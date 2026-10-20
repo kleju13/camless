@@ -6,10 +6,13 @@
 
 pub mod control_hub;
 pub mod demo;
+pub mod asetek;
 pub mod hid;
 pub mod hue2;
+pub mod kraken2;
 pub mod kraken3;
 pub mod kraken_elite_v2;
+pub mod usb;
 
 use anyhow::Result;
 use camless_core::lighting::Lighting;
@@ -28,8 +31,13 @@ pub const MODELS: &[Model] = &[
     kraken3::Z3,
     kraken3::X3,
     kraken3::X3_2014,
+    kraken2::X2,
+    kraken2::M22,
+    asetek::KRAKEN_X,
     control_hub::MODEL,
 ];
+
+pub type Open = fn(&HidApi, &Found) -> Result<Box<dyn Driver>>;
 
 pub struct Model {
     pub vid: u16,
@@ -39,13 +47,48 @@ pub struct Model {
     /// The device id in the config and the API; a second one gets `#2`.
     pub slug: &'static str,
     pub name: &'static str,
-    pub open: fn(&HidApi, &Found) -> Result<Box<dyn Driver>>,
+    pub bus: Bus,
+    /// No other program drives this model the way camless does: Nexus leaves it out,
+    /// and the driver follows liquidctl alone. Experimental until someone reports it
+    /// working.
+    pub experimental: bool,
+    pub open: Open,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bus {
+    Hid,
+    /// A vendor-class USB device, reached through WinUSB.
+    Usb,
+}
+
+impl Model {
+    /// A HID device on any interface, not experimental.
+    pub const fn hid(vid: u16, pid: u16, slug: &'static str, name: &'static str, open: Open) -> Model {
+        Model { vid, pid, interface: None, slug, name, bus: Bus::Hid, experimental: false, open }
+    }
+
+    /// A vendor-class USB device, not experimental.
+    pub const fn usb(vid: u16, pid: u16, slug: &'static str, name: &'static str, open: Open) -> Model {
+        Model { bus: Bus::Usb, ..Model::hid(vid, pid, slug, name, open) }
+    }
+
+    /// Someone ran camless on it and reported it working: `hardware/verified.toml`.
+    pub fn verified(&self) -> bool {
+        camless_core::hardware::is_verified(self.vid, self.pid)
+    }
+
+    /// Experimental until it is verified.
+    pub fn is_experimental(&self) -> bool {
+        self.experimental && !self.verified()
+    }
 }
 
 /// One supported device on the bus.
 pub struct Found {
     pub model: &'static Model,
     pub id: String,
+    /// The HID path, or for a USB device its bus and address.
     pub path: CString,
 }
 
@@ -141,12 +184,29 @@ pub fn scan(api: &HidApi) -> (Vec<Found>, Vec<Unsupported>) {
         }
         keys.push(key);
     }
+    let usb: Vec<_> = MODELS.iter().filter(|m| m.bus == Bus::Usb).collect();
+    if !usb.is_empty() {
+        for d in nusb::list_devices().into_iter().flatten() {
+            let Some(m) = usb.iter().find(|m| m.vid == d.vendor_id() && m.pid == d.product_id()) else { continue };
+            let n = found.iter().filter(|f| std::ptr::eq(f.model, *m)).count();
+            let id = if n == 0 { m.slug.to_string() } else { format!("{}#{}", m.slug, n + 1) };
+            let path = CString::new(usb::location(&d)).unwrap_or_default();
+            found.push(Found { model: m, id, path });
+        }
+    }
     (found, unsupported)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn experimental_models_are_the_ones_nexus_leaves_out() {
+        let experimental: Vec<_> = MODELS.iter().filter(|m| m.experimental).map(|m| m.slug).collect();
+        assert_eq!(experimental, ["kraken-x2", "kraken-m22", "kraken-x-asetek"]);
+        assert!(MODELS.iter().filter(|m| m.bus == Bus::Usb).all(|m| m.interface.is_none()));
+    }
 
     #[test]
     fn slugs_are_unique() {

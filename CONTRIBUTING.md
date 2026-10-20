@@ -34,14 +34,14 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 
 1. **Find what CAM sends.** Start with [liquidctl](https://github.com/liquidctl/liquidctl): many NZXT devices are documented there, and its sources are the best reference. If it is not there, capture CAM (below).
 2. **Write `src/drivers/<model>.rs`.** Use `control_hub.rs` (fans and lights only) or `kraken_elite_v2.rs` (pump, stored curves, LCD) as a template:
-   - a `pub const MODEL: Model` with the USB vendor and product id, the HID interface if the device has several, a slug for the config (`smart-device-v2`, `rgb-fan-controller`), and the name people know it by;
-   - `describe()`: its fan channels (`pump: true` for pumps, `min_duty`, `device_curves` if it can store curves), light channels with LED counts, and the LCD;
+   - a `pub const MODEL: Model`, from `Model::hid(vid, pid, slug, name, open)`: the USB vendor and product id, a slug for the config (`smart-device-v2`, `rgb-fan-controller`), and the name people know it by. Set `interface` if the device has several HID interfaces. `Model::usb` is for a device that is not HID, which camless reaches through WinUSB (`usb.rs`). Set `experimental: true` when no other program drives the device the way the driver does, for example when Nexus leaves it out and the driver follows liquidctl alone;
+   - `describe()`: its fan channels (`pump: true` for pumps, `min_duty`, `device_curves` if it can store curves), light channels with LED counts (and `modes` if they take fewer than the Hue 2 effects), and the LCD;
    - `sensors()` and `poll()`: readings by the driver's own ids, such as `liquid`;
    - `set_duties()`, `set_lighting()`, and `store_curve()` / `lcd()` where the device supports them;
    - pure functions that build and parse reports, with unit tests against captured bytes.
 3. **List it** in `MODELS` in `src/drivers/mod.rs`.
 4. **Check it** with `camless status`. It opens the device once and prints every channel and sensor. Then use `camless run --verbose` with a small config.
-5. **Add it to `hardware/verified.toml`** only for what you ran on the hardware, with what you checked and the issue or pull request as the source. `describe()` takes `verified` from that list: `camless_core::hardware::is_verified(MODEL.vid, MODEL.pid)`. The app shows any other device as unverified and asks its owner how it works. Say in the module comment and the pull request what you tested.
+5. **Add it to `hardware/verified.toml`** only for what you ran on the hardware, with what you checked and the issue or pull request as the source. `describe()` takes `verified` from that list with `MODEL.verified()`, and `experimental` with `MODEL.is_experimental()`. The app shows any other device as unverified, or experimental, and asks its owner how it works. Say in the module comment and the pull request what you tested.
 6. **Add a section** to `docs/protocol.md`.
 
 Rules for drivers:

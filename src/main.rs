@@ -322,7 +322,11 @@ fn status() -> Result<()> {
             }
         };
         let info = dev.describe();
-        let verified = if info.verified { "" } else { ", not verified on hardware" };
+        let verified = match (info.verified, info.experimental) {
+            (true, _) => "",
+            (false, true) => ", experimental",
+            (false, false) => ", not verified on hardware",
+        };
         println!("{}: {}, firmware {}{verified}", f.id, info.name, info.firmware.as_deref().unwrap_or("?"));
         let reading = dev.poll();
         if let Err(e) = &reading {

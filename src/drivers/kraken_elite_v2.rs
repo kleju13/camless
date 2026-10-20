@@ -8,36 +8,18 @@
 //! the Plus, Nexus (`KrakenModel.cs`, `KrakenProtocol.cs`, `KrakenHub.cs`).
 //! Verified on hardware, the Elite only: pump and fan curves, lighting, LCD streaming.
 
-use super::{hid, hue2, Driver, FanReading, Found, Lcd, Model, Reading};
+use super::{hid, hue2, usb, Driver, FanReading, Found, Lcd, Model, Reading};
 use anyhow::{anyhow, bail, Context as _, Result};
 use camless_core::lighting::Lighting;
 use camless_core::status::{Device, FanChannel, LcdInfo, LightChannel, Unit};
 use hidapi::{HidApi, HidDevice};
-use std::future::Future;
-use std::pin::pin;
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-pub const MODEL: Model = Model {
-    vid: 0x1e71,
-    pid: 0x3012,
-    interface: Some(1),
-    slug: "kraken-elite-v2",
-    name: "Kraken Elite (2024)",
-    open,
-};
+pub const MODEL: Model = Model { interface: Some(1), ..Model::hid(0x1e71, 0x3012, "kraken-elite-v2", "Kraken Elite (2024)", open) };
 
 /// liquidctl's name and 240×240 screen; Nexus lists it as a second Elite 2024 with the
 /// 640×640 one. The driver asks the cooler instead of picking one.
-pub const PLUS: Model = Model {
-    vid: 0x1e71,
-    pid: 0x3014,
-    interface: Some(1),
-    slug: "kraken-plus-2024",
-    name: "Kraken Plus (2024)",
-    open,
-};
+pub const PLUS: Model = Model { interface: Some(1), ..Model::hid(0x1e71, 0x3014, "kraken-plus-2024", "Kraken Plus (2024)", open) };
 
 /// The cooler evaluates its stored curves for liquid temperatures 20..=59 °C.
 const CURVE_FIRST_C: u8 = 20;
@@ -51,7 +33,7 @@ const PLUS_LCD_SIDE: u16 = 240;
 
 /// The floor under every table camless stores, by liquid temperature: if camless
 /// stops or hangs, the cooler still speeds up on its own as the liquid warms.
-fn safety_floor(liquid_c: u8) -> u8 {
+pub fn safety_floor(liquid_c: u8) -> u8 {
     match liquid_c {
         ..=45 => 0,
         55.. => 100,
@@ -116,31 +98,11 @@ pub const LCD_REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 /// loop, so a cooler that never takes one must not hold the fans.
 const LCD_BULK_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Wakes the thread that waits for a transfer.
-struct Unpark(std::thread::Thread);
-
-impl Wake for Unpark {
-    fn wake(self: Arc<Self>) {
-        self.0.unpark();
-    }
-}
-
-/// A bulk write to the LCD that gives up after `LCD_BULK_TIMEOUT`. nusb has no timeout
-/// of its own and no async runtime runs here; dropping its transfer cancels it.
+/// A bulk write to the LCD that gives up after `LCD_BULK_TIMEOUT`.
 pub fn lcd_bulk_out(usb: &nusb::Interface, data: Vec<u8>) -> Result<()> {
-    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
-    let mut cx = Context::from_waker(&waker);
-    let mut transfer = pin!(usb.bulk_out(LCD_BULK_ENDPOINT, data));
-    let end = Instant::now() + LCD_BULK_TIMEOUT;
-    loop {
-        if let Poll::Ready(done) = transfer.as_mut().poll(&mut cx) {
-            return done.status.map_err(|e| anyhow!("bulk transfer to the LCD failed: {e}"));
-        }
-        let left = end.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            bail!("the LCD took no data within {} ms", LCD_BULK_TIMEOUT.as_millis());
-        }
-        std::thread::park_timeout(left);
+    match usb::wait(usb.bulk_out(LCD_BULK_ENDPOINT, data), LCD_BULK_TIMEOUT) {
+        Some(done) => done.status.map_err(|e| anyhow!("bulk transfer to the LCD failed: {e}")),
+        None => bail!("the LCD took no data within {} ms", LCD_BULK_TIMEOUT.as_millis()),
     }
 }
 
@@ -283,12 +245,12 @@ impl Driver for KrakenEliteV2 {
         Device {
             name: self.model.name.into(),
             firmware: self.firmware.clone(),
-            verified: camless_core::hardware::is_verified(self.model.vid, self.model.pid),
+            verified: self.model.verified(),
             fans: vec![fan("pump", "Pump", true), fan("fan", "Radiator fans", false)],
             lights: self
                 .lights
                 .iter()
-                .map(|l| LightChannel { id: l.id.into(), name: l.name.into(), leds: l.leds, accessories: l.accessories.clone() })
+                .map(|l| LightChannel { id: l.id.into(), name: l.name.into(), leds: l.leds, accessories: l.accessories.clone(), ..Default::default() })
                 .collect(),
             lcd: Some(LcdInfo { width: self.lcd_size.0, height: self.lcd_size.1, round: true, frames: true }),
             ..Default::default()

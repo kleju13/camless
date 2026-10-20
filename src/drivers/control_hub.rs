@@ -11,14 +11,7 @@ use camless_core::status::{Device, FanChannel, LightChannel, Unit};
 use hidapi::{HidApi, HidDevice};
 use std::time::{Duration, Instant};
 
-pub const MODEL: Model = Model {
-    vid: 0x1e71,
-    pid: 0x2022,
-    interface: None,
-    slug: "control-hub",
-    name: "Control Hub",
-    open,
-};
+pub const MODEL: Model = Model::hid(0x1e71, 0x2022, "control-hub", "Control Hub", open);
 
 const PORTS: usize = 5;
 /// LED ports 1..=5 as channel bytes (liquidctl's mapping, matching CAM's captures).
@@ -122,7 +115,7 @@ impl Driver for ControlHub {
         Device {
             name: MODEL.name.into(),
             firmware: self.firmware.clone(),
-            verified: camless_core::hardware::is_verified(MODEL.vid, MODEL.pid),
+            verified: MODEL.verified(),
             fans: (1..=PORTS)
                 .map(|n| FanChannel {
                     id: format!("fan{n}"),
@@ -134,7 +127,7 @@ impl Driver for ControlHub {
             lights: (1..=PORTS)
                 .map(|n| {
                     let a = self.accessories.get(n - 1).cloned().unwrap_or_default();
-                    LightChannel { id: format!("led{n}"), name: format!("LED {n}"), leds: a.leds(), accessories: a.names() }
+                    LightChannel { id: format!("led{n}"), name: format!("LED {n}"), leds: a.leds(), accessories: a.names(), ..Default::default() }
                 })
                 .collect(),
             ..Default::default()

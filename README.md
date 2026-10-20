@@ -46,7 +46,15 @@ These follow liquidctl, the Linux driver and Nexus, and nobody has run camless o
 | Kraken Z3 (Z53, Z63, Z73) | `1e71:3008` | pump and fan curves, RGB header; the LCD shows only its own display |
 | Kraken X3 (X53, X63, X73) | `1e71:2007`, `1e71:2014` | pump curve, pump ring, logo and RGB header |
 
-[hardware/verified.toml](hardware/verified.toml) lists the hardware camless was reported working on. With any other device camless drives, the app shows *Unverified hardware* in the sidebar. *It works* or *Something is wrong* there opens a GitHub issue with a hardware report filled in. Once you submit it there, *I submitted it* hides the prompt for that setup, and a works report adds the device to the list.
+Experimental: Nexus leaves these out, so the driver follows liquidctl alone, and the app marks them *Experimental*:
+
+| Device | USB id | What camless drives |
+|---|---|---|
+| Kraken X2 (X42, X52, X62, X72) | `1e71:170e` | pump and fan curves from firmware 3, pump ring and logo |
+| Kraken M22 | `1e71:1715` | pump ring and logo |
+| Kraken X31, X41, X61 (and X40, X60) | `2433:b200` | pump and fan duties, logo; needs WinUSB bound to it with [Zadig](https://zadig.akeo.ie) |
+
+[hardware/verified.toml](hardware/verified.toml) lists the hardware camless was reported working on. With any other device camless drives, the app shows *Unverified hardware* in the sidebar, or *Experimental hardware* for the devices above. *It works* or *Something is wrong* there opens a GitHub issue with a hardware report filled in. Once you submit it there, *I submitted it* hides the prompt for that setup, and a works report adds the device to the list.
 
 The app lists other NZXT devices as "no driver yet". If you have one, *Settings → Devices → Create report* opens a GitHub issue with what a driver needs filled in, and shows you all of it first. A driver is one Rust file, and [CONTRIBUTING.md](CONTRIBUTING.md) shows how to write one.
 
@@ -73,7 +81,7 @@ CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed
 
 ## Not done yet
 
-- Drivers for other NZXT devices: the Smart Device V2, the RGB & Fan Controller and the older Krakens.
+- Drivers for other NZXT devices: the Smart Device V2 and the RGB & Fan Controller.
 
 ## Credits
 

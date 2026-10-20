@@ -10,8 +10,8 @@ use hidapi::HidApi;
 use std::ffi::CString;
 use std::time::Instant;
 
-const COOLER: Model = Model { vid: 0, pid: 0, interface: None, slug: "demo-cooler", name: "Demo cooler", open: open_cooler };
-const HUB: Model = Model { vid: 0, pid: 1, interface: None, slug: "demo-hub", name: "Demo hub", open: open_hub };
+const COOLER: Model = Model::hid(0, 0, "demo-cooler", "Demo cooler", open_cooler);
+const HUB: Model = Model::hid(0, 1, "demo-hub", "Demo hub", open_hub);
 static MODELS: [Model; 2] = [COOLER, HUB];
 
 pub fn found() -> Vec<Found> {
@@ -107,7 +107,7 @@ impl Driver for Demo {
             lights: self
                 .lights
                 .iter()
-                .map(|l| LightChannel { id: (*l).into(), name: l.to_uppercase(), leds: 24, accessories: vec!["simulated".into()] })
+                .map(|l| LightChannel { id: (*l).into(), name: l.to_uppercase(), leds: 24, accessories: vec!["simulated".into()], ..Default::default() })
                 .collect(),
             lcd: self.lcd.then_some(LcdInfo { width: 640, height: 640, round: true, frames: true }),
             ..Default::default()
