@@ -17,6 +17,9 @@ pub struct Status {
     /// How the service itself runs; services before 0.3 leave it out.
     #[serde(default)]
     pub service: Option<ServiceInfo>,
+    /// The game being played, while a session is open.
+    #[serde(default)]
+    pub game: Option<Game>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -26,6 +29,28 @@ pub struct ServiceInfo {
     pub elevated: bool,
     /// Why there is no CPU temperature, when there is none.
     pub cpu_sensor_error: Option<String>,
+    /// Why games have no frame rates, when they have none.
+    #[serde(default)]
+    pub fps_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Game {
+    pub name: String,
+    /// The program's file name.
+    pub exe: String,
+    /// When the session started, in Unix milliseconds.
+    pub start: i64,
+    /// Seconds in front so far.
+    pub played: u32,
+    /// In front now. A game in the background keeps its session for 3 minutes.
+    pub in_front: bool,
+    /// Frames in one second, measured 2 s ago; none in the background or without a
+    /// capture.
+    pub fps: Option<f64>,
+    /// The session's average frame rate and 1 % low so far.
+    pub avg_fps: Option<f64>,
+    pub low1: Option<f64>,
 }
 
 /// One device and what it can do. Drivers fill in everything but the readings.

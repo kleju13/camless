@@ -27,6 +27,20 @@ The service records every sensor, and the speed and duty of every fan, while it 
 
 *Monitoring → History* shows them for the last 10 minutes, hour, 24 hours, 7 days or 30 days: temperatures, loads, power or fan speeds. Pointing at the chart shows the values at that moment, and the highest value too where a point stands for several readings. `camless run --demo` keeps its simulated readings in memory only.
 
+## Games
+
+The service follows the game in front:
+- A program is a game when it runs from a Steam library (`steamapps\common`), an Xbox games folder (`XboxGames`) or an Epic Games install. `[games]` in `camless.toml` adds others and leaves some out (see [Configuration](config.md#games)).
+- A session starts when a game comes to the front. It ends when the game closes, when another game comes to the front, or after 3 minutes in the background. Only time in front counts.
+- Each session keeps its play time, its average frame rate, its 1 % and 0.1 % lows, and the average and highest value of each temperature. Sessions shorter than a minute are dropped. The others go to `history/sessions.jsonl`, one JSON object a line, and stay there.
+- The frame rate of the game in front also goes to the history, as the series `fps`.
+
+Frame rates come from the presents that the graphics kernel reports through ETW: one event of `Microsoft-Windows-DxgKrnl`, Present_Info (184), of which camless reads only the process and the time. Nexus counts frames the same way, and PresentMon reads the same provider. The ETW session runs only while a game is played, needs administrator rights, and writes nothing to disk. Without administrator rights, a session still has its play time and temperatures.
+
+ETW hands events over in batches, up to a second late, so frames are counted 2 s after they are shown. The 1 % low is the frame rate of the frame time that 1 % of frames took at least as long as: with 1 000 frames, the 10th slowest. Frame times are counted in buckets 1 % wide, so a low is within 1 %. A gap of more than a second between two frames is a pause, such as a loading screen, not a frame.
+
+*Games* shows the game being played, each game's totals and every session. *Monitoring → History → FPS* charts the frame rate. `camless fps` prints the frame rate of the program in front once a second, to check that frames are counted. `camless run --demo` makes up a game in front and three past sessions.
+
 ## Web pages on the LCD
 
 `mode = "web"` shows a page the way CAM's Web Integration does, so pages made for CAM, such as [KrakenDial](https://github.com/kleju13/krakendial), work unchanged:
@@ -54,6 +68,7 @@ Each call returns a promise that resolves once camless has taken the message, or
 |---|---|
 | `GET /v1/status` | devices, channels, sensors, curves and duties, as `camless_core::status::Status`; the app reads this |
 | `GET /v1/history?span=<seconds>&ids=<id>,<id>` | the readings over the last `span` seconds (600 by default, up to 30 days), at most 721 points a series: `from` and `step` in seconds, `count`, and for each series id its `avg` and `max` at every point, `null` where there was no reading. Ids are sensor ids, and `<device>/<channel>.rpm` or `.duty` for fans; without `ids`, every series |
+| `GET /v1/games` | the game sessions kept, newest first, as `{"sessions": [...]}`. Each has `game`, `exe`, `start` and `end` in Unix milliseconds, `played` in seconds, `frames`, `fps`, `low1` and `low01` (`null` without frame rates), and `temps`: `avg` and `max` by sensor id. The game being played is `game` in `/v1/status` |
 | `GET /v1/monitoring` | CAM's Web Integration monitoring object (`cpus`, `gpus`, `kraken`, `ram`); pages in web mode get the same through `window.nzxt.v1` |
 | `POST /v1/stop` | stops the service the way Ctrl+C does: host-driven fans to `failsafe_duty` or their fixed duty, the LCD back to its own screen; `Content-Type: application/json` only, so web pages cannot send it |
 | `POST /v1/lcd/frame` | one frame for the LCD in `frames` mode at its size (640×640 on the Kraken Elite), raw RGBA or RGB565 big-endian, `Content-Type: application/octet-stream`; 202, 409 without such an LCD, 429 when two frames are already waiting |

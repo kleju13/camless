@@ -7,8 +7,10 @@
 //! RGBA or RGB565 big-endian at the screen's size (640×640 on a Kraken Elite).
 //! `POST /v1/stop` ends the service the way Ctrl+C does; the app uses it to restart it.
 //! `GET /v1/history?span=<seconds>&ids=<id>,<id>` is sensor and fan history for charts.
+//! `GET /v1/games` is the game sessions kept, newest first.
 
 use crate::daemon::{Event, Snapshot};
+use crate::games::Session;
 use crate::history::{self, History};
 use crate::q565;
 use anyhow::{anyhow, bail, Context, Result};
@@ -25,6 +27,7 @@ pub fn spawn(
     listen: &str,
     shared: Arc<Mutex<Snapshot>>,
     history: Arc<Mutex<History>>,
+    games: Arc<Mutex<Vec<Session>>>,
     frames: SyncSender<Event>,
     stop: &'static AtomicBool,
 ) -> Result<()> {
@@ -36,7 +39,7 @@ pub fn spawn(
     let hosts = [format!("127.0.0.1:{}", addr.port()), format!("localhost:{}", addr.port()), format!("[::1]:{}", addr.port())];
     std::thread::Builder::new().name("api".into()).spawn(move || {
         for req in server.incoming_requests() {
-            if let Err(e) = handle(req, &hosts, &shared, &history, &frames, stop) {
+            if let Err(e) = handle(req, &hosts, &shared, &history, &games, &frames, stop) {
                 eprintln!("api: {e:#}");
             }
         }
@@ -53,6 +56,7 @@ fn handle(
     hosts: &[String],
     shared: &Mutex<Snapshot>,
     history: &Mutex<History>,
+    games: &Mutex<Vec<Session>>,
     frames: &SyncSender<Event>,
     stop: &AtomicBool,
 ) -> Result<()> {
@@ -75,6 +79,10 @@ fn handle(
             let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
             let range = history::query(history, now, span, ids.as_deref());
             respond_json(req, &serde_json::to_value(&range)?)
+        }
+        (Method::Get, "/v1/games") => {
+            let sessions: Vec<Session> = games.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().cloned().collect();
+            respond_json(req, &json!({ "sessions": sessions }))
         }
         (Method::Post, "/v1/stop") => {
             // A web page cannot send JSON here without a preflight, which this server
