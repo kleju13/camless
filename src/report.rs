@@ -7,17 +7,15 @@
 //! numbers, device paths and the user's and the PC's names stay out; `scrub` takes
 //! them out of error messages too.
 
+use crate::api;
 use crate::drivers::{Model, MODELS, NZXT_VID};
 use crate::sensors::{reg_dword, reg_string};
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 use camless_core::status::Status;
 use hidapi::HidApi;
 use nusb::transfer::EndpointType;
 use serde::Serialize;
 use std::fmt::Write as _;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
-use std::time::Duration;
 
 /// Asetek's vendor id, on the Krakens it made: X31, X41, X61, X40 and X60.
 pub const ASETEK_VID: u16 = 0x2433;
@@ -117,21 +115,7 @@ fn windows_version() -> Option<String> {
 
 /// `GET /v1/status` from the service, the way the app asks it.
 fn fetch_status(addr: &str) -> std::result::Result<Status, String> {
-    let get = || -> Result<Status> {
-        let sock: SocketAddr = addr.parse().with_context(|| format!("{addr:?} is not ip:port"))?;
-        let mut s = TcpStream::connect_timeout(&sock, Duration::from_millis(500)).context("nothing answers")?;
-        s.set_read_timeout(Some(Duration::from_secs(3)))?;
-        write!(s, "GET /v1/status HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n")?;
-        let mut buf = Vec::new();
-        s.read_to_end(&mut buf)?;
-        let text = String::from_utf8(buf).context("reply is not UTF-8")?;
-        let (head, body) = text.split_once("\r\n\r\n").context("malformed reply")?;
-        let code = head.split_whitespace().nth(1).unwrap_or_default();
-        if code != "200" {
-            bail!("answered {code}");
-        }
-        Ok(serde_json::from_str(body)?)
-    };
+    let get = || -> Result<Status> { Ok(serde_json::from_str(&api::get(addr, "/v1/status")?)?) };
     get().map_err(|e| format!("not reachable at {addr} ({e:#})"))
 }
 

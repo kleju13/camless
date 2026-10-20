@@ -6,6 +6,7 @@ mod drivers;
 mod fps;
 mod games;
 mod history;
+mod mcp;
 mod q565;
 mod report;
 mod sensors;
@@ -33,6 +34,9 @@ Usage:
   camless sensors              Read CPU, GPU and memory sensors once
   camless fps [seconds]        Print the frame rate of the program in front once a
                                second (default 10 s; needs administrator rights)
+  camless mcp [config]         An MCP server on stdin and stdout for AI assistants:
+                               sensors, history, game sessions and fan curves; asks
+                               the running service and writes its config
   camless report [config]      Print a hardware report for a GitHub issue: the NZXT
                                devices with their USB descriptors, and what the
                                service knows; read only, no commands are sent
@@ -98,6 +102,7 @@ fn main() -> Result<()> {
             let secs = positional.first().map(|s| s.parse()).transpose().context("fps takes seconds")?;
             fps_watch(Duration::from_secs(secs.unwrap_or(10)))
         }
+        Some("mcp") => mcp::serve(config_path()),
         Some("report") => report(&config_path(), flag("--json")),
         Some("import-cam") => {
             let dir = positional.first().map(PathBuf::from).unwrap_or_else(cam_import::default_dir);

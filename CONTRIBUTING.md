@@ -19,6 +19,7 @@ The project is under the [GNU AGPL v3](LICENSE). By opening a pull request you a
 | `src/backdrop.rs` | a moving background a page hands over, which camless plays under the page |
 | `src/history.rs` | sensor and fan history: the last hour in memory, minutes on disk for 30 days |
 | `src/games.rs`, `src/fps.rs` | game sessions, and frame rates from the graphics kernel's ETW events |
+| `src/mcp.rs` | `camless mcp`: an MCP server for AI assistants, on top of the local API |
 | `core/` | config and profiles, curve engine, CAM import, status types; no hardware code |
 | `gui/` | the app: tray icon, WebView2 window, the JSON API its page uses, and updates from GitHub releases |
 | `gui/ui/` | the app's page: HTML, CSS and plain JavaScript, built into `camless-gui.exe` |
