@@ -20,6 +20,7 @@ config=${XDG_CONFIG_HOME:-$HOME/.config}
 cache=${XDG_CACHE_HOME:-$HOME/.cache}
 state=${XDG_STATE_HOME:-$HOME/.local/state}
 rules=/etc/udev/rules.d/71-camless.rules
+fan_rules=/etc/udev/rules.d/72-camless-fans.rules
 
 # The app first, so it cannot start the service again; Exit in its menu does the same.
 pkill -x -u "$(id -u)" camless-gui 2>/dev/null || true
@@ -44,8 +45,8 @@ rm -rf "$data/camless/webkit" "$data/camless/browser" "$HOME/snap/chromium/commo
 rmdir "$data/camless" 2>/dev/null || true
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$data/applications" || true
 
-if [ -e "$rules" ]; then
-  echo "Removing the udev rules in $rules; sudo asks for your password."
-  sudo sh -c 'rm -f "$1" && { udevadm control --reload || true; }' sh "$rules"
+if [ -e "$rules" ] || [ -e "$fan_rules" ]; then
+  echo "Removing the udev rules in $rules and $fan_rules; sudo asks for your password."
+  sudo sh -c 'rm -f "$1" "$2" && { udevadm control --reload || true; }' sh "$rules" "$fan_rules"
 fi
 echo "camless is removed. Its settings are still in $config/camless."
