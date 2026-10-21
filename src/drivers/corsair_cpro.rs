@@ -6,16 +6,21 @@
 //! Every command is a 64-byte output report without a report id, `<command> <args>`,
 //! and the hub answers each with a 16-byte input report, a status byte first. A reply
 //! does not say which command it answers, so camless drops what is queued before each
-//! command and reads one reply after it, as liquidctl does. `10` gives which probes
-//! are connected, `20` what each header has (0 nothing, 1 a DC fan, 2 a PWM fan), `11
-//! <probe>` a probe's temperature in hundredths of a degree, `21 <fan>` a fan's rpm,
-//! both big-endian after the status, and `23 <fan> <duty>` sets a fan, 0..100.
+//! command and reads one reply after it, as liquidctl does. After a reply that did not
+//! come in time, it waits for it once more before the next command.
+//!
+//! `10` gives which probes are connected, `20` what each header has (0 nothing, 1 a DC
+//! fan, 2 a PWM fan), `11 <probe>` a probe's temperature in hundredths of a degree,
+//! `21 <fan>` a fan's rpm, both big-endian after the status, and `23 <fan> <duty>`
+//! sets a fan, 0..100.
 //!
 //! camless drives the fans from the host: it never stores a curve on the hub (`25`),
 //! as it would run on the hub's own probes in rpm. It sends a duty only to a header
 //! with a fan, as liquidctl does. No source has a command that hands the fans back to
-//! the hub's own settings, so they keep the last duty: the failsafe duty when the
-//! service stops, and the last one if camless crashes, until the hub loses power.
+//! the hub's own settings, so camless leaves them at the failsafe duty when it lets go
+//! or the service stops, and at the last one if camless crashes. No source says
+//! whether the hub keeps a duty after it loses power. Which headers have a fan and
+//! which probes are connected is read when camless opens the hub.
 //!
 //! camless never sends `28`, which sets a header's fan type and is kept across power
 //! cycles, or anything for the LEDs.
@@ -27,7 +32,8 @@
 //! the hwmon device under the hidraw node.
 //!
 //! No source names the HID collection. camless opens a vendor-defined one with
-//! 64-byte output reports and input reports.
+//! 64-byte output reports and input reports. hidapi takes the zero report id off the
+//! replies on Windows too (its `windows_native` read).
 //!
 //! Sources: liquidctl's `commander_pro.py`, its tests and its guide. Not verified on
 //! hardware.
@@ -59,9 +65,12 @@ const PROBES: usize = 4;
 const FAN_IDS: [&str; FANS] = ["fan1", "fan2", "fan3", "fan4", "fan5", "fan6"];
 const PROBE_IDS: [&str; PROBES] = ["temp1", "temp2", "temp3", "temp4"];
 const PROBE_NAMES: [&str; PROBES] = ["Probe 1", "Probe 2", "Probe 3", "Probe 4"];
-const TIMEOUT: Duration = Duration::from_millis(500);
-/// Faster is not a fan: a reply that is something else's.
+/// liquidctl waits 5 s; a hub that takes over 1 s has its reply dropped as late.
+const TIMEOUT: Duration = Duration::from_millis(1000);
+/// camless's own bounds, past which a reply is something else's: faster is not a fan,
+/// colder is not a probe in a PC.
 const MAX_RPM: u16 = 10_000;
+const MIN_TEMP: u16 = 100;
 
 /// A command, after the zero report id hidapi takes for a device without ids.
 fn command(cmd: u8, args: &[u8]) -> [u8; REPORT_LEN + 1] {
@@ -109,6 +118,8 @@ pub struct CommanderPro {
     probes: [bool; PROBES],
     fans: [bool; FANS],
     duties: [Option<u8>; FANS],
+    /// A reply did not come in time, and may still.
+    late: bool,
 }
 
 fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
@@ -125,6 +136,7 @@ fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
         probes: [false; PROBES],
         fans: [false; FANS],
         duties: [None; FANS],
+        late: false,
     };
     d.probes = probes(&d.request(GET_PROBES, &[])?).context("the hub did not say which probes it has")?;
     d.fans = fans(&d.request(GET_FAN_MODES, &[])?).context("the hub did not say which headers have a fan")?;
@@ -132,13 +144,23 @@ fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
 }
 
 impl CommanderPro {
-    /// One command and its reply, with what was queued dropped first.
-    fn request(&self, cmd: u8, args: &[u8]) -> Result<Vec<u8>> {
-        super::hid::drain(&self.dev);
-        self.dev.write(&command(cmd, args)).context("write to the hub failed")?;
+    /// One command and its reply, with what was queued dropped first, and a late
+    /// reply waited for and dropped.
+    fn request(&mut self, cmd: u8, args: &[u8]) -> Result<Vec<u8>> {
         let mut buf = [0u8; REPORT_LEN];
+        if self.late {
+            self.dev.read_timeout(&mut buf, TIMEOUT.as_millis() as i32)?;
+            self.late = false;
+        }
+        super::hid::drain(&self.dev);
+        let c = command(cmd, args);
+        let n = self.dev.write(&c).context("write to the hub failed")?;
+        if n < c.len() {
+            bail!("{cmd:#04x}: {n} of {} bytes went out", c.len());
+        }
         let n = self.dev.read_timeout(&mut buf, TIMEOUT.as_millis() as i32)?;
         if n == 0 {
+            self.late = true;
             bail!("no reply to {cmd:#04x} within {} ms", TIMEOUT.as_millis());
         }
         Ok(buf[..n.min(REPLY_LEN)].to_vec())
@@ -169,9 +191,10 @@ impl Driver for CommanderPro {
 
     fn poll(&mut self) -> Result<Reading> {
         let mut r = Reading::default();
-        for i in (0..PROBES).filter(|&i| self.probes[i]) {
+        let probes = self.probes;
+        for i in (0..PROBES).filter(|&i| probes[i]) {
             // A refused reply is a probe that went, not a lost hub.
-            if let Some(t) = be16(&self.request(GET_TEMP, &[i as u8])?).filter(|&t| t > 0) {
+            if let Some(t) = be16(&self.request(GET_TEMP, &[i as u8])?).filter(|&t| t >= MIN_TEMP) {
                 r.sensors.push((PROBE_IDS[i], f32::from(t) / 100.0));
             }
         }
@@ -189,7 +212,9 @@ impl Driver for CommanderPro {
                 continue;
             }
             let duty = duty.min(100);
-            self.request(SET_DUTY, &[i as u8, duty])?;
+            if data(&self.request(SET_DUTY, &[i as u8, duty])?).is_none() {
+                bail!("the hub refused fan {} at {duty} %", i + 1);
+            }
             self.duties[i] = Some(duty);
         }
         Ok(())
