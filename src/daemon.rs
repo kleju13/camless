@@ -819,6 +819,7 @@ impl Daemon {
                 elevated: self.elevated,
                 cpu_sensor_error: self.sensors.cpu_error.clone(),
                 gpu_sensor_error: self.sensors.gpu_error.clone(),
+                gpu_power_error: self.sensors.gpu_power_error.clone(),
                 fps_error: if self.cfg.games.enabled { self.games.error() } else { None },
             }),
             game: self.games.now(),

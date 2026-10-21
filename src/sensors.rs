@@ -104,6 +104,7 @@ impl Gpu {
             Gpu::Wddm(w) => {
                 r.gpu_temp_c = w.temperature();
                 r.gpu_load_pct = w.utilization();
+                r.gpu_power_w = w.power_w();
             }
         }
     }
@@ -116,6 +117,8 @@ pub struct Sensors {
     pub cpu_error: Option<String>,
     /// Why there is no GPU to read, when there is none.
     pub gpu_error: Option<String>,
+    /// Why a GPU that is read has no power, when that is known.
+    pub gpu_power_error: Option<String>,
     gpu: Option<Gpu>,
     cpu: Option<os::Cpu>,
     times: Option<(u64, u64)>,
@@ -141,7 +144,12 @@ impl Sensors {
             }
         };
         let gpu_name = gpu.as_ref().and_then(Gpu::name);
-        Sensors { cpu_name: os::cpu_name().unwrap_or_else(|| "CPU".into()), gpu_name, cpu_error, gpu_error, gpu, cpu, times: None }
+        let gpu_power_error = match &gpu {
+            #[cfg(windows)]
+            Some(Gpu::Wddm(w)) => w.power_error.clone(),
+            _ => None,
+        };
+        Sensors { cpu_name: os::cpu_name().unwrap_or_else(|| "CPU".into()), gpu_name, cpu_error, gpu_error, gpu_power_error, gpu, cpu, times: None }
     }
 
     pub fn has_cpu_temp(&self) -> bool {

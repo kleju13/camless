@@ -364,6 +364,9 @@ fn render(f: &Facts) -> String {
                     (Some(e), false) => format!("GPU readings: no ({e})"),
                     (None, false) => "GPU readings: no".into(),
                 });
+                if let (true, Some(e)) = (gpu, &sv.gpu_power_error) {
+                    parts.push(format!("GPU power: no ({e})"));
+                }
             }
             let _ = writeln!(s, "{}", parts.join(", "));
         }
@@ -602,7 +605,7 @@ fn scrub_facts(f: &mut Facts) {
                 }
             }
             if let Some(sv) = &mut st.service {
-                sv.cpu_sensor_error.iter_mut().chain(sv.gpu_sensor_error.iter_mut()).for_each(clean);
+                sv.cpu_sensor_error.iter_mut().chain(sv.gpu_sensor_error.iter_mut()).chain(sv.gpu_power_error.iter_mut()).for_each(clean);
             }
         }
         Err(e) => clean(e),
@@ -923,6 +926,9 @@ about the table"
         let Ok(st) = &mut f.service else { unreachable!() };
         st.sensors.push(Sensor { id: "gpu.temp".into(), name: "GPU temperature".into(), unit: Unit::Celsius, value: Some(50.0) });
         assert!(render(&f).contains("CPU temperature: yes, GPU readings: yes\n"));
+        let Ok(st) = &mut f.service else { unreachable!() };
+        st.service.as_mut().unwrap().gpu_power_error = Some("atiadlxx.dll not found: no AMD driver".into());
+        assert!(render(&f).contains("GPU readings: yes, GPU power: no (atiadlxx.dll not found: no AMD driver)\n"));
     }
 
     #[test]
