@@ -15,6 +15,7 @@
 pub mod control_hub;
 pub mod corsair_link;
 pub mod demo;
+pub mod gpu;
 pub mod asetek;
 pub mod board;
 pub mod hid;
@@ -159,7 +160,8 @@ pub enum Bus {
     Usb,
     /// A USB serial port (CDC ACM): COM on Windows, `/dev/ttyACM*` on Linux.
     Serial,
-    /// Inside the PC, not on USB: the motherboard's fan headers. No USB id.
+    /// Inside the PC, not on USB: the motherboard's fan headers, the graphics card's
+    /// fans. No USB id.
     Host,
 }
 
@@ -341,10 +343,12 @@ fn caps(path: &std::ffi::CStr) -> Option<hid::Caps> {
 }
 
 /// Whether camless may drive a device of this model with these settings: another
-/// brand's with `other_brands` on, the motherboard's headers with `motherboard`.
+/// brand's with `other_brands` on, the motherboard's headers with `motherboard`, the
+/// graphics card's fans with `gpu`.
 pub fn allowed(model: &Model, devices: &Devices) -> bool {
     match model.bus {
-        Bus::Host => model.slug != board::MODEL.slug || devices.motherboard,
+        Bus::Host if model.slug == gpu::MODEL.slug => devices.gpu,
+        Bus::Host => model.slug == board::MODEL.slug && devices.motherboard,
         _ => model.vendor.is_none() || devices.other_brands,
     }
 }
@@ -352,11 +356,15 @@ pub fn allowed(model: &Model, devices: &Devices) -> bool {
 /// The devices inside the PC that the settings turn on.
 pub fn scan_host(devices: &Devices) -> Vec<Found> {
     board::hand_back_abandoned();
+    gpu::hand_back_abandoned();
+    let mut found = Vec::new();
     if devices.motherboard {
-        board::found()
-    } else {
-        Vec::new()
+        found.extend(board::found());
     }
+    if devices.gpu {
+        found.extend(gpu::found());
+    }
+    found
 }
 
 /// The id of the next device of a model: its slug, then `#2`, `#3`. Models that

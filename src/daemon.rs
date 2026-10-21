@@ -392,6 +392,8 @@ impl Daemon {
             let Some(vendor) = s.found.model.vendor else { continue };
             let why = if drivers::allowed(s.found.model, &self.cfg.devices) {
                 vendor.busy(&running)
+            } else if s.found.model.slug == drivers::gpu::MODEL.slug {
+                Some("GPU fans are off".to_string())
             } else if s.found.model.bus == drivers::Bus::Host {
                 Some("motherboard fans are off".to_string())
             } else {
