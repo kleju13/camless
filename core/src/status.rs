@@ -29,6 +29,9 @@ pub struct ServiceInfo {
     pub elevated: bool,
     /// Why there is no CPU temperature, when there is none.
     pub cpu_sensor_error: Option<String>,
+    /// Why there are no GPU readings, when there are none.
+    #[serde(default)]
+    pub gpu_sensor_error: Option<String>,
     /// Why games have no frame rates, when they have none.
     #[serde(default)]
     pub fps_error: Option<String>,

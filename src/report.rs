@@ -358,6 +358,12 @@ fn render(f: &Facts) -> String {
                     None => "CPU temperature: yes".into(),
                     Some(e) => format!("CPU temperature: no ({e})"),
                 });
+                let gpu = st.sensors.iter().any(|x| x.id == "gpu.temp");
+                parts.push(match (&sv.gpu_sensor_error, gpu) {
+                    (_, true) => "GPU readings: yes".into(),
+                    (Some(e), false) => format!("GPU readings: no ({e})"),
+                    (None, false) => "GPU readings: no".into(),
+                });
             }
             let _ = writeln!(s, "{}", parts.join(", "));
         }
@@ -596,7 +602,7 @@ fn scrub_facts(f: &mut Facts) {
                 }
             }
             if let Some(sv) = &mut st.service {
-                sv.cpu_sensor_error.iter_mut().for_each(clean);
+                sv.cpu_sensor_error.iter_mut().chain(sv.gpu_sensor_error.iter_mut()).for_each(clean);
             }
         }
         Err(e) => clean(e),
@@ -680,7 +686,7 @@ fn mask(text: &str, marker: &str, keep_marker: bool, end: fn(char) -> bool, with
 #[cfg(test)]
 mod tests {
     use super::*;
-    use camless_core::status::{Device, FanChannel, LcdInfo, LightChannel, ServiceInfo};
+    use camless_core::status::{Device, FanChannel, LcdInfo, LightChannel, Sensor, ServiceInfo, Unit};
 
     // Rebuilt by Windows from a Kraken Elite 2024 (firmware 1.2.0) and a Control Hub,
     // read with `get_report_descriptor`.
@@ -876,7 +882,7 @@ about the table"
         assert!(!text.to_ascii_lowercase().contains("a1b2c3d4e5f6a7b8c9d0e1f2"));
         assert!(text.contains(r"  - error: lost <hidden> at <device path>, C:\Users\<user>\x.toml"));
         assert!(text.starts_with(&format!("camless {} · Windows 11 25H2, build 26200.9711 · Example CPU\n", env!("CARGO_PKG_VERSION"))));
-        assert!(text.contains("Service 0.3.0: running, as administrator, CPU temperature: yes\n"));
+        assert!(text.contains("Service 0.3.0: running, as administrator, CPU temperature: yes, GPU readings: no\n"));
         assert!(text.contains("- Kraken Elite (2024) `1e71:3012`: firmware 1.2.0, verified, connected\n"));
         assert!(text.contains("  - fans: pump (pump, min 20 %, stores curves), fan (stores curves)\n"));
         assert!(text.contains("  - LCD 640×640, round\n"));
@@ -906,6 +912,17 @@ about the table"
         assert!(text.contains("**NZXT devices without a driver**\nNone found.\n"));
         assert!(text.contains("No NZXT or Asetek USB device.\n"));
         assert_eq!(title(&f), "Hardware: Kraken Elite (2024)");
+    }
+
+    #[test]
+    fn says_whether_there_are_gpu_readings_and_why_not() {
+        let mut f = facts();
+        let Ok(st) = &mut f.service else { unreachable!() };
+        st.service.as_mut().unwrap().gpu_sensor_error = Some("nvml.dll not found; no graphics card".into());
+        assert!(render(&f).contains("CPU temperature: yes, GPU readings: no (nvml.dll not found; no graphics card)\n"));
+        let Ok(st) = &mut f.service else { unreachable!() };
+        st.sensors.push(Sensor { id: "gpu.temp".into(), name: "GPU temperature".into(), unit: Unit::Celsius, value: Some(50.0) });
+        assert!(render(&f).contains("CPU temperature: yes, GPU readings: yes\n"));
     }
 
     #[test]

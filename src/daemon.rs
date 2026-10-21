@@ -818,6 +818,7 @@ impl Daemon {
                 pid: std::process::id(),
                 elevated: self.elevated,
                 cpu_sensor_error: self.sensors.cpu_error.clone(),
+                gpu_sensor_error: self.sensors.gpu_error.clone(),
                 fps_error: if self.cfg.games.enabled { self.games.error() } else { None },
             }),
             game: self.games.now(),
