@@ -218,7 +218,7 @@ impl Daemon {
             let why = if sensor == "cpu.temp" && !self.sensors.has_cpu_temp() {
                 crate::sensors::NO_CPU_TEMP
             } else if sensor.starts_with("gpu.") && !is_host {
-                if cfg!(windows) { "no NVIDIA GPU sensors" } else { "no NVIDIA or AMD GPU sensors" }
+                if cfg!(windows) { "no GPU sensors" } else { "no NVIDIA or AMD GPU sensors" }
             } else {
                 continue;
             };
