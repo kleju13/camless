@@ -272,6 +272,12 @@ pub trait Driver {
         Ok(())
     }
 
+    /// Hands back, as `release` does, the fans camless drove and has no duty for
+    /// now, such as one whose curve was removed. `used` are the fans it still drives.
+    fn release_unused(&mut self, _used: &[&str]) -> Result<()> {
+        Ok(())
+    }
+
     fn lcd(&mut self) -> Option<&mut dyn Lcd> {
         None
     }

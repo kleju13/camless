@@ -76,6 +76,8 @@ struct Slot {
     sent: HashMap<String, (u8, Instant)>,
     last_frame: Option<Instant>,
     lcd_error_at: Option<Instant>,
+    /// The last error of `release_unused`, logged once.
+    release_error: Option<String>,
 }
 
 impl Slot {
@@ -98,6 +100,7 @@ impl Slot {
             sent: HashMap::new(),
             last_frame: None,
             lcd_error_at: None,
+            release_error: None,
         }
     }
 
@@ -590,19 +593,35 @@ impl Daemon {
 
     fn drive(&mut self, force: bool) {
         let duties = self.engine.duties();
+        let mut notes = Vec::new();
         for i in 0..self.slots.len() {
             let s = &mut self.slots[i];
             let Some(dev) = s.dev.as_mut() else { continue };
             let mut batch: Vec<(String, u8)> = Vec::new();
+            let mut used: Vec<&str> = Vec::new();
             for (channel, duty) in &duties {
                 let Some(fan) = local(&s.found.id, channel) else { continue };
                 let Some(d) = duty.value() else { continue };
+                used.push(fan);
                 if s.on_device.contains(fan) || !s.info.fans.iter().any(|x| x.id == fan) {
                     continue;
                 }
                 let fresh = s.sent.get(fan).is_some_and(|(sent, at)| *sent == d && at.elapsed() < RESEND_EVERY);
                 if force || !fresh {
                     batch.push((fan.to_string(), d));
+                }
+            }
+            // A fan whose curve is gone goes back to the device's own control, on
+            // devices that have one. One that does not go back is tried again next
+            // time; its error is logged once.
+            match dev.release_unused(&used) {
+                Ok(()) => s.release_error = None,
+                Err(e) => {
+                    let e = format!("{e:#}");
+                    if s.release_error.as_ref() != Some(&e) {
+                        notes.push(format!("{}: handing back a fan without a curve: {e}", s.found.id));
+                        s.release_error = Some(e);
+                    }
                 }
             }
             if batch.is_empty() {
@@ -622,6 +641,9 @@ impl Daemon {
                     self.log(&format!("{id}: write failed ({e:#}), reopening"));
                 }
             }
+        }
+        for n in notes {
+            self.log(&n);
         }
     }
 
@@ -838,7 +860,7 @@ impl Daemon {
             note += &format!("; {set} host-driven fans left at {failsafe} % or their fixed duty");
         }
         if handed > 0 {
-            note += &format!("; {handed} other brands' hubs handed back");
+            note += &format!("; {handed} devices handed back to their own control");
         }
         self.log(&note);
     }

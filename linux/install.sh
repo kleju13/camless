@@ -28,13 +28,6 @@ fan_rules=/etc/udev/rules.d/72-camless-fans.rules
 me=$(id -u)
 user=$(id -un)
 
-# The name goes into a udev rule's shell command.
-case $user in
-  *[!A-Za-z0-9._-]*|-*)
-    echo "camless cannot be installed for a user named $user: only letters, digits, . _ and - fit in its udev rule." >&2
-    exit 1 ;;
-esac
-
 # The folders go into the menu entry and the service, where these characters would
 # mean something else.
 for path in "$bin" "$config"; do
@@ -69,25 +62,37 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t 
 # devices plugged in now too, though liquidctl finds that a hidraw node can keep its
 # old rights until the device is plugged in again or the PC restarts. Run as root,
 # with each rules file and where it goes.
-fans=$(mktemp)
-sed "s|@USER@|$user|g" "$here/72-camless-fans.rules" > "$fans"
+set -- "$here/71-camless.rules" "$rules"
+# The name goes into the fan rule's shell command. A name that does not fit gets no
+# fan rule: camless works, but the motherboard's headers stay root's.
+fans=
+case $user in
+  *[!A-Za-z0-9._-]*|-*)
+    echo "No motherboard fan rule for a user named $user: only letters, digits, . _ and - fit in it, so camless cannot set the motherboard's fan headers." >&2 ;;
+  *)
+    fans=$(mktemp)
+    trap 'rm -f "$fans"' EXIT
+    trap 'exit 1' INT HUP TERM
+    sed "s|@USER@|$user|g" "$here/72-camless-fans.rules" > "$fans"
+    set -- "$@" "$fans" "$fan_rules" ;;
+esac
 apply='while [ $# -ge 2 ]; do install -D -m 644 "$1" "$2" || exit 1; shift 2; done
 if ! { udevadm control --reload && udevadm trigger --action=change --subsystem-match=hidraw --subsystem-match=usb --subsystem-match=tty --subsystem-match=hwmon; }; then
   echo "udev did not reload its rules; they apply after a restart, or when the device is plugged in again." >&2
 fi'
-if ! cmp -s "$here/71-camless.rules" "$rules" || ! cmp -s "$fans" "$fan_rules"; then
+if ! cmp -s "$here/71-camless.rules" "$rules" || { [ -n "$fans" ] && ! cmp -s "$fans" "$fan_rules"; }; then
   if $update; then
     # No terminal to ask in: pkexec asks through the desktop, if it is there.
-    if ! { command -v pkexec >/dev/null 2>&1 && pkexec sh -c "$apply" sh "$here/71-camless.rules" "$rules" "$fans" "$fan_rules"; }; then
+    if ! { command -v pkexec >/dev/null 2>&1 && pkexec sh -c "$apply" sh "$@"; }; then
       echo "The udev rules changed and were not installed. Run install.sh from the download to install them." >&2
     fi
   else
-    echo "Installing the udev rules in $rules and $fan_rules; sudo asks for your password."
-    sudo sh -c "$apply" sh "$here/71-camless.rules" "$rules" "$fans" "$fan_rules"
+    echo "Installing the udev rules in /etc/udev/rules.d; sudo asks for your password."
+    sudo sh -c "$apply" sh "$@"
     echo "If camless cannot open a device yet, plug it in again or restart."
   fi
 fi
-rm -f "$fans"
+[ -z "$fans" ] || rm -f "$fans"
 
 # The service the app started outside systemd: this user's `camless run` processes
 # other than the systemd service's. One started by hand in a terminal counts too, as
