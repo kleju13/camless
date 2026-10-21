@@ -31,11 +31,11 @@ camless is not affiliated with or endorsed by NZXT. NZXT, CAM and Kraken are tra
 
 ## Devices
 
-| Device | USB id | Tested on Windows |
-|---|---|---|
-| Kraken Elite 2024 (Kraken Elite V2) | `1e71:3012` | pump and fan curves, lighting, LCD, on the maintainer's hardware |
-| Control Hub (H9 Flow RGB+ and other recent cases) | `1e71:2022` | fan duties, lighting, on the maintainer's hardware |
-| Kraken 2023 (Kraken Base) | `1e71:300e` | pump and fan curves, by its owner ([#29](https://github.com/kleju13/camless/issues/29)); the LCD on firmware 2 is not tested yet |
+| Device | USB id | Tested on Windows | Tested by |
+|---|---|---|---|
+| Kraken Elite 2024 (Kraken Elite V2) | `1e71:3012` | pump and fan curves, lighting, LCD | [@kleju13](https://github.com/kleju13) |
+| Control Hub (H9 Flow RGB+ and other recent cases) | `1e71:2022` | fan duties, lighting | [@kleju13](https://github.com/kleju13) |
+| Kraken 2023 (Kraken Base) | `1e71:300e` | pump and fan curves; the LCD on firmware 2 is not tested yet | [@dominixik](https://github.com/dominixik) |
 
 These follow liquidctl, the Linux driver and Nexus, and nobody has run camless on them yet:
 
