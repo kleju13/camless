@@ -46,7 +46,7 @@ These follow liquidctl, the Linux driver and Nexus, and nobody has run camless o
 | Kraken Z3 (Z53, Z63, Z73) | `1e71:3008` | pump and fan curves, RGB header; the LCD shows only its own display |
 | Kraken X3 (X53, X63, X73) | `1e71:2007`, `1e71:2014` | pump curve, pump ring, logo and RGB header |
 
-Experimental: Nexus leaves these out, so the driver follows liquidctl alone, and the app marks them *Experimental*:
+Experimental: Nexus leaves these out, so the driver follows liquidctl and the Linux drivers alone, and the app marks them *Experimental*:
 
 | Device | USB id | What camless drives |
 |---|---|---|
@@ -55,6 +55,12 @@ Experimental: Nexus leaves these out, so the driver follows liquidctl alone, and
 | Kraken X31, X41, X61 (and X40, X60) | `2433:b200` | pump and fan duties, logo; on Windows, needs WinUSB bound to it with [Zadig](https://zadig.akeo.ie) |
 | Smart Device (V1; H200i, H400i, H500i, H700i) | `1e71:1714` | duties and speeds on the three fan ports, the LED channel |
 | Grid+ V3 | `1e71:1711` | duties and speeds on the six fan ports |
+| Smart Device V2 (H510 Elite, H510i, H710i, H210i) | `1e71:2006`, `200d`, `200f` | duties and speeds on the three fan ports, two LED channels |
+| RGB & Fan Controller | `1e71:2009`, `200e`, `2010` | duties and speeds on the three fan ports, two LED channels |
+| RGB & Fan Controller (3+6 channels) | `1e71:2020` | duties and speeds on the three fan ports, six LED channels |
+| RGB & Fan Controller (3+6 channels) | `1e71:2011`, `2019`, `201f` | duties and speeds on the three fan ports; not the lighting, which liquidctl found changed ([protocol notes](docs/protocol.md)) |
+| HUE 2, HUE 2 Ambient | `1e71:2001`, `2002` | four and two LED channels |
+| RGB Controller (2023) | `1e71:2012`, `2021` | three LED channels |
 
 Other brands' fan hubs and LED controllers, off unless you turn on *Settings → Devices → Other brands*: camless never drives keyboards or mice, and leaves a hub alone while its brand's app runs ([how it works](docs/how-it-works.md#other-brands)). None of them has run with camless yet, so the app calls them experimental. Their lighting is off or one colour:
 
@@ -128,13 +134,13 @@ To uninstall, run `~/.local/share/camless/uninstall.sh`. It keeps your settings 
 
 ## Not done yet
 
-- Drivers for other NZXT devices: the Smart Device V2 and the RGB & Fan Controller.
+- Other NZXT devices: the H1 V2, the HUE 2 Motherboard, and lighting on the 3+6 channel RGB & Fan Controller `2011`, `2019` and `201f`.
 - On Linux: frame rates, and a run on real hardware.
 - Other brands: Lian Li's wireless controllers, lighting effects on their hubs, and a run on real hardware.
 
 ## Credits
 
-Most of what camless knows about NZXT devices comes from [liquidctl](https://github.com/liquidctl/liquidctl): its drivers, issues and pull requests. The Linux `nzxt-kraken3` driver helped too, and so did Nexus for the Krakens camless has not run on. Frames for the Kraken LCD are [Q565](https://github.com/seritools/q565), by seritools. How CAM streams them to the Kraken Elite was worked out from captures of CAM. The [protocol notes](docs/protocol.md) list the sources for each device. The history, the game sessions, the FPS counter and the MCP server were inspired by [Nexus](https://github.com/hello-nexus/nexus), which counts frames the same way.
+Most of what camless knows about NZXT devices comes from [liquidctl](https://github.com/liquidctl/liquidctl): its drivers, issues and pull requests. The Linux `nzxt-kraken3` and `nzxt-smart2` drivers helped too, and so did Nexus for the Krakens camless has not run on. Frames for the Kraken LCD are [Q565](https://github.com/seritools/q565), by seritools. How CAM streams them to the Kraken Elite was worked out from captures of CAM. The [protocol notes](docs/protocol.md) list the sources for each device. The history, the game sessions, the FPS counter and the MCP server were inspired by [Nexus](https://github.com/hello-nexus/nexus), which counts frames the same way.
 
 ## License
 

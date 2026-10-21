@@ -1,14 +1,16 @@
 //! Lighting in NZXT's Hue 2 family, which the Krakens since the X3 and the Control
 //! Hub share: static colors (`26 04` + `26 06`), effects (`2A 04`) and the accessory
 //! report (`20 03` → `21 03`). The Kraken X3 and Z3 take static colors as `2A 04`
-//! too, see `packets_2a`.
+//! too, see `packets_2a`. The Smart Device V2, the RGB & Fan Controller and the HUE 2,
+//! which came before them, take every effect in the older `28 03` layout, see
+//! `packet_28`; the 2023 RGB Controller takes `2A 04`, see `packet_2023`.
 //!
-//! Sources: liquidctl (`kraken3.py`, `control_hub.py`, `util.py`) and captures of
-//! NZXT CAM 4.76.6 driving a Kraken Elite 2024 and a Control Hub.
+//! Sources: liquidctl (`kraken3.py`, `control_hub.py`, `smart_device.py`, `util.py`)
+//! and captures of NZXT CAM 4.76.6 driving a Kraken Elite 2024 and a Control Hub.
 
 use super::hid;
-use anyhow::Result;
-use camless_core::lighting::{Effect, Lighting, Rgb};
+use anyhow::{bail, Result};
+use camless_core::lighting::{Effect, Lighting, Rgb, Speed};
 use hidapi::HidDevice;
 use std::time::Duration;
 
@@ -204,6 +206,92 @@ pub fn packets_2a(channel: u8, lighting: &Lighting, leds: u16) -> Vec<Vec<u8>> {
     }
 }
 
+/// Whether the `28 03` layout has the effect: liquidctl's `SmartDevice2` has every one
+/// but the Kraken's tai chi and water cooler.
+fn in_28(effect: Effect) -> bool {
+    !matches!(effect, Effect::TaiChi | Effect::WaterCooler)
+}
+
+/// `off`, `fixed` and the effects `has`, for `LightChannel::modes`.
+fn mode_names(has: impl Fn(Effect) -> bool) -> Vec<String> {
+    let effects = Effect::ALL.into_iter().filter(|&e| has(e)).map(|e| e.name().to_string());
+    ["off", "fixed"].into_iter().map(String::from).chain(effects).collect()
+}
+
+/// The modes a light in the `28 03` layout takes.
+pub fn modes_28() -> Vec<String> {
+    mode_names(in_28)
+}
+
+/// Lighting in the `28 03` layout (liquidctl `SmartDevice2._write_colors`): the mode,
+/// a speed from 0 to 4, `01` for backward, the color count and the colors as GRB. It
+/// has no LED count. `fixed` and `off` are mode `00` with one color, at liquidctl's
+/// default speed, `normal`.
+pub fn packet_28(channel: u8, lighting: &Lighting) -> Result<Vec<u8>> {
+    let normal = Speed::Normal.index();
+    let (mode, colors, speed, backward) = match lighting {
+        Lighting::Off => (0x00, vec![[0, 0, 0]], normal, false),
+        Lighting::Fixed(c) => (0x00, vec![*c], normal, false),
+        Lighting::Effect { effect, colors, speed, backward } => {
+            if !in_28(*effect) {
+                bail!("{} is not an effect of this device", effect.name());
+            }
+            let (mode, _, max) = params(*effect);
+            let colors: Vec<Rgb> = if max == 0 { vec![[0, 0, 0]] } else { colors.iter().take(max).copied().collect() };
+            if colors.is_empty() {
+                bail!("{} needs a color", effect.name());
+            }
+            (mode, colors, speed.index(), *backward)
+        }
+    };
+    let mut msg = vec![0x28, 0x03, channel, 0x00, mode, speed.min(4) as u8, 0x00, u8::from(backward), colors.len() as u8, 0x00];
+    for c in &colors {
+        msg.extend_from_slice(&grb(c));
+    }
+    Ok(msg)
+}
+
+/// The effects of liquidctl's `Nzxt2023RgbController`, with the most colors each takes.
+/// Its covering marquee has no speed in liquidctl's table, so liquidctl cannot send it.
+fn max_2023(effect: Effect) -> Option<usize> {
+    match effect {
+        Effect::Fading | Effect::Breathing => Some(8),
+        Effect::Pulse | Effect::Candle => Some(1),
+        Effect::SpectrumWave | Effect::RainbowFlow | Effect::SuperRainbow | Effect::RainbowPulse => Some(0),
+        Effect::CoveringMarquee | Effect::TaiChi | Effect::WaterCooler => None,
+    }
+}
+
+/// What liquidctl puts in the LED count's place for the 2023 RGB Controller, always.
+const LEDS_2023: u16 = 8;
+
+/// The modes a light of the 2023 RGB Controller takes.
+pub fn modes_2023() -> Vec<String> {
+    mode_names(|e| max_2023(e).is_some())
+}
+
+/// Lighting for the 2023 RGB Controller (liquidctl `Nzxt2023RgbController`): the
+/// `2A 04` layout of `effect` and `fixed`, with 8 for the LED count. `off` is `fixed`
+/// in black at speed `00 00`.
+pub fn packet_2023(channel: u8, lighting: &Lighting) -> Result<Vec<u8>> {
+    Ok(match lighting {
+        Lighting::Off => {
+            let mut m = fixed(channel, &[0, 0, 0], LEDS_2023);
+            m[5..7].copy_from_slice(&[0x00, 0x00]);
+            m
+        }
+        Lighting::Fixed(c) => fixed(channel, c, LEDS_2023),
+        Lighting::Effect { effect: e, colors, speed, backward } => {
+            let Some(max) = max_2023(*e) else { bail!("{} is not an effect of this device", e.name()) };
+            let colors: Vec<Rgb> = colors.iter().take(max).copied().collect();
+            if max > 0 && colors.is_empty() {
+                bail!("{} needs a color", e.name());
+            }
+            effect(channel, *e, &colors, speed.index(), *backward, LEDS_2023)
+        }
+    })
+}
+
 pub fn write(dev: &HidDevice, channel: u8, lighting: &Lighting, leds: u16) -> Result<()> {
     send(dev, packets(channel, lighting, leds))
 }
@@ -221,7 +309,6 @@ pub fn send(dev: &HidDevice, packets: Vec<Vec<u8>>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use camless_core::lighting::Speed;
 
     #[test]
     fn static_color_matches_cam_capture() {
@@ -260,6 +347,86 @@ mod tests {
         assert!(m[10..55].iter().all(|&b| b == 0));
         assert_eq!(&m[55..], &[0x00, 1, 0x00, 8, 0x03]);
         assert_eq!(packets_2a(0b001, &Lighting::Off, 40), vec![fixed(0b001, &[0, 0, 0], 40)]);
+    }
+
+    #[test]
+    fn fixed_in_the_28_layout_matches_liquidctl() {
+        // liquidctl's write for `set led6 color fixed abcdef` on an RGB & Fan Controller,
+        // from its debug log in liquidctl#541: report 28, then 03 20 00 00 02 00 00 01
+        // 00 cd ab ef.
+        let m = packet_28(0x20, &Lighting::Fixed([0xab, 0xcd, 0xef])).unwrap();
+        assert_eq!(m, [0x28, 0x03, 0x20, 0x00, 0x00, 0x02, 0x00, 0x00, 0x01, 0x00, 0xcd, 0xab, 0xef]);
+        // `off` takes no colors, and liquidctl sends one black step.
+        let off = packet_28(0x01, &Lighting::Off).unwrap();
+        assert_eq!(off, [0x28, 0x03, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x01, 0x00, 0, 0, 0]);
+    }
+
+    #[test]
+    fn effects_in_the_28_layout_follow_liquidctl() {
+        // SmartDevice2._write_colors: [28 03 cid 00 mode speed moving backward count 00]
+        // and the GRB colors.
+        let fade = Lighting::Effect { effect: Effect::Fading, colors: vec![[1, 2, 3], [4, 5, 6]], speed: Speed::Fastest, backward: false };
+        assert_eq!(packet_28(0x02, &fade).unwrap(), [0x28, 0x03, 0x02, 0x00, 0x01, 0x04, 0x00, 0x00, 0x02, 0x00, 2, 1, 3, 5, 4, 6]);
+        // Colorless effects get one black step; backward is 01.
+        let wave = Lighting::Effect { effect: Effect::SpectrumWave, colors: vec![[9, 9, 9]], speed: Speed::Slowest, backward: true };
+        assert_eq!(packet_28(0x01, &wave).unwrap(), [0x28, 0x03, 0x01, 0x00, 0x02, 0x00, 0x00, 0x01, 0x01, 0x00, 0, 0, 0]);
+        let candle = Lighting::Effect { effect: Effect::Candle, colors: vec![[1, 2, 3], [4, 5, 6]], speed: Speed::Normal, backward: false };
+        assert_eq!(&packet_28(0x01, &candle).unwrap()[4..], [0x08, 0x02, 0x00, 0x00, 0x01, 0x00, 2, 1, 3]);
+        let rainbow = Lighting::Effect { effect: Effect::SuperRainbow, colors: vec![], speed: Speed::Faster, backward: false };
+        assert_eq!(&packet_28(0x01, &rainbow).unwrap()[4..9], [0x0c, 0x03, 0x00, 0x00, 0x01]);
+        // At most eight colors, as liquidctl drops the rest.
+        let many = Lighting::Effect { effect: Effect::Breathing, colors: vec![[7, 7, 7]; 10], speed: Speed::Normal, backward: false };
+        let m = packet_28(0x01, &many).unwrap();
+        assert_eq!((m[4], m[8], m.len()), (0x07, 8, 10 + 8 * 3));
+    }
+
+    #[test]
+    fn the_28_layout_has_no_kraken_effects() {
+        let tai = Lighting::Effect { effect: Effect::TaiChi, colors: vec![[1, 1, 1]], speed: Speed::Normal, backward: false };
+        assert!(packet_28(0x01, &tai).is_err());
+        let modes = modes_28();
+        assert_eq!(modes.len(), 2 + 9);
+        assert!(modes.contains(&"candle".to_string()) && !modes.contains(&"tai-chi".to_string()));
+        assert!(!modes.contains(&"water-cooler".to_string()));
+    }
+
+    #[test]
+    fn the_2023_controller_follows_liquidctl() {
+        // Nzxt2023RgbController._write_colors: 2a 04 cid cid, mode and speed, the GRB
+        // colors, zeros up to byte 55, then <02 backward> <count> <mod2> 08 03.
+        let footer = |m: &[u8]| m[55..].to_vec();
+        let fixed = packet_2023(0x01, &Lighting::Fixed([0xff, 0x10, 0x20])).unwrap();
+        assert_eq!(&fixed[..10], [0x2a, 0x04, 0x01, 0x01, 0x00, 0x32, 0x00, 0x10, 0xff, 0x20]);
+        assert!(fixed[10..55].iter().all(|&b| b == 0));
+        assert_eq!(footer(&fixed), [0x00, 1, 0x00, 0x08, 0x03]);
+        // `off`: one black color, speed 00 00.
+        let off = packet_2023(0x02, &Lighting::Off).unwrap();
+        assert_eq!(&off[..7], [0x2a, 0x04, 0x02, 0x02, 0x00, 0x00, 0x00]);
+        assert!(off[7..55].iter().all(|&b| b == 0));
+        assert_eq!(footer(&off), [0x00, 1, 0x00, 0x08, 0x03]);
+        // breathing: mode 07, fastest 04 00, mod2 08.
+        let breathe = Lighting::Effect { effect: Effect::Breathing, colors: vec![[1, 2, 3], [4, 5, 6]], speed: Speed::Fastest, backward: true };
+        let m = packet_2023(0x04, &breathe).unwrap();
+        assert_eq!(&m[..13], [0x2a, 0x04, 0x04, 0x04, 0x07, 0x04, 0x00, 2, 1, 3, 5, 4, 6]);
+        assert_eq!(footer(&m), [0x02, 2, 0x08, 0x08, 0x03]);
+        // pulse takes one color, mode 06, slowest 19 00, mod2 08.
+        let pulse = Lighting::Effect { effect: Effect::Pulse, colors: vec![[1, 2, 3], [4, 5, 6]], speed: Speed::Slowest, backward: false };
+        let m = packet_2023(0x01, &pulse).unwrap();
+        assert_eq!(&m[4..10], [0x06, 0x19, 0x00, 2, 1, 3]);
+        assert!(m[10..55].iter().all(|&b| b == 0));
+        assert_eq!(footer(&m), [0x00, 1, 0x08, 0x08, 0x03]);
+        // spectrum wave: mode 02, normal fa 00, one black color.
+        let wave = Lighting::Effect { effect: Effect::SpectrumWave, colors: vec![[9, 9, 9]], speed: Speed::Normal, backward: false };
+        let m = packet_2023(0x01, &wave).unwrap();
+        assert_eq!(&m[4..10], [0x02, 0xfa, 0x00, 0, 0, 0]);
+        assert_eq!(footer(&m), [0x00, 1, 0x00, 0x08, 0x03]);
+        // Neither covering marquee nor the Kraken's effects.
+        for e in [Effect::CoveringMarquee, Effect::TaiChi, Effect::WaterCooler] {
+            let l = Lighting::Effect { effect: e, colors: vec![[1, 1, 1]; 2], speed: Speed::Normal, backward: false };
+            assert!(packet_2023(0x01, &l).is_err());
+            assert!(!modes_2023().contains(&e.name().to_string()));
+        }
+        assert_eq!(modes_2023().len(), 2 + 8);
     }
 
     #[test]

@@ -833,9 +833,9 @@ about the table"
             usb: Ok(vec![
                 Usb {
                     vid: NZXT_VID,
-                    pid: 0x2006,
+                    pid: 0x2015,
                     count: 1,
-                    product: Some("NZXT Smart Device V2".into()),
+                    product: Some("NZXT H1 V2".into()),
                     bcd: 0x0100,
                     speed: Some(nusb::Speed::Full),
                     interfaces: Ok(vec![int(0, 3, vec![(0x81, EndpointType::Interrupt, 64), (0x01, EndpointType::Interrupt, 64)])]),
@@ -863,7 +863,7 @@ about the table"
                     interfaces: Err("no configuration descriptor".into()),
                 },
             ]),
-            hid: Ok(vec![hid(0x2006, 0, PLAIN), hid(0x3012, 1, KRAKEN_ELITE_V2)]),
+            hid: Ok(vec![hid(0x2015, 0, PLAIN), hid(0x3012, 1, KRAKEN_ELITE_V2)]),
             secrets: vec!["A1B2C3D4E5F6A7B8C9D0E1F2".into()],
         }
     }
@@ -880,7 +880,7 @@ about the table"
         assert!(text.contains("- Kraken Elite (2024) `1e71:3012`: firmware 1.2.0, verified, connected\n"));
         assert!(text.contains("  - fans: pump (pump, min 20 %, stores curves), fan (stores curves)\n"));
         assert!(text.contains("  - LCD 640×640, round\n"));
-        assert!(text.contains("**NZXT devices without a driver**\n- NZXT Smart Device V2 `1e71:2006`\n"));
+        assert!(text.contains("**NZXT devices without a driver**\n- NZXT H1 V2 `1e71:2015`\n"));
         assert!(text.contains("**Asetek devices (Asetek made the older Krakens: X31, X41, X61, X40, X60)**\n- Asetek cooler `2433:b201`\n"));
         assert!(text.contains(&format!("**USB descriptors** ({READ_ONLY})\n```text\n")));
         assert!(text.contains("1e71:3012 NZXT Kraken Elite V2, bcdDevice 0102, high speed\n  interface 0: class ff/00/00, bulk out 02 (512 B)\n"));
@@ -890,7 +890,7 @@ about the table"
         // Descriptors of supported devices are known; only new ones carry the raw bytes.
         assert_eq!(text.matches("descriptor (").count(), 1);
         assert!(text.ends_with("```\n"));
-        assert_eq!(title(&f), "Hardware: NZXT Smart Device V2 (1e71:2006), Asetek cooler (2433:b201)");
+        assert_eq!(title(&f), "Hardware: NZXT H1 V2 (1e71:2015), Asetek cooler (2433:b201)");
     }
 
     #[test]
