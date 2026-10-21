@@ -1917,7 +1917,10 @@
      when false. The game's time is shaded. A session's charts are only those with
      readings; their time runs from the session's start, a drag across one zooms them
      all in, and `win.cmp`, another session { from, to, label }, is drawn dashed under
-     them, lined up at the game's start and at its end (see lineUp).
+     them, lined up at the game's start and at its end (see lineUp); its `lo` and `hi`
+     are where the games next to it end and begin, past which it is left out.
+     `win.near` are other games played around this one, { from, to, label }, shaded
+     and named.
      `win.onData(points, cmpPoints, step)` hears of each load, the compared session's
      points at their own times, and
      `win.tools` go in the header. */
@@ -2040,6 +2043,7 @@
     function lineUp(list) {
       const c = win.cmp, end = win.to, half = (cdata ? cdata.step : 60) * 500, out = [];
       for (const q of list) {
+        if (q.t + half < (c.lo ?? -Infinity) || q.t + half >= (c.hi ?? Infinity)) continue;
         if (q.t + half <= c.to) { const t = q.t + win.from - c.from; if (end == null || t <= end) out.push({ t, v: q.v }); }
         else if (end != null) out.push({ t: q.t + end - c.to, v: q.v });
       }
@@ -2197,13 +2201,21 @@
       // Zoomed in, the lines stop at the plot's edges.
       ctx.save();
       ctx.beginPath(); ctx.rect(pl, 0, w - pl - pr, hh); ctx.clip();
-      // The game's time, a column down every strip, when they go on before or after it.
+      // The game's time, a column down every strip, when they go on before or after it,
+      // and fainter, the other games played around it.
       if (win && (t0 < win.from || t1 > game()[1])) {
         const [a, b] = game(), xa = Math.max(pl, X(a)), xb = Math.min(w - pr, X(b));
+        const others = (win.near || []).map((n) => ({ ...n, xa: Math.max(pl, X(n.from)), xb: Math.min(w - pr, X(n.to ?? Date.now())) })).filter((n) => n.xb > n.xa);
         ctx.fillStyle = css.getPropertyValue('--ce-band').trim();
         ctx.fillRect(xa, 0, xb - xa, hh);
+        ctx.globalAlpha = 0.5;
+        for (const n of others) ctx.fillRect(n.xa, 0, n.xb - n.xa, hh);
+        ctx.globalAlpha = 1;
         ctx.strokeStyle = css.getPropertyValue('--ce-band-edge').trim(); ctx.lineWidth = 1;
         for (const x of win.to == null ? [X(a)] : [X(a), X(b)]) { ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, 0); ctx.lineTo(Math.round(x) + 0.5, hh); ctx.stroke(); }
+        ctx.save(); ctx.globalAlpha = 0.5;
+        for (const n of others) for (const t of n.to == null ? [n.from] : [n.from, n.to]) { const x = Math.round(X(t)) + 0.5; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, hh); ctx.stroke(); }
+        ctx.restore();
         // Where a shorter compared game ended, dashed down every strip.
         const cEnd = win.cmp && cdata && win.to != null && win.from + (win.cmp.to - win.cmp.from);
         const xc = cEnd && cEnd < b - 60e3 ? X(cEnd) : null;
@@ -2212,15 +2224,21 @@
           ctx.beginPath(); ctx.moveTo(Math.round(xc) + 0.5, first ? 26 : 0); ctx.lineTo(Math.round(xc) + 0.5, hh); ctx.stroke();
           ctx.restore();
         }
-        // Over the first strip: before, the game and after, each named where it fits,
-        // and the end of the compared game where it does not touch them.
+        // Over the first strip: before, the game, after and the games around them, each
+        // named where it fits, and the end of the compared game where it does not touch
+        // them. Before and after stop at those games.
         if (first) {
           ctx.font = `600 11px ${FONT}`; ctx.textAlign = 'center';
-          const parts = [[pl, X(a), 'Before', text], [xa, xb, win.to == null ? 'Playing now' : 'Game', css.getPropertyValue('--t2').trim()], [X(b), w - pr, 'After', text]];
+          const lo = Math.max(pl, ...others.filter((n) => n.xb <= xa).map((n) => n.xb)), hi = Math.min(w - pr, ...others.filter((n) => n.xa >= xb).map((n) => n.xa));
+          const parts = [[lo, X(a), 'Before', text], [xa, xb, win.to == null ? 'Playing now' : 'Game', css.getPropertyValue('--t2').trim()], [X(b), hi, 'After', text], ...others.map((n) => [n.xa, n.xb, n.label, text, true])];
           const taken = [];
-          for (const [l, r, s, c] of parts) {
+          for (const [l, r, s0, c, cut] of parts) {
+            // Another game's name is cut short where it does not fit.
+            const room = Math.min(w - pr, r) - Math.max(pl, l) - 16;
+            let s = s0;
+            if (cut) while (s.length > 3 && ctx.measureText(s).width > room) s = `${s0.slice(0, s.length - 2).trimEnd()}…`;
             const tw = ctx.measureText(s).width;
-            if (r - l <= tw + 16) continue;
+            if (tw > room) continue;
             const x = (Math.max(pl, l) + Math.min(w - pr, r)) / 2;
             ctx.fillStyle = c; ctx.fillText(s, x, 18);
             taken.push([x - tw / 2, x + tw / 2]);
@@ -2328,6 +2346,8 @@
 
   // How long the charts of a session go on before and after it, in ms.
   const SESSION_AROUND = 30 * 60e3;
+  // How long the service keeps its history, in ms: KEEP_DAYS in src/history.rs.
+  const HISTORY_KEPT = 30 * 86_400e3;
 
   // A time from a session's start at `origin`, in hours and minutes: "1:05" is an hour
   // and five minutes in, "−0:20" twenty minutes before.
@@ -2552,27 +2572,46 @@
      the half hour before, or null with under 3 minutes of it. `warm` is how long it
      took to reach 90% of its rise, `cool` how long after the game it took to come
      within 2 °C, or a tenth of the rise, of before; null when it did not. `still` is
-     how far above before it was at the last reading after the game, `after` when. */
-  function warmCool(points, id, s0, s1, step) {
+     how far above before it was at the last reading after the game, `after` when.
+     Before starts at `b0` and after stops at `a1`, where other games end and begin
+     (see aroundBounds). `rest` is false when a game ended in the half hour before, so
+     that before may still be warm: then there is no `cool` or `still`. `fell` is how
+     far the last reading after the game was under the game's average, `after` when,
+     and `next` how long after the game the next one began. */
+  function warmCool(points, id, s0, s1, step, b0 = -Infinity, a1 = Infinity) {
     const before = [], during = [], after = [];
     for (const q of points) {
       const v = q.v[id];
       if (!v) continue;
       const m = q.t + step / 2;
+      if (m < b0 || m >= a1) continue;
       (m < s0 ? before : m <= s1 ? during : after).push([m, v[0], v[1] ?? v[0]]);
     }
     if (!during.length) return null;
     const mean = (l) => l.reduce((a, x) => a + x[1], 0) / l.length;
-    const out = { before: before.length >= 3 ? mean(before) : null, game: mean(during), top: Math.max(...during.map((x) => x[2])), warm: null, cool: null, still: null, after: null };
+    const out = { before: before.length >= 3 ? mean(before) : null, game: mean(during), top: Math.max(...during.map((x) => x[2])), warm: null, cool: null, still: null, fell: null, after: null, next: null, rest: !(b0 > s0 - SESSION_AROUND) };
+    const last = after[after.length - 1];
+    if (last) { out.fell = out.game - last[1]; out.after = last[0] - s1; }
+    if (a1 <= Date.now()) out.next = a1 - s1;
     if (out.before == null) return out;
     out.rise = out.game - out.before;
     if (out.rise < 2) return out;
     const hit = during.find((x) => x[1] >= out.before + out.rise * 0.9);
     if (hit) out.warm = hit[0] - s0;
+    if (!out.rest) return out;
     const back = after.find((x) => x[1] <= out.before + Math.max(2, out.rise * 0.1));
     if (back) out.cool = back[0] - s1;
-    else if (after.length) { const last = after[after.length - 1]; out.still = last[1] - out.before; out.after = last[0] - s1; }
+    else if (last) out.still = last[1] - out.before;
     return out;
+  }
+
+  /* Where the readings around session `x` stop for the other games played near it,
+     `near` [{ from, to, label }] with `to` null for the one being played: [the end of
+     the last one before it, the start of the first one after it], in ms. */
+  function aroundBounds(x, near) {
+    let lo = -Infinity, hi = Infinity;
+    for (const n of near) { if (n.from < x.start) lo = Math.max(lo, n.to ?? Date.now()); else hi = Math.min(hi, n.from); }
+    return [lo, hi];
   }
   const minutes = (ms) => `${Math.max(1, Math.round(ms / 60e3))} min`;
   // A difference of temperatures in the unit picked, in whole degrees.
@@ -2581,15 +2620,16 @@
   /* One session: what it came to, and the readings over it from the history. `s` is a
      kept session, or { live: true, ... } for the game being played, which goes on
      until it closes. `others` are the game's other sessions, to compare with. `again`
-     builds the view again, after a pick above it. */
-  function sessionView(host, s, others, back, again) {
+     builds the view again, after a pick above it. `near(x)` are the games, of any
+     kind, played within SESSION_AROUND of session `x`: { from, to, label }. */
+  function sessionView(host, s, others, back, again, near) {
     const detailed = K.prefs.sessionView !== 'summary';
     const cmp = others.find((x) => x.start === gameCmp) || null;
     const bar = h('<div class="cam-sback"><span class="grow"></span></div>');
     bar.prepend(button('All sessions', { small: true, onClick: back }));
     if (others.length) {
       const opts = [{ value: 0, label: 'Compare with nothing' }].concat([...others].sort((a, b) => b.start - a.start)
-        .map((x) => ({ value: x.start, label: `Compare with ${shortDay(x.start)}, ${clock(x.start)}`, desc: `${playTime(x.played)}${x.fps ? ` · ${fpsText(x.fps)} fps` : ''}` })));
+        .map((x) => ({ value: x.start, label: `Compare with ${shortDay(x.start)}, ${clock(x.start)}`, desc: `${playTime(x.played)}${x.fps ? ` · ${fpsText(x.fps)} fps` : ''}${x.end < Date.now() - HISTORY_KEPT ? ' · no charts kept' : ''}` })));
       bar.appendChild(select({ options: opts, value: cmp ? cmp.start : 0, label: 'Compare with', onChange: (v) => { gameCmp = v || null; again(); } }));
     }
     bar.appendChild(choice({ options: [{ value: 'summary', label: 'Summary' }, { value: 'detailed', label: 'Detailed' }], value: detailed ? 'detailed' : 'summary', label: 'View', onChange: (v) => { K.setPref('sessionView', v); again(); } }));
@@ -2624,7 +2664,11 @@
     };
     const around = K.prefs.sessionAround !== false;
     const tools = choice({ options: [{ value: 'around', label: '30 min around' }, { value: 'game', label: 'Game only' }], value: around ? 'around' : 'game', label: 'Charts', onChange: (v) => { K.setPref('sessionAround', v === 'around'); again(); } });
-    const win = { from: s.start, to: s.live ? null : s.end, around, tools, panels: sessionPanels(s, detailed), cmp: cmp ? { from: cmp.start, to: cmp.end, label: cmpDay } : null };
+    // Games played just before or after this one, and the compared one: their before
+    // and after stop there.
+    const nearS = near(s), [b0, a1] = aroundBounds(s, nearS);
+    const nearC = cmp ? near(cmp) : [], [cb0, ca1] = cmp ? aroundBounds(cmp, nearC) : [];
+    const win = { from: s.start, to: s.live ? null : s.end, around, tools, panels: sessionPanels(s, detailed), near: nearS, cmp: cmp ? { from: cmp.start, to: cmp.end, label: cmpDay, lo: cb0, hi: ca1 } : null };
     function fill() {
       const g = s.live && S.status && S.status.game;
       if (s.live && g && g.start === s.start) Object.assign(s, { played: g.played, fps: g.avg_fps, low1: g.low1 });
@@ -2689,27 +2733,39 @@
     function showWarm(all, call, step, end) {
       const deg = (d) => { const n = degrees(d); return `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n)}°`; };
       const rows = warmIds.flatMap((x) => {
-        const w = warmCool(all, x.id, s.start, end, step);
-        const c = cmp ? warmCool(call, x.id, cmp.start, cmp.end, step) : null;
-        return [w && [x.label, w, s.live && win.to == null, end, false], c && [`${x.label}, ${cmpDay}`, c, false, cmp.end, true]].filter(Boolean);
+        const w = warmCool(all, x.id, s.start, end, step, b0, a1);
+        const c = cmp ? warmCool(call, x.id, cmp.start, cmp.end, step, cb0, ca1) : null;
+        return [w && [x.label, w, s.live && win.to == null, end, false, b0 > s.start - SESSION_AROUND], c && [`${x.label}, ${cmpDay}`, c, false, cmp.end, true, cb0 > cmp.start - SESSION_AROUND]].filter(Boolean);
       });
       warmBox.textContent = '';
       if (!rows.length) { warmBox.innerHTML = '<p class="cam-muted">No temperatures were kept for this game.</p>'; return; }
       warmBox.appendChild(table([
         { label: 'Sensor', value: ([label]) => label },
-        { label: 'Before', num: true, value: ([, w]) => (w.before == null ? 'No readings' : K.temp(w.before, 0)) },
+        { label: 'Before', num: true, value: ([, w, , , , cut]) => (w.before != null ? K.temp(w.before, 0) : cut ? 'Right after a game' : 'No readings') },
         { label: 'In game', num: true, value: ([, w]) => `${K.temp(w.game, 0)}${w.before == null ? '' : ` (${deg(w.rise)})`}` },
         { label: 'Highest', num: true, value: ([, w]) => K.temp(w.top, 0) },
         { label: 'Warmed up in', num: true, value: ([, w]) => (w.before == null ? '' : w.rise < 2 ? 'Hardly warmed' : w.warm == null ? 'Kept rising' : minutes(w.warm)) },
         { label: 'Cooled down in', num: true, value: ([, w, playing, e]) => {
           if (playing) return 'Still playing';
-          if (w.before == null || w.rise < 2) return '';
           if (w.cool != null) return minutes(w.cool);
+          // After another game, or up to the next one, only how far it fell.
+          if (!w.rest || w.next != null) {
+            if (w.after == null) return w.next != null ? 'Next game right after' : 'No readings after';
+            return degrees(w.fell) >= 1 ? `Fell ${degrees(w.fell)}° in ${minutes(w.after)}` : `No cooler in ${minutes(w.after)}`;
+          }
+          if (w.before == null || w.rise < 2) return '';
           if (w.still == null) return Date.now() - e < 2 * 60e3 ? 'Just ended' : 'No readings after';
           return Date.now() - e < SESSION_AROUND ? `${deg(w.still)} so far` : `${deg(w.still)} after ${minutes(w.after)}`;
         } },
       ], rows, ([, , , , dim]) => (dim ? 'dim' : '')));
-      warmBox.insertAdjacentHTML('beforeend', `<p class="cam-hint">Before is the average of the 30 minutes before the game. Warmed up is when a temperature reached 90% of its rise in the game; cooled down is when it came back within ${degrees(2)}° of before.</p>`);
+      // What the games just before and after this one did to its numbers.
+      const prev = nearS.find((n) => n.from < s.start && (n.to ?? Date.now()) === b0), next = nearS.find((n) => n.from === a1);
+      const cuts = [];
+      if (prev) cuts.push(b0 >= s.start ? `${prev.label} was still open when this game began, so there is no before, and cooling down says how far it fell.` : `${prev.label} ended ${minutes(s.start - b0)} before this game, so the PC may not have been at rest: before is only the time between them, and cooling down says how far it fell.`);
+      if (next) cuts.push(`${next.label} began ${minutes(a1 - end)} after it, so cooling down stops there.`);
+      const hint = h('<p class="cam-hint"></p>');
+      hint.textContent = `Before is the average of the 30 minutes before the game. Warmed up is when a temperature reached 90% of its rise in the game; cooled down is when it came back within ${degrees(2)}° of before.${cuts.length ? ` ${cuts.join(' ')}` : ''}`;
+      warmBox.appendChild(hint);
     }
     const elapsedOf = (t) => sinceStart(t, s.start);
     const charts = historyCharts(win);
@@ -2756,6 +2812,14 @@
     // recorded it.
     const steamOf = (game) => { const x = (sessions || []).find((y) => y.game === game && y.steam); return x ? x.steam : null; };
     const back = () => { gameOpen = null; show(); };
+    // The other games, of any kind, played within SESSION_AROUND of session `x`, the
+    // one being played too: { from, to, label }, `to` null while it is played.
+    const near = (x) => {
+      const a = x.start - SESSION_AROUND, b = (x.end ?? Date.now()) + SESSION_AROUND, g = S.status && S.status.game;
+      const list = (sessions || []).map((y) => ({ from: y.start, to: y.end, label: y.game }));
+      if (g && !list.some((y) => y.from === g.start)) list.push({ from: g.start, to: null, label: g.name });
+      return list.filter((y) => y.from !== x.start && y.from < b && (y.to ?? Date.now()) > a);
+    };
 
     // The list, or the session that is open.
     function show() {
@@ -2763,14 +2827,14 @@
       if (gameOpen === 'now' && g) {
         const s = { live: true, game: g.name, exe: g.exe, steam: g.steam || steamOf(g.name), start: g.start, end: null, played: g.played, fps: g.avg_fps, low1: g.low1, low01: null, temps: {} };
         shown = 'now';
-        draw((el) => sessionView(el, s, (sessions || []).filter((x) => x.game === g.name), back, show));
+        draw((el) => sessionView(el, s, (sessions || []).filter((x) => x.game === g.name), back, show, near));
         return;
       }
       const s = gameOpen != null && sessions && sessions.find((x) => x.start === gameOpen);
       if (s) {
         s.steam = s.steam || steamOf(s.game);
         shown = `s${s.start}`;
-        draw((el) => sessionView(el, s, sessions.filter((x) => x.game === s.game && x !== s), back, show));
+        draw((el) => sessionView(el, s, sessions.filter((x) => x.game === s.game && x !== s), back, show, near));
         return;
       }
       // Until the sessions load, the one asked for.
