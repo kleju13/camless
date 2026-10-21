@@ -73,6 +73,7 @@ Other brands' fan hubs and LED controllers, off unless you turn on *Settings →
 | Asiahorse Umbra V2 | `1a86:fe04` | one duty for all its fans, and one colour on its ten ARGB ports |
 | Nollie controllers, 1 to 32 channels | 16 models under `3061`, `16d2` and `16d5` ([list](docs/protocol.md)) | each channel's lighting |
 | Corsair iCUE LINK System Hub | `1b1c:0c3f` | duties and speeds of the LINK fans and pumps, their temperature probes, and each device's lighting |
+| Corsair Commander Pro, Obsidian 1000D | `1b1c:0c10`, `1d00` | the six fans' duties and speeds and the four temperature probes; on Linux only with the `corsair-cpro` kernel driver unloaded |
 | HYTE Smart Hub | `3402:0904` | duties and speeds on the four fan headers, and the four ARGB ports |
 | HYTE Nexus Portal NP50 | `3402:0901` | the FP12 fans and the 4-pin header, and the lighting of each module and the logo |
 | iBUYPOWER MiniHub | `3402:0900` | duties and speeds on the two fan ports, and the four ARGB ports |
@@ -121,7 +122,7 @@ What is different from Windows:
 - **No frame rates**, which come from Windows' ETW. Games finds Steam games, native and under Proton. camless does not ask which window is in front (Wayland does not say), so a game counts as played while it runs.
 - **CPU temperature** comes from hwmon (k10temp, zenpower or coretemp) and needs no PawnIO. CPU power comes from RAPL, which only root can read, so it has no reading.
 - **No admin rights**: the service runs as you. *Import from NZXT CAM* is on Windows only, like CAM, and so are firmware updates, which camless never installs: CAM on Windows does.
-- **Kernel drivers** such as `nzxt-kraken3` can stay loaded. Do not run another program that sets the same fans, such as CoolerControl, liquidctl or fancontrol. camless leaves the motherboard's headers alone while CoolerControl runs, but does not see fancontrol.
+- **Kernel drivers** such as `nzxt-kraken3` can stay loaded, except `corsair-cpro`: camless leaves a Commander Pro alone while it is loaded (`sudo modprobe -r corsair-cpro`, and blacklist it to keep it out). Do not run another program that sets the same fans, such as CoolerControl, liquidctl or fancontrol. camless leaves the motherboard's headers alone while CoolerControl runs, but does not see fancontrol.
 - **Updates** download the new tarball and run its `install.sh`. When the udev rules have changed, the desktop asks for your password (pkexec), or you run `install.sh` from the download.
 
 To uninstall, run `~/.local/share/camless/uninstall.sh`. It keeps your settings in `~/.config/camless`.
