@@ -12,9 +12,10 @@
 #
 # linux/install.sh puts this file in /etc/udev/rules.d.
 
-# NZXT: Kraken X2, M22, X3, Z3, 2023, Elite 2023, Elite 2024, Plus 2024; Control Hub.
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="170e|1715|2007|2014|3008|300e|300c|3012|3014|2022", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="170e|1715|2007|2014|3008|300e|300c|3012|3014|2022", TAG+="uaccess"
+# NZXT: Kraken X2, M22, X3, Z3, 2023, Elite 2023, Elite 2024, Plus 2024; Control Hub,
+# Smart Device (V1) and Grid+ V3.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="170e|1715|2007|2014|3008|300e|300c|3012|3014|2022|1714|1711", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="170e|1715|2007|2014|3008|300e|300c|3012|3014|2022|1714|1711", TAG+="uaccess"
 
 # NZXT Smart Device V2; RGB & Fan Controller, and its 3+6 channel version; HUE 2,
 # HUE 2 Ambient; RGB Controller.

@@ -356,11 +356,14 @@ fn lcd_test(duration: Duration) -> Result<()> {
 }
 
 /// Opens every supported device once and prints what the config can refer to;
-/// other brands' only with the config's `[devices] other_brands` on.
+/// other brands' only with the config's `[devices] other_brands` on, the
+/// motherboard's headers with `motherboard`. It sets nothing, except that it gives
+/// back the headers a camless that stopped without handing them back had taken.
 fn status(config: &Path) -> Result<()> {
     let api = HidApi::new()?;
-    let other_brands = Config::load(config).is_ok_and(|c| c.devices.other_brands);
-    let (found, unsupported) = drivers::scan(&api, other_brands);
+    let devices = Config::load(config).map(|c| c.devices).unwrap_or_default();
+    let (mut found, unsupported) = drivers::scan(&api, devices.other_brands);
+    found.extend(drivers::scan_host(&devices));
     if found.is_empty() {
         println!("no supported NZXT device found");
     }

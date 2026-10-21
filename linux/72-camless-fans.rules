@@ -1,0 +1,18 @@
+# camless: lets the user who installed camless set the motherboard's fan headers and
+# an AMD graphics card's fans, which camless does only with [devices] motherboard or
+# gpu on. The kernel's drivers make each header's files root's. Unlike the devices in 71-camless.rules,
+# these are files in sysfs, which `uaccess` cannot hand over, so this rule gives them
+# to that user, as udev rules commonly do for a backlight's brightness.
+#
+# Only pwmN, the duty, and pwmN_enable, who sets it: not the chip's own curve points
+# or anything else, and only on the Super I/O chips camless knows (Nuvoton, Winbond,
+# ITE, Fintek) and amdgpu. Not a USB device's hwmon. The second line is for a
+# driver on hwmon's old interface, as f71882fg was, whose files are its platform
+# device's.
+#
+# One user per computer: installing camless as another user gives the headers to
+# that one. linux/install.sh puts this file in /etc/udev/rules.d with @USER@ filled
+# in; a test in src/drivers/board.rs checks its text.
+
+ACTION=="add|change", SUBSYSTEM=="hwmon", ATTR{name}=="nct6*|w83*|it8*|f71*|f8*|amdgpu", RUN+="/bin/sh -c 'for f in /sys%p/pwm[1-9] /sys%p/pwm[1-9]_enable; do [ -e $$f ] && chown @USER@ $$f; done; true'"
+ACTION=="add|change", SUBSYSTEM=="hwmon", SUBSYSTEMS=="platform", ATTRS{name}=="nct6*|w83*|it8*|f71*|f8*", RUN+="/bin/sh -c 'for f in /sys%p/device/pwm[1-9] /sys%p/device/pwm[1-9]_enable; do [ -e $$f ] && chown @USER@ $$f; done; true'"
