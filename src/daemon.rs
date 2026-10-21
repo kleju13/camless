@@ -411,12 +411,14 @@ impl Daemon {
             // A hub with nothing to hand back to keeps these, as when the service stops.
             // The others go back to their own control, which the brand's app may have
             // taken already: they get nothing first.
-            if dev.keeps_duty() && !batch.is_empty() {
-                let _ = dev.set_duties(&batch);
-            }
+            let failsafe = match (dev.keeps_duty() && !batch.is_empty()).then(|| dev.set_duties(&batch)) {
+                Some(Ok(())) => "; its fans left at the failsafe duty".to_string(),
+                Some(Err(e)) => format!("; its fans not set to the failsafe duty, they keep the last one ({e:#})"),
+                None => String::new(),
+            };
             let released = match dev.release() {
-                Ok(()) => "handed back".to_string(),
-                Err(e) => format!("not handed back ({e:#})"),
+                Ok(()) => format!("handed back{failsafe}"),
+                Err(e) => format!("not handed back ({e:#}){failsafe}"),
             };
             notes.push(format!("{}: {why}; {released}", s.found.id));
             s.dev = None;
