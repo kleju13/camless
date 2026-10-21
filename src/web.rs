@@ -498,6 +498,10 @@ impl Browser {
             DEVTOOLS.into(),
             format!("--user-data-dir={}", dir.display()),
             format!("--window-size={w},{h}"),
+            // Headless Chromium on Windows still makes a real window, and some versions
+            // show it as a blank white square on the desktop (camless #39, Chrome 129).
+            // Off every screen it stays out of sight; the page renders all the same.
+            "--window-position=-32000,-32000".into(),
             "--force-device-scale-factor=1".into(),
             "--hide-scrollbars".into(),
             "--mute-audio".into(),
