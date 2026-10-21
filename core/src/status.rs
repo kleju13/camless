@@ -32,6 +32,9 @@ pub struct ServiceInfo {
     /// Why there are no GPU readings, when there are none.
     #[serde(default)]
     pub gpu_sensor_error: Option<String>,
+    /// Why a GPU that is read has no power, when that is known.
+    #[serde(default)]
+    pub gpu_power_error: Option<String>,
     /// Why games have no frame rates, when they have none.
     #[serde(default)]
     pub fps_error: Option<String>,

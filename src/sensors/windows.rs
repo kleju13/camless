@@ -1,6 +1,7 @@
 //! Host sensors on Windows: CPU temperature and power through PawnIO, CPU load,
 //! memory and the CPU's name through plain Win32 calls, and a graphics card NVML
-//! does not read through what Windows keeps for Task Manager.
+//! does not read through what Windows keeps for Task Manager, with an AMD card's
+//! power through AMD's ADL.
 
 use anyhow::{bail, Context, Result};
 use libloading::Library;
@@ -9,9 +10,9 @@ use std::time::Instant;
 use windows_sys::Wdk::Graphics::Direct3D::{
     D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, D3DKMT_ADAPTERINFO,
     D3DKMT_ADAPTERREGISTRYINFO, D3DKMT_ADAPTERTYPE, D3DKMT_ADAPTER_PERFDATA, D3DKMT_CLOSEADAPTER, D3DKMT_ENUMADAPTERS2,
-    D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS, D3DKMT_QUERYSTATISTICS_ADAPTER, D3DKMT_QUERYSTATISTICS_NODE,
+    D3DKMT_ADAPTERADDRESS, D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS, D3DKMT_QUERYSTATISTICS_ADAPTER, D3DKMT_QUERYSTATISTICS_NODE,
     D3DKMT_QUERYSTATISTICS_TYPE, D3DKMT_SEGMENTSIZEINFO, KMTQAITYPE_ADAPTERPERFDATA, KMTQAITYPE_ADAPTERREGISTRYINFO,
-    KMTQAITYPE_ADAPTERTYPE, KMTQAITYPE_GETSEGMENTSIZE, KMTQUERYADAPTERINFOTYPE,
+    KMTQAITYPE_ADAPTERADDRESS, KMTQAITYPE_ADAPTERTYPE, KMTQAITYPE_GETSEGMENTSIZE, KMTQUERYADAPTERINFOTYPE,
 };
 use windows_sys::Win32::Foundation::{FILETIME, HANDLE, LUID, WAIT_ABANDONED, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ};
@@ -194,12 +195,16 @@ const SOFTWARE_DEVICE: u32 = 1 << 2;
 /// A graphics card of any brand, read through D3DKMT in `gdi32.dll` as Task Manager
 /// reads it: the temperature its driver reports, from WDDM 2.4 on, and the busiest
 /// engine's share of the time. Windows has power only as a share of the card's
-/// limit, so there are no watts.
+/// limit, so watts come from AMD's ADL, on an AMD card alone. Temperature and load
+/// match AMD's Adrenalin on an RX 9070 XT (camless #42).
 pub struct WddmGpu {
     pub name: String,
     adapter: u32,
     luid: LUID,
     nodes: u32,
+    power: Option<AdlPower>,
+    /// Why there is no power in watts, when there is none.
+    pub power_error: Option<String>,
     /// Each engine's running time at the last reading, and when. It counts in 100 ns,
     /// though `d3dkmthk.h` says microseconds: in 100 ns it matches Task Manager's
     /// engine counters, idle and loaded, as LibreHardwareMonitor reads it.
@@ -304,13 +309,29 @@ impl WddmGpu {
         }
         let a = adapters[chosen.context("no graphics card among the adapters Windows lists")?];
         let name = adapter_name(a.hAdapter).unwrap_or_else(|| "GPU".into());
-        let mut gpu = WddmGpu { name, adapter: a.hAdapter, luid: a.AdapterLuid, nodes: 0, last: None };
+        let mut gpu = WddmGpu { name, adapter: a.hAdapter, luid: a.AdapterLuid, nodes: 0, power: None, power_error: None, last: None };
         gpu.nodes = statistics(a.AdapterLuid, D3DKMT_QUERYSTATISTICS_ADAPTER, 0)
             .map_or(0, |s| unsafe { s.QueryResult.AdapterInformation.NodeCount });
         if gpu.nodes == 0 && gpu.temperature().is_none() {
             bail!("Windows has no readings for {}", gpu.name);
         }
+        let mut address = D3DKMT_ADAPTERADDRESS::default();
+        match query(gpu.adapter, KMTQAITYPE_ADAPTERADDRESS, &mut address)
+            .then_some(address)
+            .context("Windows gives no PCI address for the card")
+            .and_then(AdlPower::open)
+        {
+            Ok(p) => gpu.power = Some(p),
+            Err(e) => {
+                eprintln!("gpu power off: {e:#}");
+                gpu.power_error = Some(format!("{e:#}"));
+            }
+        }
         Ok(gpu)
+    }
+
+    pub fn power_w(&self) -> Option<f32> {
+        self.power.as_ref()?.watts()
     }
 
     /// None when the driver reports none, which it does as 0.
@@ -338,6 +359,146 @@ impl WddmGpu {
     }
 }
 
+/// `ADL_PMLOG_SENSORS` in `adl_defines.h`: what the card draws, all of it, which ADL
+/// has from RDNA 3 on, and the chip's own draw, which cards before have.
+const ADL_PMLOG_BOARD_POWER: usize = 73;
+const ADL_PMLOG_ASIC_POWER: usize = 23;
+
+/// `AdapterInfo` in `adl_structures.h`, as built for Windows.
+#[repr(C)]
+struct AdlAdapterInfo {
+    size: i32,
+    index: i32,
+    udid: [u8; 256],
+    bus: i32,
+    device: i32,
+    function: i32,
+    vendor: i32,
+    name: [u8; 256],
+    display_name: [u8; 256],
+    present: i32,
+    exist: i32,
+    driver_path: [u8; 256],
+    driver_path_ext: [u8; 256],
+    pnp: [u8; 256],
+    os_display_index: i32,
+}
+
+/// `ADLPMLogDataOutput`: a `supported`, `value` pair for each of 256 sensors.
+#[repr(C)]
+struct AdlPmLog {
+    size: i32,
+    sensors: [[i32; 2]; 256],
+}
+
+type AdlQuery = unsafe extern "C" fn(*mut c_void, i32, *mut AdlPmLog) -> i32;
+
+/// Some ADL calls hand back memory they get from this; none camless makes does.
+extern "C" fn adl_alloc(size: i32) -> *mut c_void {
+    extern "C" {
+        fn malloc(size: usize) -> *mut c_void;
+    }
+    unsafe { malloc(size.max(0) as usize) }
+}
+
+/// Board power, or the chip's on a card without it, in watts, as LibreHardwareMonitor
+/// reads them. None when the card has neither.
+fn pmlog_watts(log: &AdlPmLog) -> Option<f32> {
+    [ADL_PMLOG_BOARD_POWER, ADL_PMLOG_ASIC_POWER]
+        .into_iter()
+        .map(|i| log.sensors[i])
+        .find(|&[supported, _]| supported != 0)
+        .and_then(|[_, watts]| (watts >= 0).then_some(watts as f32))
+}
+
+/// An AMD card's power in watts, through AMD's ADL (`atiadlxx.dll`, which comes with
+/// the driver): the Overdrive 8 log, `ADL2_New_QueryPMLogData_Get`, as
+/// LibreHardwareMonitor reads it. ADL lists each card once for each display output,
+/// by its PCI bus and device; the card is the one at D3DKMT's address.
+struct AdlPower {
+    _lib: Library,
+    context: *mut c_void,
+    index: i32,
+    query: AdlQuery,
+    destroy: unsafe extern "C" fn(*mut c_void) -> i32,
+}
+
+// One thread reads the sensors at a time, and the context is this reader's own.
+unsafe impl Send for AdlPower {}
+
+impl AdlPower {
+    fn open(address: D3DKMT_ADAPTERADDRESS) -> Result<AdlPower> {
+        // A full path, so no atiadlxx.dll beside camless loads instead.
+        let path = std::env::var_os("SystemRoot")
+            .map(|r| std::path::PathBuf::from(r).join("System32").join("atiadlxx.dll"))
+            .filter(|p| p.exists())
+            .context("atiadlxx.dll not found: no AMD driver")?;
+        unsafe {
+            let lib = Library::new(&path).context("atiadlxx.dll does not load")?;
+            let create: unsafe extern "C" fn(extern "C" fn(i32) -> *mut c_void, i32, *mut *mut c_void) -> i32 =
+                *lib.get(b"ADL2_Main_Control_Create\0")?;
+            let destroy: unsafe extern "C" fn(*mut c_void) -> i32 = *lib.get(b"ADL2_Main_Control_Destroy\0")?;
+            let count: unsafe extern "C" fn(*mut c_void, *mut i32) -> i32 = *lib.get(b"ADL2_Adapter_NumberOfAdapters_Get\0")?;
+            let info: unsafe extern "C" fn(*mut c_void, *mut AdlAdapterInfo, i32) -> i32 =
+                *lib.get(b"ADL2_Adapter_AdapterInfo_Get\0")?;
+            let query: AdlQuery = *lib.get(b"ADL2_New_QueryPMLogData_Get\0")
+                .context("this AMD driver has no ADL2_New_QueryPMLogData_Get")?;
+            let mut context = std::ptr::null_mut();
+            // 1: only the adapters connected now, as LibreHardwareMonitor asks.
+            let status = create(adl_alloc, 1, &mut context);
+            if status < 0 {
+                bail!("ADL2_Main_Control_Create failed ({status})");
+            }
+            // Destroys the context on every way out from here.
+            let mut adl = AdlPower { _lib: lib, context, index: -1, query, destroy };
+            let mut n = 0;
+            let status = count(context, &mut n);
+            if status < 0 || n <= 0 {
+                bail!("ADL lists no adapters ({status})");
+            }
+            let mut list: Vec<AdlAdapterInfo> = (0..n).map(|_| std::mem::zeroed()).collect();
+            let status = info(context, list.as_mut_ptr(), n * size_of::<AdlAdapterInfo>() as i32);
+            if status < 0 {
+                bail!("ADL2_Adapter_AdapterInfo_Get failed ({status})");
+            }
+            let at = |a: &&AdlAdapterInfo| a.bus as u32 == address.BusNumber && a.device as u32 == address.DeviceNumber;
+            let mut why = None;
+            for a in list.iter().filter(at) {
+                adl.index = a.index;
+                match adl.log() {
+                    Ok(log) if pmlog_watts(&log).is_some() => return Ok(adl),
+                    Ok(_) => why = Some("ADL has neither board nor chip power for the card".to_string()),
+                    Err(status) => why = Some(format!("ADL2_New_QueryPMLogData_Get failed ({status})")),
+                }
+            }
+            match why {
+                Some(why) => bail!(why),
+                None => bail!("ADL does not list the card (PCI bus {}, device {})", address.BusNumber, address.DeviceNumber),
+            }
+        }
+    }
+
+    /// The Overdrive 8 log, or ADL's status when it gives none.
+    fn log(&self) -> std::result::Result<AdlPmLog, i32> {
+        let mut log: AdlPmLog = unsafe { std::mem::zeroed() };
+        let status = unsafe { (self.query)(self.context, self.index, &mut log) };
+        if status < 0 {
+            return Err(status);
+        }
+        Ok(log)
+    }
+
+    fn watts(&self) -> Option<f32> {
+        pmlog_watts(&self.log().ok()?)
+    }
+}
+
+impl Drop for AdlPower {
+    fn drop(&mut self) {
+        unsafe { (self.destroy)(self.context) };
+    }
+}
+
 impl Drop for WddmGpu {
     fn drop(&mut self) {
         close(self.adapter);
@@ -358,6 +519,25 @@ mod tests {
         assert_eq!(pick(&[c(0b011, 0), c(0b011, 0)]), Some(0));
         assert_eq!(pick(&[c(0b010, 0), c(0b101, 0)]), None);
         assert_eq!(pick(&[]), None);
+    }
+
+    #[test]
+    fn power_is_the_boards_or_else_the_chips() {
+        let mut log = AdlPmLog { size: 0, sensors: [[0; 2]; 256] };
+        assert_eq!(pmlog_watts(&log), None);
+        log.sensors[ADL_PMLOG_ASIC_POWER] = [1, 180];
+        assert_eq!(pmlog_watts(&log), Some(180.0));
+        log.sensors[ADL_PMLOG_BOARD_POWER] = [1, 304];
+        assert_eq!(pmlog_watts(&log), Some(304.0));
+        log.sensors[ADL_PMLOG_BOARD_POWER] = [1, -1];
+        assert_eq!(pmlog_watts(&log), None);
+    }
+
+    #[test]
+    fn adl_structs_match_the_sdk() {
+        // Two ints, a path, four ints, two paths, two ints, three paths and an int.
+        assert_eq!(size_of::<AdlAdapterInfo>(), 4 * 9 + 256 * 6);
+        assert_eq!(size_of::<AdlPmLog>(), 4 + 256 * 8);
     }
 
     #[test]
