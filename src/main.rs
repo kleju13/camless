@@ -671,8 +671,8 @@ fn describe_report(pid: u16, msg: &[u8]) -> Option<String> {
     }
     let ports = if pid == control_hub::MODEL.pid {
         5
-    } else if smart_device2::led_channels(pid).is_some() {
-        smart_device2::FANS
+    } else if let Some(c) = smart_device2::channels(pid).filter(|c| c.fans > 0) {
+        c.fans
     } else {
         return None;
     };

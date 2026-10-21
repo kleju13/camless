@@ -67,6 +67,10 @@ pub const MODELS: &[Model] = &[
     smart_device2::RGB_FAN_CONTROLLER_6_2019,
     smart_device2::RGB_FAN_CONTROLLER_6_201F,
     smart_device2::RGB_FAN_CONTROLLER_6_2020,
+    smart_device2::HUE_2,
+    smart_device2::HUE_2_AMBIENT,
+    smart_device2::RGB_CONTROLLER,
+    smart_device2::RGB_CONTROLLER_2021,
     lianli::UNI_HUB,
     lianli::UNI_HUB_SL,
     lianli::UNI_HUB_AL,
@@ -415,7 +419,17 @@ mod tests {
         nzxt.dedup();
         assert_eq!(
             nzxt,
-            ["kraken-x2", "kraken-m22", "kraken-x-asetek", "smart-device-v2", "rgb-fan-controller", "rgb-fan-controller-6"]
+            [
+                "kraken-x2",
+                "kraken-m22",
+                "kraken-x-asetek",
+                "smart-device-v2",
+                "rgb-fan-controller",
+                "rgb-fan-controller-6",
+                "hue2",
+                "hue2-ambient",
+                "rgb-controller"
+            ]
         );
         // Nexus badges its Lian Li support experimental.
         assert!(MODELS.iter().filter(|m| m.vendor.is_some()).all(|m| m.experimental));

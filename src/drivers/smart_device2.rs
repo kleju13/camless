@@ -1,22 +1,27 @@
-//! NZXT Smart Device V2 (`1e71:2006`, `200d`, `200f`) and RGB & Fan Controller
-//! (`2009`, `200e`, `2010`; the 3+6 channel one `2011`, `2019`, `201f`, `2020`): the
-//! Hue 2 fan and LED controllers before the Control Hub, with three fan ports and two
-//! or six LED channels. The Smart Device V2 came in NZXT's cases from mid-2019, such
-//! as the H510 Elite, H510i, H710i and H210i (liquidctl).
+//! NZXT's Hue 2 controllers besides the Control Hub, as liquidctl's `smart_device.py`
+//! drives them:
+//! - Smart Device V2 (`1e71:2006`, `200d`, `200f`) and RGB & Fan Controller (`2009`,
+//!   `200e`, `2010`; the 3+6 channel one `2011`, `2019`, `201f`, `2020`): three fan
+//!   ports and two or six LED channels. The Smart Device V2 came in NZXT's cases from
+//!   mid-2019, such as the H510 Elite, H510i, H710i and H210i (liquidctl).
+//! - HUE 2 (`2001`) and HUE 2 Ambient (`2002`): four and two LED channels, no fans.
+//! - RGB Controller (`2012`, `2021`), from 2023, which came with the Kraken Elite 2023:
+//!   three LED channels, no fans.
 //!
 //! The fans and accessories work as on the Control Hub: the same `67 02` fan report,
 //! `62 01` duties and `21 03` accessory report, which `control_hub.rs` and `hue2.rs`
 //! build and parse. The rest is older: the fan reports start after `60 03` where the
-//! hub takes `66 01`, the firmware comes from `10 01`, and the lights take the `28 03`
-//! layout on channel bits `1 << i`.
+//! hub takes `66 01`, the firmware comes from `10 01`, and LED channels are bits,
+//! `1 << i`. The lights take the `28 03` layout (`SmartDevice2`), except on the RGB
+//! Controller, which takes `2A 04` with a fixed LED count (`Nzxt2023RgbController`).
 //!
 //! The 3+6 channel controllers `2011`, `2019` and `201f` get no lighting: they ignore
 //! `28 03`, and liquidctl disabled their lights for it (#541). Their fans work.
 //!
-//! Sources: liquidctl `smart_device.py` (`SmartDevice2`), the Linux `nzxt-smart2`
-//! driver, and liquidctl #541, which logged liquidctl's writes to a `2011` and its
-//! replies. Nexus drives none of them, so they are experimental. Not verified on
-//! hardware.
+//! Sources: liquidctl `smart_device.py` (`SmartDevice2`, `Nzxt2023RgbController`) with
+//! #541, which logged liquidctl's writes to a `2011` and its replies, and #690, the RGB
+//! Controller, run on one; and the Linux `nzxt-smart2` driver. Nexus drives none of
+//! them, so they are experimental. Not verified on hardware.
 
 use super::control_hub::{self, duties_report, Status};
 use super::{hid, hue2, Driver, Found, Model, Reading, NZXT_VID};
@@ -40,26 +45,58 @@ pub const RGB_FAN_CONTROLLER_6: Model = model(0x2011, "rgb-fan-controller-6", "R
 pub const RGB_FAN_CONTROLLER_6_2019: Model = model(0x2019, "rgb-fan-controller-6", "RGB & Fan Controller (3+6 channels)");
 pub const RGB_FAN_CONTROLLER_6_201F: Model = model(0x201f, "rgb-fan-controller-6", "RGB & Fan Controller (3+6 channels)");
 pub const RGB_FAN_CONTROLLER_6_2020: Model = model(0x2020, "rgb-fan-controller-6", "RGB & Fan Controller (3+6 channels)");
+pub const HUE_2: Model = model(0x2001, "hue2", "HUE 2");
+pub const HUE_2_AMBIENT: Model = model(0x2002, "hue2-ambient", "HUE 2 Ambient");
+pub const RGB_CONTROLLER: Model = model(0x2012, "rgb-controller", "RGB Controller");
+pub const RGB_CONTROLLER_2021: Model = model(0x2021, "rgb-controller", "RGB Controller");
 
-/// Every one has three fan ports (liquidctl, Linux).
-pub const FANS: usize = 3;
+/// How a model's lights take colors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// `28 03`, liquidctl's `SmartDevice2`.
+    Hue2,
+    /// `2A 04` with 8 for the LED count, liquidctl's `Nzxt2023RgbController`.
+    Rgb2023,
+}
 
-/// The LED channels camless drives, from liquidctl's `_MATCHES`; `None` for another id.
-pub fn led_channels(pid: u16) -> Option<usize> {
-    match pid {
-        0x2006 | 0x200d | 0x200f | 0x2009 | 0x200e | 0x2010 => Some(2),
+/// The fan ports and LED channels camless drives on a model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Channels {
+    pub fans: usize,
+    pub lights: usize,
+    pub layout: Layout,
+}
+
+/// liquidctl's `_MATCHES`; `None` for another id.
+pub fn channels(pid: u16) -> Option<Channels> {
+    let (fans, lights, layout) = match pid {
+        0x2006 | 0x200d | 0x200f | 0x2009 | 0x200e | 0x2010 => (3, 2, Layout::Hue2),
         // Six on the board, but they ignore `28 03` (liquidctl#541).
-        0x2011 | 0x2019 | 0x201f => Some(0),
+        0x2011 | 0x2019 | 0x201f => (3, 0, Layout::Hue2),
         // liquidctl: "Both RGB and fan control have been reported to work".
-        0x2020 => Some(6),
-        _ => None,
-    }
+        0x2020 => (3, 6, Layout::Hue2),
+        0x2001 => (0, 4, Layout::Hue2),
+        0x2002 => (0, 2, Layout::Hue2),
+        0x2012 | 0x2021 => (0, 3, Layout::Rgb2023),
+        _ => return None,
+    };
+    Some(Channels { fans, lights, layout })
 }
 
 /// Fan reports every 0.5 s in both slots, then fan detection: liquidctl's
-/// `initialize`, as logged in liquidctl#541. The Linux driver sends the two the other
-/// way round.
+/// `initialize` for a model with fans, as logged in liquidctl#541. The Linux driver
+/// sends the two the other way round.
 const INIT: [&[u8]; 2] = [&[0x60, 0x02, 0x01, 0xe8, 0x01, 0x01, 0xe8, 0x01], &[0x60, 0x03]];
+
+/// What goes out before the firmware request: nothing to a model without fans, as
+/// liquidctl starts fan reports only on a fan controller (its #331).
+fn init(channels: Channels) -> &'static [&'static [u8]] {
+    if channels.fans > 0 {
+        &INIT
+    } else {
+        &[]
+    }
+}
 
 /// `11 01`: the version at [0x11..0x13].
 pub fn parse_firmware(msg: &[u8]) -> Option<String> {
@@ -73,6 +110,7 @@ fn channel_bit(i: usize) -> u8 {
 
 pub struct SmartDevice2 {
     model: &'static Model,
+    channels: Channels,
     hid: HidDevice,
     firmware: Option<String>,
     accessories: Vec<hue2::ChannelAccessories>,
@@ -80,19 +118,20 @@ pub struct SmartDevice2 {
 }
 
 fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
-    let lights = led_channels(found.model.pid).context("not a Smart Device V2 or RGB & Fan Controller")?;
+    let channels = channels(found.model.pid).context("not a Hue 2 controller camless knows")?;
     let hid = hid::open(api, &found.path)?;
     hid::drain(&hid);
-    for msg in INIT {
+    for msg in init(channels) {
         hid::write(&hid, msg)?;
     }
     let firmware = parse_firmware(&hid::request(&hid, &[0x10, 0x01], &[0x11, 0x01])?);
+    let lights = channels.lights;
     let accessories = if lights == 0 {
         Vec::new()
     } else {
         hue2::read_accessories(&hid, lights).unwrap_or_else(|_| vec![Default::default(); lights])
     };
-    Ok(Box::new(SmartDevice2 { model: found.model, hid, firmware, accessories, last: None }))
+    Ok(Box::new(SmartDevice2 { model: found.model, channels, hid, firmware, accessories, last: None }))
 }
 
 impl Driver for SmartDevice2 {
@@ -102,7 +141,7 @@ impl Driver for SmartDevice2 {
             firmware: self.firmware.clone(),
             verified: self.model.verified(),
             experimental: self.model.is_experimental(),
-            fans: (1..=FANS)
+            fans: (1..=self.channels.fans)
                 .map(|n| FanChannel { id: format!("fan{n}"), name: format!("Fan {n}"), ..Default::default() })
                 .collect(),
             lights: self
@@ -114,7 +153,10 @@ impl Driver for SmartDevice2 {
                     name: format!("LED {}", i + 1),
                     leds: a.leds(),
                     accessories: a.names(),
-                    modes: hue2::modes_28(),
+                    modes: match self.channels.layout {
+                        Layout::Hue2 => hue2::modes_28(),
+                        Layout::Rgb2023 => hue2::modes_2023(),
+                    },
                 })
                 .collect(),
             ..Default::default()
@@ -126,13 +168,18 @@ impl Driver for SmartDevice2 {
     }
 
     fn poll(&mut self) -> Result<Reading> {
-        Ok(control_hub::reading(&control_hub::status(&self.hid, &mut self.last, FANS)?))
+        // Without fans there is no fan report, and nothing else to read.
+        if self.channels.fans == 0 {
+            return Ok(Reading::default());
+        }
+        Ok(control_hub::reading(&control_hub::status(&self.hid, &mut self.last, self.channels.fans)?))
     }
 
     fn set_duties(&mut self, duties: &[(&str, u8)]) -> Result<()> {
         let mut ports = Vec::new();
         for &(fan, duty) in duties {
-            ports.push((control_hub::port(fan, "fan", FANS).with_context(|| format!("no fan {fan:?}; ports are fan1 to fan3"))?, duty));
+            let port = control_hub::port(fan, "fan", self.channels.fans);
+            ports.push((port.with_context(|| format!("no fan {fan:?} on the {}", self.model.name))?, duty));
         }
         if !ports.is_empty() {
             hid::write(&self.hid, &duties_report(&ports))?;
@@ -145,7 +192,11 @@ impl Driver for SmartDevice2 {
         let Some(i) = control_hub::port(light, "led", count) else {
             bail!("no light {light:?} on the {}", self.model.name)
         };
-        hue2::send(&self.hid, vec![hue2::packet_28(channel_bit(i), lighting)?])
+        let packet = match self.channels.layout {
+            Layout::Hue2 => hue2::packet_28(channel_bit(i), lighting)?,
+            Layout::Rgb2023 => hue2::packet_2023(channel_bit(i), lighting)?,
+        };
+        hue2::send(&self.hid, vec![packet])
     }
 }
 
@@ -154,31 +205,35 @@ mod tests {
     use super::*;
     use crate::drivers::MODELS;
 
-    /// liquidctl's `SmartDevice2._MATCHES`, less the HUE 2 and HUE 2 Ambient, which
-    /// have no fans: (id, fan channels, LED channels).
-    const LIQUIDCTL: [(u16, usize, usize); 10] = [
-        (0x2006, 3, 2),
-        (0x200d, 3, 2),
-        (0x200f, 3, 2),
-        (0x2009, 3, 2),
-        (0x200e, 3, 2),
-        (0x2010, 3, 2),
-        (0x2011, 3, 0),
-        (0x2019, 3, 0),
-        (0x201f, 3, 0),
-        (0x2020, 3, 6),
+    /// liquidctl's `SmartDevice2._MATCHES` and `Nzxt2023RgbController._MATCHES`:
+    /// (id, fan channels, LED channels, layout).
+    const LIQUIDCTL: [(u16, usize, usize, Layout); 14] = [
+        (0x2006, 3, 2, Layout::Hue2),
+        (0x200d, 3, 2, Layout::Hue2),
+        (0x200f, 3, 2, Layout::Hue2),
+        (0x2001, 0, 4, Layout::Hue2),
+        (0x2002, 0, 2, Layout::Hue2),
+        (0x2009, 3, 2, Layout::Hue2),
+        (0x200e, 3, 2, Layout::Hue2),
+        (0x2010, 3, 2, Layout::Hue2),
+        (0x2011, 3, 0, Layout::Hue2),
+        (0x2019, 3, 0, Layout::Hue2),
+        (0x201f, 3, 0, Layout::Hue2),
+        (0x2020, 3, 6, Layout::Hue2),
+        (0x2012, 0, 3, Layout::Rgb2023),
+        (0x2021, 0, 3, Layout::Rgb2023),
     ];
 
     #[test]
     fn channels_follow_liquidctl() {
-        for (pid, fans, leds) in LIQUIDCTL {
-            assert_eq!((FANS, led_channels(pid)), (fans, Some(leds)), "{pid:04x}");
+        for (pid, fans, lights, layout) in LIQUIDCTL {
+            assert_eq!(channels(pid), Some(Channels { fans, lights, layout }), "{pid:04x}");
             let m = MODELS.iter().find(|m| (m.vid, m.pid) == (NZXT_VID, pid)).expect("listed in MODELS");
             assert!(m.experimental && m.vendor.is_none(), "{pid:04x}");
         }
-        // The Control Hub, the HUE 2 and HUE 2 Ambient, and OpenRGB's B650E board.
-        for pid in [0x2022, 0x2001, 0x2002, 0x201b] {
-            assert_eq!(led_channels(pid), None);
+        // The Control Hub, the H1 V2, and OpenRGB's B650E and HUE 2 Motherboard boards.
+        for pid in [0x2022, 0x2015, 0x201b, 0x2005, 0x200b] {
+            assert_eq!(channels(pid), None);
         }
     }
 
@@ -187,6 +242,10 @@ mod tests {
         // liquidctl#541: report 60 with 02 01 e8 01 01 e8 01, then 60 03, then 10 01.
         assert_eq!(INIT[0], [0x60, 0x02, 0x01, 0xe8, 0x01, 0x01, 0xe8, 0x01]);
         assert_eq!(INIT[1], [0x60, 0x03]);
+        assert_eq!(init(channels(0x2006).unwrap()), INIT);
+        for pid in [0x2001, 0x2002, 0x2012, 0x2021] {
+            assert!(init(channels(pid).unwrap()).is_empty(), "{pid:04x}");
+        }
     }
 
     #[test]
@@ -229,7 +288,7 @@ mod tests {
         m[26..28].copy_from_slice(&700u16.to_le_bytes());
         m[40..43].copy_from_slice(&[60, 40, 35]);
         m[56] = 31;
-        let s = control_hub::parse_status(&m, FANS).unwrap();
+        let s = control_hub::parse_status(&m, 3).unwrap();
         assert_eq!(s.fans.len(), 3);
         assert_eq!(s.fans[0], control_hub::Port { mode: control_hub::FanMode::Pwm, rpm: 1450, duty: 60 });
         assert_eq!(s.fans[1].mode, control_hub::FanMode::Dc);
@@ -240,7 +299,7 @@ mod tests {
         assert_eq!(r.fans[2].1.connected, Some(false));
         // The voltage report, type 04, is not the fan report.
         m[1] = 0x04;
-        assert!(control_hub::parse_status(&m, FANS).is_none());
+        assert!(control_hub::parse_status(&m, 3).is_none());
     }
 
     #[test]
@@ -252,8 +311,8 @@ mod tests {
         let mut want = vec![0x62, 0x01, 0x04, 0x00, 0x00, 0x55];
         want.resize(hid::REPORT_LEN, 0);
         assert_eq!(sent, want);
-        assert_eq!(control_hub::port("fan3", "fan", FANS), Some(2));
-        assert_eq!(control_hub::port("fan4", "fan", FANS), None);
+        assert_eq!(control_hub::port("fan3", "fan", 3), Some(2));
+        assert_eq!(control_hub::port("fan4", "fan", 3), None);
     }
 
     #[test]
