@@ -2631,10 +2631,21 @@
         editCfg((x) => setDevice(x, 'motherboard', v));
       },
     }));
+    // Off by default: the card's own curve drives its fans. NVIDIA on Windows, AMD on Linux.
+    const gpu = S.config && row('GPU fans', linux()
+      ? 'camless also sets the fans of an AMD graphics card you give a curve, experimental, through the amdgpu driver. The card’s own curve keeps the others, and gets each fan back when camless stops.'
+      : 'camless also sets the fans of an NVIDIA graphics card you give a curve, experimental, through NVIDIA’s NVML. This needs the service to run as administrator. The card’s own curve keeps the others, and gets each fan back when camless stops.', toggle({
+      checked: !!(S.config.devices && S.config.devices.gpu), label: 'GPU fans',
+      onChange: async (v) => {
+        if (v && !(await confirmBox({ title: 'Drive the graphics card’s fans', text: 'camless then sets each fan you give a curve and hands it back to the card when it stops. Give them a curve on the GPU’s temperature. Nobody has reported camless working on a graphics card’s fans yet.', ok: 'Turn on' }))) { go(); return; }
+        editCfg((x) => setDevice(x, 'gpu', v));
+      },
+    }));
     panel('Devices', devRows.concat(unsupported, [
       !devRows.length && !unsupported.length ? row(S.status ? 'No devices found' : 'The service is not running', null, null) : null,
       brands,
       board,
+      gpu,
       row('Hardware report', 'A device camless does not drive yet, a wrong reading, or an LCD that stays dark: a report opens a GitHub issue with what a fix needs. You see all of it first.', button('Create report', { small: true, onClick: reportDialog })),
       row('Firmware updates', `camless shows firmware versions but does not install updates. To update, open NZXT CAM${linux() ? ' on Windows' : ''} once.`, null),
     ]));

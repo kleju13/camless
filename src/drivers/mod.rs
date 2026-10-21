@@ -15,6 +15,7 @@
 pub mod control_hub;
 pub mod corsair_link;
 pub mod demo;
+pub mod gpu;
 pub mod asetek;
 pub mod board;
 pub mod hid;
@@ -32,6 +33,8 @@ pub mod lianli_galahad2;
 pub mod lianli_tl;
 pub mod nollie;
 pub mod serial;
+pub mod smart_device;
+pub mod smart_device2;
 pub mod strimer;
 pub mod umbra;
 pub mod usb;
@@ -62,6 +65,22 @@ pub const MODELS: &[Model] = &[
     kraken2::M22,
     asetek::KRAKEN_X,
     control_hub::MODEL,
+    smart_device::SMART_DEVICE,
+    smart_device::GRID_V3,
+    smart_device2::SMART_DEVICE_V2,
+    smart_device2::SMART_DEVICE_V2_200D,
+    smart_device2::SMART_DEVICE_V2_200F,
+    smart_device2::RGB_FAN_CONTROLLER,
+    smart_device2::RGB_FAN_CONTROLLER_200E,
+    smart_device2::RGB_FAN_CONTROLLER_2010,
+    smart_device2::RGB_FAN_CONTROLLER_6,
+    smart_device2::RGB_FAN_CONTROLLER_6_2019,
+    smart_device2::RGB_FAN_CONTROLLER_6_201F,
+    smart_device2::RGB_FAN_CONTROLLER_6_2020,
+    smart_device2::HUE_2,
+    smart_device2::HUE_2_AMBIENT,
+    smart_device2::RGB_CONTROLLER,
+    smart_device2::RGB_CONTROLLER_2021,
     lianli::UNI_HUB,
     lianli::UNI_HUB_SL,
     lianli::UNI_HUB_AL,
@@ -164,7 +183,8 @@ pub enum Bus {
     Usb,
     /// A USB serial port (CDC ACM): COM on Windows, `/dev/ttyACM*` on Linux.
     Serial,
-    /// Inside the PC, not on USB: the motherboard's fan headers. No USB id.
+    /// Inside the PC, not on USB: the motherboard's fan headers, the graphics card's
+    /// fans. No USB id.
     Host,
 }
 
@@ -353,10 +373,12 @@ fn caps(path: &std::ffi::CStr) -> Option<hid::Caps> {
 }
 
 /// Whether camless may drive a device of this model with these settings: another
-/// brand's with `other_brands` on, the motherboard's headers with `motherboard`.
+/// brand's with `other_brands` on, the motherboard's headers with `motherboard`, the
+/// graphics card's fans with `gpu`.
 pub fn allowed(model: &Model, devices: &Devices) -> bool {
     match model.bus {
-        Bus::Host => model.slug != board::MODEL.slug || devices.motherboard,
+        Bus::Host if model.slug == gpu::MODEL.slug => devices.gpu,
+        Bus::Host => model.slug == board::MODEL.slug && devices.motherboard,
         _ => model.vendor.is_none() || devices.other_brands,
     }
 }
@@ -364,11 +386,15 @@ pub fn allowed(model: &Model, devices: &Devices) -> bool {
 /// The devices inside the PC that the settings turn on.
 pub fn scan_host(devices: &Devices) -> Vec<Found> {
     board::hand_back_abandoned();
+    gpu::hand_back_abandoned();
+    let mut found = Vec::new();
     if devices.motherboard {
-        board::found()
-    } else {
-        Vec::new()
+        found.extend(board::found());
     }
+    if devices.gpu {
+        found.extend(gpu::found());
+    }
+    found
 }
 
 /// The id of the next device of a model: its slug, then `#2`, `#3`. Models that
@@ -459,8 +485,24 @@ mod tests {
 
     #[test]
     fn experimental_models_are_the_ones_nexus_leaves_out_or_calls_experimental() {
-        let nzxt: Vec<_> = MODELS.iter().filter(|m| m.experimental && m.vendor.is_none()).map(|m| m.slug).collect();
-        assert_eq!(nzxt, ["kraken-x2", "kraken-m22", "kraken-x-asetek"]);
+        let mut nzxt: Vec<_> = MODELS.iter().filter(|m| m.experimental && m.vendor.is_none()).map(|m| m.slug).collect();
+        nzxt.dedup();
+        assert_eq!(
+            nzxt,
+            [
+                "kraken-x2",
+                "kraken-m22",
+                "kraken-x-asetek",
+                "smart-device",
+                "grid-v3",
+                "smart-device-v2",
+                "rgb-fan-controller",
+                "rgb-fan-controller-6",
+                "hue2",
+                "hue2-ambient",
+                "rgb-controller"
+            ]
+        );
         // Nexus badges its Lian Li support experimental.
         assert!(MODELS.iter().filter(|m| m.vendor.is_some()).all(|m| m.experimental));
         assert!(MODELS.iter().filter(|m| m.bus == Bus::Usb).all(|m| m.interface.is_none()));

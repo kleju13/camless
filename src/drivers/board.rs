@@ -73,7 +73,8 @@ fn open(_api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
     }
 }
 
-/// hwmon's fan files, as the kernel's drivers for the motherboard's chips give them.
+/// hwmon's fan files, as the kernel's drivers for the motherboard's chips and for AMD
+/// graphics cards give them.
 #[cfg(target_os = "linux")]
 pub mod os {
     use super::{duty, raw, MODEL};
@@ -590,7 +591,7 @@ pub mod os {
         fn finds_super_io_chips_on_the_platform_bus_only() {
             let root = tmp("scan");
             let a = chip(&root, "hwmon3", "nct6798", "nct6775.656", "platform", &[1, 2, 7]);
-            chip(&root, "hwmon1", "amdgpu", "0000:03:00.0", "pci", &[1]);
+            let gpu = chip(&root, "hwmon1", "amdgpu", "0000:03:00.0", "pci", &[1]);
             chip(&root, "hwmon2", "nzxtkraken3", "0003:1E71:2007.0004", "hid", &[1, 2]);
             chip(&root, "hwmon4", "k10temp", "0000:00:18.3", "pci", &[]);
             let b = chip(&root, "hwmon0", "it8792", "it87.2592", "platform", &[1]);
@@ -618,6 +619,9 @@ pub mod os {
             let f71 = Board::open_at(&found[0], "Motherboard".into(), root.join("taken-fans")).unwrap();
             assert_eq!(f71.describe().fans.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["fan1", "fan3"]);
             drop(f71);
+            // The graphics card's fans are gpu.rs's, found the same way.
+            let cards = found_where(&root.join("class"), &crate::drivers::gpu::MODEL, |n, bus| n == "amdgpu" && bus == "pci", |_| "gpu".into());
+            assert_eq!(cards.iter().map(|f| (f.id.as_str(), f.path.to_str().unwrap())).collect::<Vec<_>>(), [("gpu", gpu.to_str().unwrap())]);
             fs::remove_dir_all(&root).unwrap();
         }
 
@@ -829,13 +833,16 @@ mod tests {
         let lines: Vec<&str> = rules.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
         // The chip's own files, and its platform device's on hwmon's old interface.
         assert_eq!(lines.len(), 2);
-        for (line, attr, dir) in [(lines[0], "ATTR{name}", "/sys%p/"), (lines[1], "ATTRS{name}", "/sys%p/device/")] {
+        let chips = "nct6*|w83*|it8*|f71*|f8*";
+        // The graphics card's driver (gpu.rs) has its files on the new interface.
+        let first = format!("{chips}|amdgpu");
+        for (line, attr, dir, names_are) in [(lines[0], "ATTR{name}", "/sys%p/", first.as_str()), (lines[1], "ATTRS{name}", "/sys%p/device/", chips)] {
             assert!(line.starts_with(r#"ACTION=="add|change", SUBSYSTEM=="hwmon", "#), "{line}");
             assert_eq!(line.contains(r#"SUBSYSTEMS=="platform""#), attr == "ATTRS{name}");
             let names = line.split(&format!("{attr}==\"")).nth(1).unwrap().split('"').next().unwrap();
-            assert_eq!(names, "nct6*|w83*|it8*|f71*|f8*");
+            assert_eq!(names, names_are);
             #[cfg(target_os = "linux")]
-            assert_eq!(names.split('|').map(|n| n.trim_end_matches('*')).collect::<Vec<_>>(), os::CHIPS);
+            assert_eq!(names.split('|').map(|n| n.trim_end_matches('*')).collect::<Vec<_>>()[..5], os::CHIPS);
             let files: Vec<&str> = line.split_whitespace().filter(|w| w.starts_with("/sys%p/")).collect();
             assert_eq!(files, [format!("{dir}pwm[1-9]"), format!("{dir}pwm[1-9]_enable;")]);
             assert!(line.contains("chown @USER@ $$f"));

@@ -43,6 +43,13 @@ The app starts the service if it is not running. On Windows, it asks for adminis
 - A header's files belong to root. `install.sh` installs `72-camless-fans.rules`, which gives the user who installed camless `pwmN` and `pwmN_enable` of each header on these chips, and nothing else: not the chip's own curve points. That is one user per computer: installing camless as another user gives the headers to that one. A user name with characters other than letters, digits, `.`, `_` and `-` gets no fan rule. A test checks the rule's text.
 - The BIOS no longer protects a header camless sets. A pump's curve should not go low.
 
+## GPU fans
+
+`[devices] gpu`, off unless you turn it on, lets camless set the graphics card's fans. Experimental: nobody has run it on a card yet. Give them a curve on the GPU's temperature.
+- On Windows, NVIDIA cards, through NVML (`nvml.dll`, which comes with the driver): `nvmlDeviceSetFanSpeed_v2` sets a fan's duty, within the card's `nvmlDeviceGetMinMaxFanSpeed`, and `nvmlDeviceSetDefaultFanSpeed_v2` gives it back to the card's curve. The rpm comes from `nvmlDeviceGetFanSpeedRPM`, on drivers that have it. Setting a fan needs administrator rights: without them, or on a card whose fans NVML does not set (`NVML_ERROR_NOT_SUPPORTED`, which no source rules out on GeForce cards), camless says so and leaves the fan out until the service starts again. Before it first sets a fan, camless leaves a file, `%APPDATA%\camless\taken-gpu-fans`: if camless crashes or is killed, the card keeps the last duty until a camless starts again, which gives every fan back to the card's curve, whatever the settings say by then. camless loads `nvml.dll` from System32, or from NVSMI on older drivers, by its full path. AMD cards on Windows need AMD's ADLX, which camless does not drive yet.
+- On Linux, AMD cards, through the `amdgpu` driver's hwmon files, as the motherboard's headers: `pwm1_enable` 1 and `pwm1` for a duty, the mode it had to give it back. The same udev rule gives you those two files. Cards from the RX 7000 series on may not take a duty in `pwm1`: the kernel gives them a fan curve in `gpu_od` instead, which camless does not write. A card that refuses manual mode or the duty is left out once it refuses, until the service starts again. A crash is covered as on the motherboard. NVML needs root on Linux, which the service is not.
+- A card's fans are `gpu`, and a second card's `gpu#2`. camless gives a fan back when its curve is removed and when the service stops, the setting goes off, or another program that sets them starts: the motherboard's fan programs and MSI Afterburner.
+
 ## History
 
 The service records every sensor, and the speed and duty of every fan, while it runs:
@@ -174,7 +181,7 @@ The same service and app, built for Linux. They have not run on NZXT hardware ye
 | `~/.config/camless` | `camless.toml`, the history and the game sessions (`$XDG_CONFIG_HOME/camless`) |
 | `~/.config/systemd/user/camless.service` | the service, when there is a systemd user session |
 | `/etc/udev/rules.d/71-camless.rules` | access to the devices camless drives |
-| `/etc/udev/rules.d/72-camless-fans.rules` | for you: the motherboard's fan headers, for *Motherboard fans* |
+| `/etc/udev/rules.d/72-camless-fans.rules` | for you: the motherboard's fan headers and an AMD card's fans, for *Motherboard fans* and *GPU fans* |
 | `~/.local/share/camless` | the app's WebKit data, the LCD browser's profile and `uninstall.sh` |
 | `~/.cache/camless/update`, `~/.local/state/camless/update.log` | the last update and its log |
 | `~/.local/state/camless/taken-fans` | the motherboard headers camless has taken, and what they had, while it has them |
