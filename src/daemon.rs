@@ -76,6 +76,8 @@ struct Slot {
     sent: HashMap<String, (u8, Instant)>,
     last_frame: Option<Instant>,
     lcd_error_at: Option<Instant>,
+    /// The last error of `release_unused`, logged once.
+    release_error: Option<String>,
 }
 
 impl Slot {
@@ -98,6 +100,7 @@ impl Slot {
             sent: HashMap::new(),
             last_frame: None,
             lcd_error_at: None,
+            release_error: None,
         }
     }
 
@@ -366,7 +369,9 @@ impl Daemon {
             None => (drivers::demo::found(), Vec::new()),
             Some(api) => {
                 let _ = api.refresh_devices();
-                drivers::scan(api, self.cfg.devices.other_brands)
+                let (mut found, unsupported) = drivers::scan(api, self.cfg.devices.other_brands);
+                found.extend(drivers::scan_host(&self.cfg.devices));
+                (found, unsupported)
             }
         };
         for f in found {
@@ -389,23 +394,29 @@ impl Daemon {
     }
 
     /// Lets go of other brands' devices while their brand's app runs, which would
-    /// fight camless over them, and for good with `other_brands` off. They go back to
-    /// how they run without camless. `Found::open` keeps them closed while the app
-    /// runs.
+    /// fight camless over them, and for good with `other_brands` off; the same for
+    /// the motherboard's headers, with another fan program or `motherboard` off. They
+    /// go back to how they run without camless. `Found::open` keeps them closed while
+    /// the app runs.
     fn yield_other_brands(&mut self) {
         if !self.slots.iter().any(|s| s.found.model.vendor.is_some()) {
             return;
         }
-        let on = self.cfg.devices.other_brands;
-        let running = if on { drivers::vendor::running_processes() } else { HashSet::new() };
+        let running = drivers::vendor::running_processes();
         let duties = match self.yield_duties.take() {
-            Some(d) if !on => d,
+            Some(d) if !self.cfg.devices.other_brands => d,
             _ => self.safe_duties(),
         };
         let mut notes = Vec::new();
         for s in &mut self.slots {
             let Some(vendor) = s.found.model.vendor else { continue };
-            let why = if on { vendor.busy(&running) } else { Some("other brands are off".to_string()) };
+            let why = if drivers::allowed(s.found.model, &self.cfg.devices) {
+                vendor.busy(&running)
+            } else if s.found.model.bus == drivers::Bus::Host {
+                Some("motherboard fans are off".to_string())
+            } else {
+                Some("other brands are off".to_string())
+            };
             let batch = host_batch(s, &duties);
             let (Some(why), Some(dev)) = (why, s.dev.as_mut()) else { continue };
             // A hub with nothing to hand back to keeps these, as when the service stops.
@@ -426,9 +437,8 @@ impl Daemon {
             s.last_error = Some(why);
             s.next_try = Instant::now() + RESCAN_EVERY;
         }
-        if !on {
-            self.slots.retain(|s| s.found.model.vendor.is_none());
-        }
+        let devices = self.cfg.devices.clone();
+        self.slots.retain(|s| drivers::allowed(s.found.model, &devices));
         for n in notes {
             self.log(&n);
         }
@@ -612,19 +622,35 @@ impl Daemon {
 
     fn drive(&mut self, force: bool) {
         let duties = self.engine.duties();
+        let mut notes = Vec::new();
         for i in 0..self.slots.len() {
             let s = &mut self.slots[i];
             let Some(dev) = s.dev.as_mut() else { continue };
             let mut batch: Vec<(String, u8)> = Vec::new();
+            let mut used: Vec<&str> = Vec::new();
             for (channel, duty) in &duties {
                 let Some(fan) = local(&s.found.id, channel) else { continue };
                 let Some(d) = duty.value() else { continue };
+                used.push(fan);
                 if s.on_device.contains(fan) || !s.info.fans.iter().any(|x| x.id == fan) {
                     continue;
                 }
                 let fresh = s.sent.get(fan).is_some_and(|(sent, at)| *sent == d && at.elapsed() < RESEND_EVERY);
                 if force || !fresh {
                     batch.push((fan.to_string(), d));
+                }
+            }
+            // A fan whose curve is gone goes back to the device's own control, on
+            // devices that have one. One that does not go back is tried again next
+            // time; its error is logged once.
+            match dev.release_unused(&used) {
+                Ok(()) => s.release_error = None,
+                Err(e) => {
+                    let e = format!("{e:#}");
+                    if s.release_error.as_ref() != Some(&e) {
+                        notes.push(format!("{}: handing back a fan without a curve: {e}", s.found.id));
+                        s.release_error = Some(e);
+                    }
                 }
             }
             if batch.is_empty() {
@@ -644,6 +670,9 @@ impl Daemon {
                     self.log(&format!("{id}: write failed ({e:#}), reopening"));
                 }
             }
+        }
+        for n in notes {
+            self.log(&n);
         }
     }
 
@@ -844,7 +873,8 @@ impl Daemon {
             let Some(dev) = s.dev.as_mut() else { continue };
             let sent = if !batch.is_empty() && dev.set_duties(&batch).is_ok() { batch.len() } else { 0 };
             // Another brand's hub goes back to its own control or the motherboard's,
-            // as when camless lets go of it; the failsafe duties stay if that fails.
+            // and a motherboard header to the BIOS, as when camless lets go of them;
+            // the failsafe duties stay if that fails.
             if s.found.model.vendor.is_some() && dev.release().is_ok() && !dev.keeps_duty() {
                 handed += 1;
             } else {
@@ -861,7 +891,7 @@ impl Daemon {
             note += &format!("; {set} host-driven fans left at {failsafe} % or their fixed duty");
         }
         if handed > 0 {
-            note += &format!("; {handed} other brands' hubs handed back");
+            note += &format!("; {handed} devices handed back to their own control");
         }
         self.log(&note);
     }

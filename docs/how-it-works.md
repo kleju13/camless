@@ -33,6 +33,16 @@ The app starts the service if it is not running. On Windows, it asks for adminis
 - When the service stops, camless hands the hubs back as when it lets go, after it sets their fans to `failsafe_duty`, which they keep if the hand-back fails. If camless crashes, the HYTE Smart Hub and NP50 take their fans back 5 s later; the others keep their last duty until camless starts again or they lose power.
 - camless sends nothing that writes a hub's flash or EEPROM: no firmware, saved modes, LED counts or settings. [Protocol notes](protocol.md) list the commands it never sends, per hub.
 
+## Motherboard fans
+
+`[devices] motherboard`, off unless you turn it on, lets camless set the motherboard's fan headers: a CPU fan, case fans, or the pump of an AIO without software, which takes its speed from a header. Linux only, so far, and experimental: nobody has run it on a motherboard yet.
+- camless writes the files of the kernel's driver for the board's Super I/O chip (`nct6775`, `it87`, `f71882fg`, `w83627ehf`), as Nexus's `LinuxFanControlProvider` and lm-sensors' `fancontrol` do. It finds them in `/sys/class/hwmon` by the driver's name and by the chip being on the platform bus, so a GPU's or a USB device's hwmon never counts. A header is a `pwmN` with its `pwmN_enable`; its speed is `fanN_input`. A driver on hwmon's old interface, as `f71882fg` was, keeps them in its device's folder, which camless reads instead. A chip is named by its driver, as `motherboard-nct6798`; a second of the same is `motherboard-nct6798#2`, in the order of the chips' devices, which does not change between boots as `hwmonN` can.
+- The BIOS keeps every header until a curve takes it. camless then notes the header's mode, sets `pwmN_enable` to 1 (manual) and writes the duty to `pwmN` as 0..255. If the chip does not take manual mode, camless gives the header back, says so, and leaves it out until the service starts again. A chip that went back to its own mode, as after a resume, is set to manual again. A header camless cannot write, such as `pwm10` past the udev rule's `pwm1`..`pwm9`, stays the BIOS's and is not listed.
+- Letting go gives each header the mode it had, and the duty too if that was manual. A chip that refuses the mode gets automatic (2), then full speed (0), as Nexus falls back, and one that takes no mode at all gets the full duty. camless lets go of a header when its curve is removed, and of all of them when the service stops, after it sets the headers to `failsafe_duty`, when the setting goes off, and when another fan program starts. A header that does not go back stays camless's, and camless tries again at each scan, whatever the settings say by then. Before it takes a header, camless writes down what the header had in `~/.local/state/camless/taken-fans`. One camless at a time sets the headers: the one holding the lock on `taken-fans.lock`, which the kernel lets go of when that process ends, however it ends. If camless crashes or is killed, the headers keep their last duty until a camless starts again, which gives them what that file says; a restart of the PC gives them to the BIOS. A second camless running at the same time leaves the headers to the first.
+- While another program that sets the headers runs, camless leaves them to it, by process name: FanControl, LibreHardwareMonitor, OpenHardwareMonitor, Argus Monitor, SpeedFan, CoolerControl and thinkfan. lm-sensors' `fancontrol` is a shell script, which camless does not see by name; do not run it beside camless.
+- A header's files belong to root. `install.sh` installs `72-camless-fans.rules`, which gives the user who installed camless `pwmN` and `pwmN_enable` of each header on these chips, and nothing else: not the chip's own curve points. That is one user per computer: installing camless as another user gives the headers to that one. A user name with characters other than letters, digits, `.`, `_` and `-` gets no fan rule. A test checks the rule's text.
+- The BIOS no longer protects a header camless sets. A pump's curve should not go low.
+
 ## History
 
 The service records every sensor, and the speed and duty of every fan, while it runs:
@@ -164,7 +174,9 @@ The same service and app, built for Linux. They have not run on NZXT hardware ye
 | `~/.config/camless` | `camless.toml`, the history and the game sessions (`$XDG_CONFIG_HOME/camless`) |
 | `~/.config/systemd/user/camless.service` | the service, when there is a systemd user session |
 | `/etc/udev/rules.d/71-camless.rules` | access to the devices camless drives |
+| `/etc/udev/rules.d/72-camless-fans.rules` | for you: the motherboard's fan headers, for *Motherboard fans* |
 | `~/.local/share/camless` | the app's WebKit data, the LCD browser's profile and `uninstall.sh` |
 | `~/.cache/camless/update`, `~/.local/state/camless/update.log` | the last update and its log |
+| `~/.local/state/camless/taken-fans` | the motherboard headers camless has taken, and what they had, while it has them |
 
 `~/.local/share/camless/uninstall.sh` removes all of it except `~/.config/camless`.

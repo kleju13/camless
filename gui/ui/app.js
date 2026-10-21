@@ -2620,12 +2620,21 @@
       checked: !!(S.config.devices && S.config.devices.other_brands), label: 'Other brands',
       onChange: async (v) => {
         if (v && !(await confirmBox({ title: 'Drive other brands’ hubs', text: 'camless then sets the fans you give a curve and the lights you set on these hubs, and leaves the rest as the hub runs it. Some hubs take all their fans’ duties at once: there the fans without a curve run at 50 to 70 %, on a Corsair iCUE LINK hub from the start. Nobody has reported camless working on one of these hubs yet. Turning this off hands the fans camless set back to the hub or the motherboard.', ok: 'Turn on' }))) { go(); return; }
-        editCfg((x) => { if (v) x.devices = Object.assign({}, x.devices, { other_brands: true }); else delete x.devices; });
+        editCfg((x) => setDevice(x, 'other_brands', v));
+      },
+    }));
+    // Off by default: the BIOS drives the headers. Linux only, so far.
+    const board = S.config && linux() && row('Motherboard fans', 'camless also sets the motherboard’s fan headers you give a curve, experimental: a CPU fan, case fans, or an AIO pump on a header. The BIOS keeps the others, and gets each header back when camless stops. While another fan program runs, such as FanControl or CoolerControl, camless leaves the headers to it.', toggle({
+      checked: !!(S.config.devices && S.config.devices.motherboard), label: 'Motherboard fans',
+      onChange: async (v) => {
+        if (v && !(await confirmBox({ title: 'Drive the motherboard’s fan headers', text: 'camless then sets each header you give a curve, through the kernel’s driver for the board’s fan chip, and hands it back to the BIOS when it stops. A header that runs a pump should keep a curve that never goes low: the BIOS no longer protects it. Nobody has reported camless working on a motherboard yet.', ok: 'Turn on' }))) { go(); return; }
+        editCfg((x) => setDevice(x, 'motherboard', v));
       },
     }));
     panel('Devices', devRows.concat(unsupported, [
       !devRows.length && !unsupported.length ? row(S.status ? 'No devices found' : 'The service is not running', null, null) : null,
       brands,
+      board,
       row('Hardware report', 'A device camless does not drive yet, a wrong reading, or an LCD that stays dark: a report opens a GitHub issue with what a fix needs. You see all of it first.', button('Create report', { small: true, onClick: reportDialog })),
       row('Firmware updates', `camless shows firmware versions but does not install updates. To update, open NZXT CAM${linux() ? ' on Windows' : ''} once.`, null),
     ]));
@@ -2635,6 +2644,13 @@
       S.config ? channelRow() : null,
       updateRow(),
     ]);
+  }
+
+  // One `[devices]` switch on or off; the table goes when nothing in it is on.
+  function setDevice(x, key, on) {
+    x.devices = Object.assign({}, x.devices);
+    if (on) x.devices[key] = true; else delete x.devices[key];
+    if (!Object.keys(x.devices).length) delete x.devices;
   }
 
   // Stable offers releases only; Beta offers betas too, the GitHub pre-releases such

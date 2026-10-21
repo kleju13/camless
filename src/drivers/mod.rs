@@ -8,11 +8,15 @@
 //! camless opens them only with `[devices] other_brands` on, and only on their
 //! vendor-defined HID collection or their serial port: never a keyboard, mouse or
 //! other input device.
+//!
+//! Devices inside the PC, such as the motherboard's fan headers, are not on USB.
+//! They have their own setting and their own scan, `scan_host`.
 
 pub mod control_hub;
 pub mod corsair_link;
 pub mod demo;
 pub mod asetek;
+pub mod board;
 pub mod hid;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
@@ -36,6 +40,7 @@ pub mod vendor;
 pub mod winhid;
 
 use anyhow::Result;
+use camless_core::config::Devices;
 use camless_core::lighting::Lighting;
 use camless_core::status::{Device, Unit, Unsupported};
 use hidapi::HidApi;
@@ -159,6 +164,8 @@ pub enum Bus {
     Usb,
     /// A USB serial port (CDC ACM): COM on Windows, `/dev/ttyACM*` on Linux.
     Serial,
+    /// Inside the PC, not on USB: the motherboard's fan headers. No USB id.
+    Host,
 }
 
 impl Model {
@@ -277,6 +284,12 @@ pub trait Driver {
         false
     }
 
+    /// Hands back, as `release` does, the fans camless drove and has no duty for
+    /// now, such as one whose curve was removed. `used` are the fans it still drives.
+    fn release_unused(&mut self, _used: &[&str]) -> Result<()> {
+        Ok(())
+    }
+
     fn lcd(&mut self) -> Option<&mut dyn Lcd> {
         None
     }
@@ -337,6 +350,25 @@ fn caps(path: &std::ffi::CStr) -> Option<hid::Caps> {
     return winhid::caps(path);
     #[cfg(target_os = "linux")]
     return hidraw::caps(path);
+}
+
+/// Whether camless may drive a device of this model with these settings: another
+/// brand's with `other_brands` on, the motherboard's headers with `motherboard`.
+pub fn allowed(model: &Model, devices: &Devices) -> bool {
+    match model.bus {
+        Bus::Host => model.slug != board::MODEL.slug || devices.motherboard,
+        _ => model.vendor.is_none() || devices.other_brands,
+    }
+}
+
+/// The devices inside the PC that the settings turn on.
+pub fn scan_host(devices: &Devices) -> Vec<Found> {
+    board::hand_back_abandoned();
+    if devices.motherboard {
+        board::found()
+    } else {
+        Vec::new()
+    }
 }
 
 /// The id of the next device of a model: its slug, then `#2`, `#3`. Models that
