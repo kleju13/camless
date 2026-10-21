@@ -123,8 +123,9 @@ pub enum Usage {
     Exact(u16, u16),
     /// Any collection on a vendor-defined page with output reports of at least
     /// `output` bytes, as Windows counts them (`Caps`), and with `input`, input
-    /// reports too: what the driver writes and reads. For devices whose usage no
-    /// source names.
+    /// reports too: what the driver writes and reads. Of a device's collections that
+    /// fit, the scan takes the one with the shortest output reports. For devices whose
+    /// usage no source names.
     Vendor { output: usize, input: bool },
     /// Any collection on a vendor-defined page whose output reports are exactly this
     /// long, as Windows counts them: for a device camless only writes, whose usage no
@@ -355,14 +356,29 @@ pub fn scan(api: &HidApi, other_brands: bool) -> (Vec<Found>, Vec<Unsupported>) 
         .collect();
     entries.sort_by_key(|(d, _)| d.path().to_owned());
     let (mut found, mut unsupported, mut keys) = (Vec::<Found>::new(), Vec::<Unsupported>::new(), Vec::new());
+    // Of the collections of one device that fit a model by their report lengths, the
+    // one with the shortest output reports, as Nexus picks them: the key, the index
+    // in `found`, and that length.
+    let mut shortest: Vec<(String, usize, usize)> = Vec::new();
+    let output = |d: &hidapi::DeviceInfo| caps(d.path()).map_or(usize::MAX, |c| c.output);
     for (d, model) in entries {
         let key = device_key(d);
         if keys.contains(&key) {
+            if let Some((_, i, len)) = shortest.iter_mut().find(|(k, _, _)| *k == key) {
+                let this = output(d);
+                if this < *len && model.is_some_and(|m| std::ptr::eq(m, found[*i].model)) {
+                    found[*i].path = d.path().to_owned();
+                    *len = this;
+                }
+            }
             continue;
         }
         match model {
             Some(m) if m.interface.is_some_and(|i| i != d.interface_number()) => continue,
             Some(m) => {
+                if matches!(m.usage, Some(Usage::Vendor { .. })) {
+                    shortest.push((key.clone(), found.len(), output(d)));
+                }
                 let id = next_id(&found, m);
                 found.push(Found { model: m, id, path: d.path().to_owned() });
             }
