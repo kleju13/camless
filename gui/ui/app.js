@@ -1879,6 +1879,8 @@
   // A temperature is drawn in the unit picked in Settings, so its grid lines are round.
   const histConv = (kind) => (kind === 'temp' ? K.toUnit : (v) => v);
   const NICE = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
+  // A round step that fits `range` in at most `most` steps, a power of ten past the table.
+  const niceStep = (range, most) => NICE.find((k) => range / k <= most) ?? 10 ** Math.ceil(Math.log10(range / most));
 
   // { lo, hi, step, label } of an axis around the readings from lo0 to hi0 (drawn units),
   // in at most `most` steps.
@@ -1892,12 +1894,12 @@
       a -= pad; b += pad;
       const least = K.prefs.unit === 'f' ? 18 : 10;
       if (b - a < least) { const m = (a + b) / 2; a = m - least / 2; b = m + least / 2; }
-      const step = NICE.find((k) => (b - a) / k <= most);
+      const step = niceStep(b - a, most);
       return { lo: Math.floor(a / step) * step, hi: Math.ceil(b / step) * step, step, label: (v) => `${Math.round(v)}°` };
     }
     const least = kind === 'power' ? 50 : kind === 'rpm' ? 1000 : 60;
     const want = Math.max(least, (hi0 ?? 0) * 1.1);
-    const step = NICE.find((k) => want / k <= most);
+    const step = niceStep(want, most);
     const label = kind === 'power' ? (v) => `${v} W` : kind === 'rpm' ? (v) => K.rpm(v) : (v) => String(v);
     return { lo: 0, hi: Math.ceil(want / step) * step, step, label };
   }
@@ -2135,7 +2137,7 @@
       // A session's frame rate from near its lowest, so that a drop shows. Before and
       // after the game there are no frame rates, so these are the game's.
       if (win && p.kind === 'fps' && lo0 != null) {
-        const a = lo0 * 0.85, b = Math.max(hi0 * 1.08, a + 30), step = NICE.find((k) => (b - a) / k <= most);
+        const a = lo0 * 0.85, b = Math.max(hi0 * 1.08, a + 30), step = niceStep(b - a, most);
         ax = { ...ax, lo: Math.floor(a / step) * step, hi: Math.ceil(b / step) * step, step };
       }
       // A strip has its values on the right, the names of before, the game and after
