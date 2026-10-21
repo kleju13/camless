@@ -1849,7 +1849,9 @@
 
   /* History from the service: the last hour a second at a time, and 30 days of
      minutes. A small chart for each kind of reading, all over the range picked above
-     them. The pointer over one shows that moment in all of them. */
+     them. The pointer over one shows that moment in it, and a line at that moment in
+     the others. A drag across one zooms in: sideways on a stretch of time, for all of
+     them, up or down on the values of that one. */
   const HIST_RANGES = [
     { value: 600, label: '10 min' }, { value: 3600, label: '1 hour' }, { value: 86400, label: '24 hours' },
     { value: 604800, label: '7 days' }, { value: 2592000, label: '30 days' },
@@ -1878,15 +1880,23 @@
 
   // A temperature is drawn in the unit picked in Settings, so its grid lines are round.
   const histConv = (kind) => (kind === 'temp' ? K.toUnit : (v) => v);
-  const NICE = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
+  const NICE = [0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
   // A round step that fits `range` in at most `most` steps, a power of ten past the table.
   const niceStep = (range, most) => NICE.find((k) => range / k <= most) ?? 10 ** Math.ceil(Math.log10(range / most));
+  // The least a chart zooms in to on its values, in drawn units.
+  const HIST_LEAST = { temp: 0.5, load: 1, power: 2, rpm: 20, fps: 2 };
 
-  // { lo, hi, step, label } of an axis around the readings from lo0 to hi0 (drawn units),
-  // in at most `most` steps.
-  function histAxis(kind, lo0, hi0, most = 5) {
-    if (kind === 'load') return { lo: 0, hi: 100, step: most < 5 ? 50 : 25, label: (v) => `${v}%` };
-    if (kind === 'temp') {
+  /* { lo, hi, step, label } of an axis around the readings from lo0 to hi0 (drawn
+     units), in at most `most` steps, or over `zoom`, [lo, hi], when the chart is zoomed
+     in on its values. Grid lines go on the multiples of `step` from lo to hi. */
+  function histAxis(kind, lo0, hi0, most = 5, zoom = null) {
+    let lo, hi, step;
+    if (zoom) {
+      [lo, hi] = zoom;
+      step = niceStep(hi - lo, most);
+    } else if (kind === 'load') {
+      [lo, hi, step] = [0, 100, most < 5 ? 50 : 25];
+    } else if (kind === 'temp') {
       // Close around the readings, so that a change of a degree shows, and at least
       // 10 degrees tall, so that noise does not fill the chart.
       let a = lo0 ?? 30, b = hi0 ?? 50;
@@ -1894,14 +1904,17 @@
       a -= pad; b += pad;
       const least = K.prefs.unit === 'f' ? 18 : 10;
       if (b - a < least) { const m = (a + b) / 2; a = m - least / 2; b = m + least / 2; }
-      const step = niceStep(b - a, most);
-      return { lo: Math.floor(a / step) * step, hi: Math.ceil(b / step) * step, step, label: (v) => `${Math.round(v)}°` };
+      step = niceStep(b - a, most);
+      [lo, hi] = [Math.floor(a / step) * step, Math.ceil(b / step) * step];
+    } else {
+      const least = kind === 'power' ? 50 : kind === 'rpm' ? 1000 : 60;
+      const want = Math.max(least, (hi0 ?? 0) * 1.1);
+      step = niceStep(want, most);
+      [lo, hi] = [0, Math.ceil(want / step) * step];
     }
-    const least = kind === 'power' ? 50 : kind === 'rpm' ? 1000 : 60;
-    const want = Math.max(least, (hi0 ?? 0) * 1.1);
-    const step = niceStep(want, most);
-    const label = kind === 'power' ? (v) => `${v} W` : kind === 'rpm' ? (v) => K.rpm(v) : (v) => String(v);
-    return { lo: 0, hi: Math.ceil(want / step) * step, step, label };
+    const dp = (String(step).split('.')[1] || '').length;
+    const unit = kind === 'temp' ? '°' : kind === 'load' ? '%' : kind === 'power' ? ' W' : '';
+    return { lo, hi, step, label: kind === 'rpm' ? (v) => K.rpm(v) : (v) => `${v.toFixed(dp)}${unit}` };
   }
 
   function histValue(kind, id, v) {
@@ -1917,27 +1930,47 @@
      readings load from SESSION_AROUND before it to as long after it, to show the PC
      warm up and cool down; `win.around` shows that much of them, or only the game
      when false. The game's time is shaded. A session's charts are only those with
-     readings; their time runs from the session's start, a drag across one zooms them
-     all in, and `win.cmp`, another session { from, to, label }, is drawn dashed under
-     them, lined up at the game's start and at its end (see lineUp); its `lo` and `hi`
-     are where the games next to it end and begin, past which it is left out.
+     readings; their time runs from the session's start, and `win.cmp`, another
+     session { from, to, label }, is drawn dashed under them, lined up at the game's
+     start and at its end (see lineUp); its `lo` and `hi` are where the games next to
+     it end and begin, past which it is left out.
      `win.near` are other games played around this one, { from, to, label }, shaded
      and named.
      `win.onData(points, cmpPoints, step)` hears of each load, the compared session's
      points at their own times, and
-     `win.tools` go in the header. */
+     `win.tools` go in the header.
+     A drag across a chart zooms in: sideways on a stretch of time, for all the charts,
+     up or down on the values of that one, far both ways on both. A chart's button
+     makes it bigger. */
   function historyCharts(win) {
-    const el = h('<section class="cam-section cam-hist"><header><h2 class="cam-h2"></h2><span class="grow"></span></header><p class="cam-hint cam-hist-note" hidden></p><div class="cam-hzoom" hidden><span></span><span class="grow"></span></div><div class="cam-hgrid"></div></section>');
+    const el = h('<section class="cam-section cam-hist"><header><h2 class="cam-h2"></h2><span class="grow"></span></header><p class="cam-hint cam-hist-note" hidden></p><div class="cam-hzoom" hidden><span></span><span class="grow"></span></div><div class="cam-hgrid"></div><p class="cam-hint cam-hist-help" hidden>Drag across a chart to zoom in: sideways on a stretch of time, up or down on its values. Double-click it to zoom out.</p></section>');
     el.querySelector('h2').textContent = win ? (win.around ? 'Before, during and after the game' : 'During the game') : 'History';
-    const grid = el.querySelector('.cam-hgrid'), note = el.querySelector('.cam-hist-note'), zoomBar = el.querySelector('.cam-hzoom');
+    const head = el.firstElementChild, grid = el.querySelector('.cam-hgrid'), note = el.querySelector('.cam-hist-note'), zoomBar = el.querySelector('.cam-hzoom'), help = el.querySelector('.cam-hist-help');
     let span = HIST_RANGES.some((r) => r.value === K.prefs.histSpan) ? K.prefs.histSpan : 600;
-    let panels = [], key = '', data = null, cdata = null, live = [], hoverT = null, asked = 0, zoom = null, drag = null;
-    // What the legends switched off; a session's are not kept.
+    let panels = [], key = '', data = null, cdata = null, live = [], asked = 0, frame = 0;
+    // The moment under the pointer, the chart it is over and how high on it.
+    let hoverT = null, hoverP = null, hoverY = 0;
+    // The stretch of time zoomed in on, [from, to] in ms, for all the charts, and a drag
+    // in progress. What each chart is zoomed in on of its values goes by its id, in
+    // drawn units.
+    let zoom = null, drag = null;
+    const yZoom = new Map();
+    // What the legends switched off, a session's not kept, and the charts made bigger,
+    // a session's apart from the monitoring page's.
     const hidden = new Set(win ? [] : K.prefs.histHidden || []);
-    if (!win) el.firstElementChild.appendChild(choice({ options: HIST_RANGES, value: span, label: 'Range', onChange: (v) => { span = v; K.setPref('histSpan', v); load(); } }));
+    const bigPref = win ? 'histBigSession' : 'histBig';
+    const big = new Set(K.prefs[bigPref] || []);
+    // Monitoring zooms out with a button in the header, a session in the bar over its
+    // charts.
+    const unzoom = button('Reset zoom', { small: true, onClick: () => resetZoom() });
+    unzoom.hidden = true;
+    if (!win) {
+      head.appendChild(unzoom);
+      head.appendChild(choice({ options: HIST_RANGES, value: span, label: 'Range', onChange: (v) => { span = v; zoom = null; K.setPref('histSpan', v); load(); } }));
+    }
     if (win) {
-      zoomBar.appendChild(button('See it all', { small: true, onClick: () => zoomTo(null) }));
-      if (win.tools) el.querySelector('header').append(...[].concat(win.tools));
+      zoomBar.appendChild(button('See it all', { small: true, onClick: () => resetZoom() }));
+      if (win.tools) head.append(...[].concat(win.tools));
     }
     // The game, the readings loaded around it, the part of them shown, and the part
     // the charts show now, in ms. Nothing is asked for after now.
@@ -1951,21 +1984,41 @@
       const [a, b] = loaded();
       return [Math.min(win.from, Math.max(a, firstT() ?? a)), b];
     };
-    const range = () => { const now = Date.now(); return win ? zoom || whole() : [now - span * 1000, now]; };
+    const range = () => { const now = Date.now(); return zoom || (win ? whole() : [now - span * 1000, now]); };
     // A session's time, from its start: "1:05" is an hour and five minutes in.
     const elapsed = (t) => sinceStart(t, win.from);
+    // A session zooms in on a stretch of a minute or more, within what it shows.
     function zoomTo(r) {
       const [a, b] = whole();
       zoom = r && r[1] - r[0] >= 60e3 ? [Math.max(a, r[0]), Math.min(b, r[1])] : null;
-      zoomBar.hidden = !zoom;
-      if (zoom) zoomBar.firstElementChild.innerHTML = `Zoomed in on <b class="num">${elapsed(zoom[0])} – ${elapsed(zoom[1])}</b>; the numbers on the left are the averages of that part.`;
       drawAll();
     }
     el.zoomTo = zoomTo;
-    const during = () => (win ? (zoom ? `from ${elapsed(zoom[0])} to ${elapsed(zoom[1])}` : 'during the game') : `over the last ${HIST_RANGES.find((r) => r.value === span).label}`);
+    // Zooms out of the time, and of the values of chart `p`, or of every chart's.
+    function resetZoom(p) {
+      const time = !!zoom;
+      zoom = null;
+      if (p) yZoom.delete(p.id); else yZoom.clear();
+      if (time && !win) load(); else drawAll();
+    }
+    // What is zoomed in on, over a session's charts, and whether there is anything to
+    // zoom out of.
+    function zoomState() {
+      const ys = panels.filter((p) => yZoom.has(p.id));
+      unzoom.hidden = !zoom && !ys.length;
+      if (!win) return;
+      zoomBar.hidden = !zoom && !ys.length;
+      zoomBar.firstElementChild.innerHTML = zoom ? `Zoomed in on <b class="num">${elapsed(zoom[0])} – ${elapsed(zoom[1])}</b>; the numbers on the left are the averages of that part.`
+        : `Zoomed in on the values of ${esc(ys.map((p) => p.title).join(', '))}.`;
+    }
+    const during = () => (zoom ? (win ? `from ${elapsed(zoom[0])} to ${elapsed(zoom[1])}` : `from ${histTime(zoom[0], (zoom[1] - zoom[0]) / 1000)} to ${histTime(zoom[1], (zoom[1] - zoom[0]) / 1000)}`)
+      : win ? 'during the game' : `over the last ${HIST_RANGES.find((r) => r.value === span).label}`);
     const keyOf = (list) => list.map((p) => `${p.id}:${p.series.map((s) => s.id).join(',')}`).join('|');
     const has = (id) => !!data && !!data.series[id] && data.series[id].avg.some((v) => v != null);
     const wanted = () => (win ? win.panels.map((p) => ({ ...p, series: p.series.filter((s) => has(s.id)) })).filter((p) => p.series.length) : histPanels());
+    // Pointer moves draw once a frame.
+    const redraw = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; drawAll(); }); };
+    track(() => cancelAnimationFrame(frame));
 
     // A session's charts are strips under each other on one time axis, each named on
     // its left with its readings; the others are a grid of panels.
@@ -1974,10 +2027,11 @@
       key = keyOf(list);
       grid.textContent = '';
       grid.hidden = !list.length;
+      hoverP = null; drag = null;
       panels = list.map((p) => {
-        const box = h(`<section class="${win ? `cam-strip k-${p.id}` : `cam-panel cam-hpanel${p.wide ? ' wide' : ''}`}"><header><h3></h3><div class="cam-hlegend"></div></header><div class="cam-chart-plot"><canvas role="img"></canvas><div class="cam-chart-tip" hidden></div><p class="cam-chart-note" hidden>No readings in this range.</p></div></section>`);
+        const box = h(`<section class="${win ? `cam-strip k-${p.id}` : 'cam-panel cam-hpanel'}"><header><div class="cam-hhead"><h3></h3><button type="button" class="cam-iconbtn cam-hbig"></button></div><div class="cam-hlegend"></div></header><div class="cam-chart-plot"><canvas role="img"></canvas><div class="cam-chart-tip" hidden></div><p class="cam-chart-note" hidden>No readings in this range.</p></div></section>`);
         box.querySelector('h3').textContent = p.title;
-        const cv = box.querySelector('canvas');
+        const cv = box.querySelector('canvas'), grow = box.querySelector('.cam-hbig');
         // A strip leaves out what is in brackets, the device, while the names stay apart.
         const short = (l) => l.replace(/\s*\(.*\)$/, '');
         const shorten = win && new Set(p.series.map((s) => short(s.label))).size === p.series.length;
@@ -1995,25 +2049,50 @@
           box.querySelector('.cam-hlegend').appendChild(b);
           return { s, b, now: b.children[2], stat: b.children[3] };
         });
-        const panel = Object.assign({}, p, { box, cv, items, tip: box.querySelector('.cam-chart-tip'), empty: box.querySelector('.cam-chart-note') });
-        const tAt = (e) => { const r = cv.getBoundingClientRect(); return panel.tAt ? panel.tAt(e.clientX - r.left) : null; };
-        cv.addEventListener('pointermove', (e) => { hoverT = tAt(e); if (drag && hoverT != null) drag[1] = hoverT; drawAll(); });
-        cv.addEventListener('pointerleave', () => { hoverT = null; drawAll(); });
-        if (win) {
-          cv.addEventListener('pointerdown', (e) => { const t = tAt(e); if (t == null) return; drag = [t, t]; cv.setPointerCapture(e.pointerId); });
-          cv.addEventListener('pointerup', () => { if (!drag) return; const [a, b] = drag; drag = null; if (Math.abs(b - a) >= 60e3) zoomTo([Math.min(a, b), Math.max(a, b)]); else drawAll(); });
-          cv.addEventListener('dblclick', () => zoomTo(null));
-        }
+        const panel = Object.assign({}, p, { box, cv, grow, items, geo: null, tip: box.querySelector('.cam-chart-tip'), empty: box.querySelector('.cam-chart-note') });
+        grow.setAttribute('aria-label', `Enlarge ${p.title}`);
+        grow.addEventListener('click', () => {
+          if (big.has(p.id)) big.delete(p.id); else big.add(p.id);
+          K.setPref(bigPref, [...big]);
+          layout();
+          box.scrollIntoView({ block: 'nearest' });
+        });
+        cv.addEventListener('pointerdown', (e) => dragStart(panel, e));
+        cv.addEventListener('pointermove', (e) => pointerAt(panel, e));
+        cv.addEventListener('pointerup', (e) => dragEnd(panel, e));
+        cv.addEventListener('pointercancel', dragCancel);
+        cv.addEventListener('pointerleave', () => { if (!drag && hoverP === panel) { hoverT = null; hoverP = null; redraw(); } });
+        cv.addEventListener('dblclick', () => resetZoom(panel));
         grid.appendChild(box);
         return panel;
       });
+      layout();
+      help.hidden = !!win || !panels.length;
+    }
+
+    // A bigger chart takes a row of its own, and so does a panel left alone beside it.
+    function layout() {
+      let alone = null;
+      for (const p of panels) {
+        const b = big.has(p.id);
+        p.box.classList.toggle('big', b);
+        p.grow.setAttribute('aria-pressed', String(b));
+        p.grow.title = b ? 'Make smaller' : 'Enlarge';
+        p.grow.innerHTML = b ? I.shrink : I.expand;
+        if (win) continue;
+        p.box.classList.remove('wide');
+        if (b) { if (alone) alone.box.classList.add('wide'); alone = null; } else alone = alone ? null : p;
+      }
+      if (alone) alone.box.classList.add('wide');
     }
 
     async function load() {
       const ask = ++asked;
       const ids = [...new Set((win ? win.panels : panels).flatMap((p) => p.series.map((s) => s.id)))].map(encodeURIComponent).join(',');
       const between = ([t0, t1]) => `from=${Math.floor(t0 / 1000)}&to=${Math.ceil(t1 / 1000)}`;
-      const window_ = win ? between(loaded()) : `span=${span}`;
+      // Monitoring zoomed in on a stretch of time loads it again, finer where the
+      // service has it.
+      const window_ = win ? between(loaded()) : zoom ? between(zoom) : `span=${span}`;
       let r = null, c = null, err = null;
       if (ids && S.status) {
         try { r = await S.api('GET', `history?${window_}&ids=${ids}`); } catch (e) { err = e; }
@@ -2026,11 +2105,12 @@
       live = [];
       if (win && keyOf(wanted()) !== key) build(wanted());
       const step = data ? data.step : 0;
+      const every = step >= 7200 ? `${step / 3600} hours` : step >= 3600 ? 'an hour' : step > 60 ? `${step / 60} minutes` : 'a minute';
       note.textContent = !S.status ? (win ? 'The service is not running, so the readings of the session cannot be read now.' : 'The service records history while it runs. It is not running now.')
         : err ? `No history: ${err.message}`
         : !panels.length ? (win ? 'No readings were kept for this session: camless keeps them for 30 days, while the service runs.' : 'Nothing to show here on this PC.')
-        : win ? `${step >= 60 ? `Every point is the average of ${step === 60 ? 'a minute' : `${step / 60} minutes`}. ` : ''}The numbers on the left are the averages during the game; point at a moment to read it, and drag across to zoom in.`
-        : !win && span > 3600 ? 'Every point stands for several minutes: the line is their average, and the shade above it how high they went.' : '';
+        : win ? `${step >= 60 ? `Every point is the average of ${step === 60 ? 'a minute' : `${step / 60} minutes`}. ` : ''}The numbers on the left are the averages during the game; point at a moment to read it, and drag across to zoom in: sideways on time, up or down on a chart's values.`
+        : step >= 60 ? `Every point stands for ${every}: the line is the average, and the shade above it how high the readings went.` : '';
       note.hidden = !note.textContent;
       if (win && win.cmp && cdata && panels.length) note.textContent += ` ${cmpNote()}`;
       if (win && win.onData) win.onData(points(), win.cmp ? unpack(cdata) : [], data ? data.step * 1000 : 60e3);
@@ -2086,10 +2166,13 @@
       const pts = points().filter(inside);
       // The compared session, lined up with this one.
       const cpts = win && win.cmp ? lineUp(unpack(cdata)).filter(inside) : [];
-      for (const p of panels) drawPanel(p, pts, t0, t1, cpts);
+      // A drag sideways shows on every chart, as the time zooms in on all of them.
+      const sel = drag && selection();
+      for (const p of panels) drawPanel(p, pts, t0, t1, cpts, sel);
+      zoomState();
     }
 
-    function drawPanel(p, pts, t0, t1, cpts = []) {
+    function drawPanel(p, pts, t0, t1, cpts = [], sel = null) {
       const { cv } = p;
       if (!cv.isConnected) return;
       const conv = histConv(p.kind);
@@ -2133,36 +2216,41 @@
       const gridC = css.getPropertyValue('--ce-grid').trim(), text = css.getPropertyValue('--t4').trim(), ink = css.getPropertyValue('--t3').trim();
       // A short strip takes fewer, rounder steps.
       const most = win && hh < 130 ? 3 : 5;
-      let ax = histAxis(p.kind, lo0, hi0, most);
+      const yz = yZoom.get(p.id);
+      let ax = histAxis(p.kind, lo0, hi0, most, yz);
       // A session's frame rate from near its lowest, so that a drop shows. Before and
       // after the game there are no frame rates, so these are the game's.
-      if (win && p.kind === 'fps' && lo0 != null) {
+      if (win && !yz && p.kind === 'fps' && lo0 != null) {
         const a = lo0 * 0.85, b = Math.max(hi0 * 1.08, a + 30), step = niceStep(b - a, most);
         ax = { ...ax, lo: Math.floor(a / step) * step, hi: Math.ceil(b / step) * step, step };
       }
       // A strip has its values on the right, the names of before, the game and after
       // over the first, and the time under the last.
       const first = p === panels[0], last = p === panels[panels.length - 1];
-      const pl = win ? 0 : 46, pr = win ? 44 : 8, pt = win ? (first ? 30 : 14) : 8, pb = win ? (last ? 26 : 10) : 20;
+      const pl = win ? 0 : 46, pr = win ? 44 : 8, pt = win ? (first ? 30 : 14) : 8, pb = win ? (last ? 26 : 10) : 20, bottom = hh - pb;
       const X = (t) => pl + ((t - t0) / (t1 - t0)) * (w - pl - pr);
-      const Y = (v) => pt + (1 - (clamp(conv(v), ax.lo, ax.hi) - ax.lo) / (ax.hi - ax.lo)) * (hh - pt - pb);
-      p.tAt = (x) => (x < pl || x > w - pr ? null : t0 + ((x - pl) / (w - pl - pr)) * (t1 - t0));
+      // Zoomed in on values, the lines go on past the plot and are cut at its edges.
+      const Y = (v) => pt + (1 - (conv(v) - ax.lo) / (ax.hi - ax.lo)) * (bottom - pt);
+      p.geo = { pl, pr, pt, bottom, w, t0, t1, lo: ax.lo, hi: ax.hi };
       ctx.font = `500 10.5px ${FONT}`;
       ctx.textAlign = win ? 'left' : 'right';
-      // On a short strip, every other value is named.
-      const every = (hh - pt - pb) / ((ax.hi - ax.lo) / ax.step) < 18 ? 2 : 1;
-      for (let v = ax.lo, i = 0; v <= ax.hi + 1e-6; v += ax.step, i++) {
-        const y = Math.round(pt + (1 - (v - ax.lo) / (ax.hi - ax.lo)) * (hh - pt - pb)) + 0.5;
+      // On a short strip, every other value is named. `+ 0` makes the -0 that
+      // Math.ceil gives just under zero a 0.
+      const every = (bottom - pt) / ((ax.hi - ax.lo) / ax.step) < 18 ? 2 : 1;
+      const lowest = Math.ceil(ax.lo / ax.step - 1e-9);
+      for (let i = lowest; i * ax.step <= ax.hi + 1e-9; i++) {
+        const v = i * ax.step + 0;
+        const y = Math.round(pt + (1 - (v - ax.lo) / (ax.hi - ax.lo)) * (bottom - pt)) + 0.5;
         ctx.strokeStyle = gridC; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(w - pr, y); ctx.stroke();
-        if (i % every) continue;
-        ctx.fillStyle = text; ctx.fillText(ax.label(Math.round(v * 10) / 10), win ? w - pr + 8 : pl - 8, y + 3.5);
+        if ((i - lowest) % every) continue;
+        ctx.fillStyle = text; ctx.fillText(ax.label(v), win ? w - pr + 8 : pl - 8, y + 3.5);
       }
-      const ticks = win ? elapsedTicks(t0, t1, win.from) : histTicks(span, t1);
+      const ticks = win ? elapsedTicks(t0, t1, win.from) : zoom ? clockTicks(t0, t1) : histTicks(span, t1);
       // Strips share the time's lines, so a moment reads down all of them.
       if (win) {
         ctx.strokeStyle = gridC;
-        for (const [t] of ticks) { const x = Math.round(X(t)) + 0.5; ctx.beginPath(); ctx.moveTo(x, pt); ctx.lineTo(x, hh - pb); ctx.stroke(); }
+        for (const [t] of ticks) { const x = Math.round(X(t)) + 0.5; ctx.beginPath(); ctx.moveTo(x, pt); ctx.lineTo(x, bottom); ctx.stroke(); }
       }
       // Time labels from the right, leaving out those that would touch the one before.
       ctx.textAlign = 'center';
@@ -2183,24 +2271,25 @@
         ctx.fillText(`${K.temp(p.mark, 0)}: every fan at 100%`, pl + 6, y - 5);
         ctx.restore();
       }
-      // A gap in the readings, such as the service being off, breaks the line.
+      // A gap in the readings, such as the service being off, breaks the line; a second
+      // without a sample, which a reading taken a little late leaves, does not.
       const tick = (S.config && S.config.interval_ms) || 1000;
       const gap = Math.max(3e3, tick * 2.5, (data ? data.step : 1) * 2000);
       const runs = (s, list = pts) => {
         const out = [];
-        let cur = null, last = 0;
+        let cur = null, last = -Infinity;
         for (const pt of list) {
           const v = pt.v[s.id];
-          if (!v || pt.t - last > gap) cur = null;
           if (!v) continue;
+          if (pt.t - last > gap) cur = null;
           last = pt.t;
           if (!cur) out.push((cur = []));
           cur.push([X(pt.t), Y(v[0]), Y(v[1] ?? v[0])]);
         }
         return out;
       };
-      const bottom = hh - pb;
-      // Zoomed in, the lines stop at the plot's edges.
+      // Zoomed in, the lines stop at the plot's edges: its sides in time, its top and
+      // bottom in values.
       ctx.save();
       ctx.beginPath(); ctx.rect(pl, 0, w - pl - pr, hh); ctx.clip();
       // The game's time, a column down every strip, when they go on before or after it,
@@ -2253,6 +2342,8 @@
           ctx.font = `500 10.5px ${FONT}`;
         }
       }
+      ctx.save();
+      ctx.beginPath(); ctx.rect(pl, pt - 2, w - pl - pr, bottom - pt + 2); ctx.clip();
       // The compared session, dashed and dimmer, under this one.
       for (const s of cpts.length ? shown : []) {
         ctx.strokeStyle = color(s); ctx.lineWidth = 1.4; ctx.globalAlpha = 0.55; ctx.setLineDash([4, 3]);
@@ -2286,11 +2377,14 @@
           if (r.length === 1) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(r[0][0], r[0][1], 2, 0, TAU); ctx.fill(); }
         }
       }
-      // The part being dragged across, to zoom in on.
-      if (drag) {
-        const a = X(Math.min(...drag)), b = X(Math.max(...drag));
-        ctx.fillStyle = css.getPropertyValue('--accent-soft').trim(); ctx.fillRect(a, pt, b - a, bottom - pt);
-        ctx.strokeStyle = css.getPropertyValue('--accent').trim(); ctx.lineWidth = 1; ctx.strokeRect(Math.round(a) + 0.5, pt + 0.5, Math.round(b - a), bottom - pt - 1);
+      ctx.restore();
+      // The part being dragged across, to zoom in on: its box on the chart dragged
+      // across, and the stretch of time on the others.
+      if (sel && (sel.p === p || sel.mode !== 'y')) {
+        const [a, b] = sel.p === p ? [sel.x0, sel.x1] : [X(sel.t0), X(sel.t1)];
+        const [ya, yb] = sel.p === p ? [sel.y0, sel.y1] : [pt, bottom];
+        ctx.fillStyle = css.getPropertyValue('--accent-soft').trim(); ctx.fillRect(a, ya, b - a, yb - ya);
+        ctx.strokeStyle = css.getPropertyValue('--accent').trim(); ctx.lineWidth = 1; ctx.strokeRect(Math.round(a) + 0.5, Math.round(ya) + 0.5, Math.round(b - a), Math.round(yb - ya) - 1);
       }
       ctx.restore();
       cv.setAttribute('aria-label', `${p.title} ${during()}`);
@@ -2301,9 +2395,17 @@
       const on = shown.filter((s) => best.v[s.id]);
       const x = X(best.t);
       if (!on.length || x < pl || x > w - pr) return;
-      ctx.strokeStyle = ink; ctx.lineWidth = 1;
+      // A session's strips show the moment down all of them; on the monitoring page the
+      // chart under the pointer shows it, and the others only mark it.
+      const mine = win || hoverP === p;
+      ctx.strokeStyle = ink; ctx.lineWidth = 1; ctx.globalAlpha = mine ? 1 : 0.45;
       ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, win ? 0 : pt); ctx.lineTo(Math.round(x) + 0.5, win ? hh : bottom); ctx.stroke();
-      for (const s of on) { ctx.fillStyle = color(s); ctx.beginPath(); ctx.arc(x, Y(best.v[s.id][0]), 3, 0, TAU); ctx.fill(); }
+      ctx.globalAlpha = 1;
+      if (!mine) return;
+      for (const s of on) {
+        const y = Y(best.v[s.id][0]);
+        if (y >= pt - 2 && y <= bottom) { ctx.fillStyle = color(s); ctx.beginPath(); ctx.arc(x, y, 3, 0, TAU); ctx.fill(); }
+      }
       if (win) return;
       // A point that stands for several samples also says how high it went.
       const many = data && data.step > 1 && best.t < (data.from + data.count * data.step) * 1000;
@@ -2313,9 +2415,76 @@
         return `<div><i style="--c:${color(s)}"></i><span>${esc(s.label)}</span><b>${esc(histValue(p.kind, s.id, avg))}</b>${peak}</div>`;
       }).join('');
       p.tip.hidden = false;
-      const flip = x + 14 + p.tip.offsetWidth > w;
-      p.tip.style.left = `${flip ? x - 14 - p.tip.offsetWidth : x + 14}px`;
+      // Beside the line, on the side with room, and level with the pointer, inside the
+      // plot as long as it fits.
+      const tw = p.tip.offsetWidth, th = p.tip.offsetHeight;
+      p.tip.style.left = `${x + 14 + tw <= w ? x + 14 : Math.max(0, x - 14 - tw)}px`;
+      p.tip.style.top = `${clamp(hoverY - th / 2, 0, Math.max(0, bottom - th))}px`;
     }
+
+    /* Zoom. A drag mostly sideways picks a stretch of time, one mostly up or down a
+       band of values, and one that goes far both ways a box of both. */
+    const spot = (p, e) => { const r = p.cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    const timeAt = (g, x) => g.t0 + ((x - g.pl) / (g.w - g.pl - g.pr)) * (g.t1 - g.t0);
+    function pointerAt(p, e) {
+      const [x, y] = spot(p, e), g = p.geo;
+      if (drag) { [drag.x1, drag.y1] = [x, y]; if (selection()) hoverT = null; redraw(); return; }
+      if (!g) return;
+      hoverP = p; hoverY = y;
+      hoverT = x < g.pl || x > g.w - g.pr ? null : timeAt(g, x);
+      redraw();
+    }
+    // What the drag would zoom in on: { p, mode 'x', 'y' or 'xy', its box on the
+    // plot, x0 to x1 and y0 to y1, and the time it covers, t0 to t1 }, or null while
+    // it is too short to be one.
+    function selection() {
+      const g = drag.p.geo, dx = Math.abs(drag.x1 - drag.x0), dy = Math.abs(drag.y1 - drag.y0);
+      if (dx < 6 && dy < 6) return null;
+      const mode = dx >= dy ? (dy < 16 ? 'x' : 'xy') : (dx < 16 ? 'y' : 'xy');
+      const L = g.pl, R = g.w - g.pr;
+      let [x0, x1] = [drag.x0, drag.x1].map((v) => clamp(v, L, R)).sort((a, b) => a - b);
+      let [y0, y1] = [drag.y0, drag.y1].map((v) => clamp(v, g.pt, g.bottom)).sort((a, b) => a - b);
+      if (mode === 'x') [y0, y1] = [g.pt, g.bottom];
+      if (mode === 'y') [x0, x1] = [L, R];
+      return { p: drag.p, mode, x0, x1, y0, y1, t0: timeAt(g, x0), t1: timeAt(g, x1) };
+    }
+    function dragStart(p, e) {
+      const g = p.geo;
+      if (e.button !== 0 || !g) return;
+      const [x, y] = spot(p, e);
+      if (x < g.pl || x > g.w - g.pr || y < g.pt || y > g.bottom) return;
+      drag = { p, x0: x, y0: y, x1: x, y1: y };
+      p.cv.setPointerCapture(e.pointerId);
+    }
+    function dragEnd(p, e) {
+      if (!drag) return;
+      const s = selection(), g = drag.p.geo;
+      drag = null;
+      hoverT = null;
+      if (s && s.mode !== 'x') {
+        const V = (y) => g.hi - ((y - g.pt) / (g.bottom - g.pt)) * (g.hi - g.lo);
+        let lo = V(s.y1), hi = V(s.y0);
+        const least = HIST_LEAST[p.kind] || 1;
+        if (hi - lo < least) { const m = (lo + hi) / 2; lo = m - least / 2; hi = m + least / 2; }
+        yZoom.set(p.id, [lo, hi]);
+      }
+      if (s && s.mode !== 'y') {
+        let [a, b] = [s.t0, s.t1];
+        const least = win ? 60e3 : Math.max(10e3, (data ? data.step : 1) * 4000);
+        if (b - a < least) { const m = (a + b) / 2; a = m - least / 2; b = m + least / 2; }
+        if (win) zoomTo([a, b]);
+        else { zoom = [a, b]; load(); }
+      }
+      pointerAt(p, e);
+    }
+    function dragCancel() {
+      if (!drag) return;
+      drag = null;
+      redraw();
+    }
+    const onKey = (e) => { if (e.key === 'Escape' && drag) { e.preventDefault(); dragCancel(); } };
+    document.addEventListener('keydown', onKey);
+    track(() => document.removeEventListener('keydown', onKey));
 
     // The last hour moves with every reading; every range loads again each minute, and
     // the session being played every few seconds.
@@ -2334,10 +2503,18 @@
       drawAll();
     }));
     // A session loads again while it is played, and while its cooling down is still
-    // coming in.
-    const timer = setInterval(() => { if (!document.hidden && (!win || win.to == null || Date.now() < win.to + SESSION_AROUND + 60e3)) load(); }, win ? 10e3 : 60e3);
+    // coming in; a stretch zoomed in on that has passed does not change.
+    const timer = setInterval(() => {
+      if (document.hidden || (zoom && !win && zoom[1] < Date.now() - 120e3)) return;
+      if (!win || win.to == null || Date.now() < win.to + SESSION_AROUND + 60e3) load();
+    }, win ? 10e3 : 60e3);
     track(() => clearInterval(timer));
-    track(K.on('prefs', (k) => { if (k === 'theme') build(win ? wanted() : histPanels()); drawAll(); }));
+    track(K.on('prefs', (k) => {
+      if (k === 'theme') build(win ? wanted() : histPanels());
+      // Values zoomed in on are in the unit drawn.
+      if (k === 'unit') for (const p of panels) if (p.kind === 'temp') yZoom.delete(p.id);
+      drawAll();
+    }));
     const ro = new ResizeObserver(() => drawAll());
     ro.observe(grid);
     track(() => ro.disconnect());
@@ -2393,10 +2570,38 @@
     return out;
   }
 
+  // Clock times across a window, about five of them: [ms, text]. Days go by their date.
+  function clockTicks(t0, t1) {
+    const every = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 432000, 864000]
+      .find((k) => (t1 - t0) / 1000 / k <= 5) || 864000;
+    const out = [];
+    const day = (t) => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    if (every >= 86400) {
+      const d = new Date(t0);
+      d.setHours(0, 0, 0, 0);
+      for (let i = 0; d.getTime() <= t1; d.setDate(d.getDate() + 1), i++) {
+        if (d.getTime() >= t0 && i % (every / 86400) === 0) out.push([d.getTime(), day(d)]);
+      }
+      return out;
+    }
+    // On round times of the clock here, not of UTC.
+    const off = -new Date(t0).getTimezoneOffset() * 60e3, ms = every * 1000;
+    for (let t = Math.ceil((t0 + off) / ms) * ms - off; t <= t1; t += ms) {
+      const d = new Date(t);
+      const text = every >= 21600 && !d.getHours() && !d.getMinutes() ? day(t)
+        : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: every < 60 ? '2-digit' : undefined });
+      out.push([t, text]);
+    }
+    return out;
+  }
+
+  // A moment on a chart that covers `span` seconds: to the second over an hour or less,
+  // with the day when it is not today.
   function histTime(t, span) {
-    const d = new Date(t);
-    if (span <= 3600) return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    return d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const d = new Date(t), today = d.toDateString() === new Date().toDateString();
+    const second = span <= 3600 ? '2-digit' : undefined;
+    if (today && second) return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second });
+    return d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second });
   }
 
   /* ----------------------------------------------------------------- games */

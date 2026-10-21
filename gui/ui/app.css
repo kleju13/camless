@@ -355,15 +355,17 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-hist-note { margin: -4px 0 12px; }
 .cam-hgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .cam-hpanel { padding: 14px 16px 10px; min-width: 0; }
-.cam-hgrid > .cam-hpanel:last-child:nth-child(odd) { grid-column: 1 / -1; }
-.cam-hgrid > .cam-hpanel.wide { grid-column: 1 / -1; }
-/* After a wide chart the pairs start one later. */
-.cam-hgrid > .wide ~ .cam-hpanel:last-child:nth-child(odd) { grid-column: auto; }
-.cam-hgrid > .wide ~ .cam-hpanel:last-child:nth-child(even) { grid-column: 1 / -1; }
-.cam-hpanel.wide canvas { height: 190px; }
+/* A bigger chart, and a panel left alone beside one, take a row (see layout). */
+.cam-hgrid > .cam-hpanel.wide, .cam-hgrid > .cam-hpanel.big { grid-column: 1 / -1; }
 .cam-hzoom { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 8px 8px 8px 14px; border-radius: var(--radius); background: var(--accent-soft); font-size: 12.5px; color: var(--t2); }
 .cam-hzoom b { color: var(--t1); font-weight: 600; }
-.cam-hist canvas { touch-action: none; }
+.cam-hist canvas { touch-action: none; cursor: crosshair; }
+.cam-hist-help { margin-top: 10px; }
+.cam-hhead { display: flex; align-items: flex-start; gap: 8px; }
+.cam-hhead h3 { flex: 1; min-width: 0; }
+.cam-hhead .cam-hbig { flex: none; width: 26px; height: 26px; margin: -4px -6px -4px 0; }
+.cam-hhead .cam-hbig svg.i { width: 16px; height: 16px; }
+.cam-hhead .cam-hbig[aria-pressed=true] { color: var(--accent); }
 .cam-hpanel > header { margin-bottom: 4px; }
 .cam-hpanel > header h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; line-height: 20px; }
 .cam-hlegend { display: flex; flex-wrap: wrap; gap: 2px 16px; min-height: 20px; }
@@ -391,8 +393,10 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-strip.k-fps .cam-chart-plot { min-height: 150px; }
 .cam-strip.k-temp .cam-chart-plot { min-height: 128px; }
 .cam-strip:last-child .cam-chart-plot { min-height: 118px; }
+.cam-strip.big .cam-chart-plot { min-height: clamp(220px, 42vh, 400px); }
 @container app (max-width: 640px) { .cam-strip { grid-template-columns: minmax(0, 1fr); } .cam-strip > header { border-right: 0; padding-bottom: 0; } .cam-strip:first-child > header { padding-top: 12px; } }
-.cam-hpanel canvas { width: 100%; height: 150px; display: block; }
+.cam-hpanel canvas { width: 100%; height: 150px; display: block; touch-action: pan-y; }
+.cam-hpanel.big canvas { height: clamp(240px, 48vh, 460px); }
 .cam-chart { padding: 16px 20px 14px; margin-top: 16px; }
 .cam-chart > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 8px; }
 .cam-chart > header h3 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; }
@@ -404,8 +408,8 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-chart-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 8px; }
 .cam-chart-bar .cam-tabs.sub { margin: 0; }
 .cam-chart-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; }
-.cam-chart-plot { position: relative; }
-.cam-chart-tip { position: absolute; top: 4px; z-index: 2; min-width: 150px; padding: 8px 10px; border-radius: var(--radius); background: var(--panel-2); border: 1px solid var(--panel-line); box-shadow: var(--shadow); font-size: 12px; pointer-events: none; }
+.cam-chart-plot { position: relative; user-select: none; }
+.cam-chart-tip { position: absolute; top: 0; z-index: 2; min-width: 150px; padding: 8px 10px; border-radius: var(--radius); background: var(--panel-2); border: 1px solid var(--panel-line); box-shadow: var(--shadow); font-size: 12px; pointer-events: none; }
 .cam-chart-tip time { display: block; margin-bottom: 4px; color: var(--t3); font-weight: 500; }
 .cam-chart-tip div { display: flex; align-items: center; gap: 7px; line-height: 1.6; }
 .cam-chart-tip i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
@@ -501,7 +505,7 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-stiles b { font-size: 20px; font-weight: 650; color: var(--t1); }
 .cam-stiles span { font-size: 11.5px; color: var(--t3); }
 .cam-stiles span:empty { display: none; }
-.cam-chart-note { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: 0 24px; text-align: center; font-size: 12px; color: var(--t3); }
+.cam-chart-note { position: absolute; inset: 0; pointer-events: none; display: grid; place-items: center; margin: 0; padding: 0 24px; text-align: center; font-size: 12px; color: var(--t3); }
 
 /* ------------------------------------------------------------ app parts */
 .cam-alerts { position: sticky; top: 0; z-index: 5; display: grid; gap: 8px; }

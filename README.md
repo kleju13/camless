@@ -12,7 +12,7 @@ A light replacement for NZXT CAM. It handles fan and pump curves, lighting and t
 - **Curves stored on the Kraken.** When the Kraken can run a curve by itself, camless stores it there, so the pump keeps its curve if camless stops.
 - **Lighting.** CAM's effects on the Kraken ring and on fans behind a Control Hub.
 - **The Kraken LCD.** Liquid temperature, frames from your own program, or a web page made for CAM, such as [KrakenDial](https://github.com/kleju13/krakendial).
-- **History.** Liquid temperature, CPU and GPU temperatures, loads, power and fan speeds over the last 10 minutes up to 30 days, a chart for each.
+- **History.** Liquid temperature, CPU and GPU temperatures, loads, power and fan speeds over the last 10 minutes up to 30 days, a chart for each. Drag across one to zoom in on a stretch of time or on its values.
 - **Games and FPS**, experimental and off until you turn it on. A card for each game, with its cover from Steam's cache on your PC. Every session with its play time, average frame rate, 1 % low and temperatures, and charts of its frame rate and temperatures from half an hour before the game to half an hour after, to see the PC warm up and cool down. Steam, Epic and Xbox games are found on their own.
 - **AI assistants.** `camless mcp` lets Claude or another MCP client read the sensors and set fan curves. A curve it sets must still speed the fans up when it gets hot.
 - **Profiles.** Each one is a whole setup. *Import from NZXT CAM* makes one from what CAM is set to.
