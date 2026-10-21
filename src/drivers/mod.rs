@@ -8,12 +8,17 @@
 //! camless opens them only with `[devices] other_brands` on, and only on their
 //! vendor-defined HID collection or their serial port: never a keyboard, mouse or
 //! other input device.
+//!
+//! Devices inside the PC, such as the motherboard's fan headers, are not on USB.
+//! They have their own setting and their own scan, `scan_host`.
 
 pub mod control_hub;
 pub mod corsair_cpro;
 pub mod corsair_link;
 pub mod demo;
+pub mod gpu;
 pub mod asetek;
+pub mod board;
 pub mod hid;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
@@ -25,9 +30,12 @@ pub mod kraken2;
 pub mod kraken3;
 pub mod kraken_elite_v2;
 pub mod lianli;
+pub mod lianli_galahad2;
 pub mod lianli_tl;
 pub mod nollie;
 pub mod serial;
+pub mod smart_device;
+pub mod smart_device2;
 pub mod strimer;
 pub mod umbra;
 pub mod usb;
@@ -36,6 +44,7 @@ pub mod vendor;
 pub mod winhid;
 
 use anyhow::Result;
+use camless_core::config::Devices;
 use camless_core::lighting::Lighting;
 use camless_core::status::{Device, Unit, Unsupported};
 use hidapi::HidApi;
@@ -57,6 +66,22 @@ pub const MODELS: &[Model] = &[
     kraken2::M22,
     asetek::KRAKEN_X,
     control_hub::MODEL,
+    smart_device::SMART_DEVICE,
+    smart_device::GRID_V3,
+    smart_device2::SMART_DEVICE_V2,
+    smart_device2::SMART_DEVICE_V2_200D,
+    smart_device2::SMART_DEVICE_V2_200F,
+    smart_device2::RGB_FAN_CONTROLLER,
+    smart_device2::RGB_FAN_CONTROLLER_200E,
+    smart_device2::RGB_FAN_CONTROLLER_2010,
+    smart_device2::RGB_FAN_CONTROLLER_6,
+    smart_device2::RGB_FAN_CONTROLLER_6_2019,
+    smart_device2::RGB_FAN_CONTROLLER_6_201F,
+    smart_device2::RGB_FAN_CONTROLLER_6_2020,
+    smart_device2::HUE_2,
+    smart_device2::HUE_2_AMBIENT,
+    smart_device2::RGB_CONTROLLER,
+    smart_device2::RGB_CONTROLLER_2021,
     lianli::UNI_HUB,
     lianli::UNI_HUB_SL,
     lianli::UNI_HUB_AL,
@@ -66,6 +91,9 @@ pub const MODELS: &[Model] = &[
     lianli::UNI_HUB_SL_V2_A105,
     lianli::UNI_HUB_SL_REDRAGON,
     lianli_tl::MODEL,
+    lianli_galahad2::TRINITY,
+    lianli_galahad2::PERFORMANCE,
+    lianli_galahad2::LCD,
     strimer::MODEL,
     umbra::MODEL,
     corsair_link::MODEL,
@@ -122,8 +150,9 @@ pub enum Usage {
     Exact(u16, u16),
     /// Any collection on a vendor-defined page with output reports of at least
     /// `output` bytes, as Windows counts them (`Caps`), and with `input`, input
-    /// reports too: what the driver writes and reads. For devices whose usage no
-    /// source names.
+    /// reports too: what the driver writes and reads. Of a device's collections that
+    /// fit, the scan takes the one with the shortest output reports. For devices whose
+    /// usage no source names.
     Vendor { output: usize, input: bool },
     /// Any collection on a vendor-defined page whose output reports are exactly this
     /// long, as Windows counts them: for a device camless only writes, whose usage no
@@ -157,6 +186,9 @@ pub enum Bus {
     Usb,
     /// A USB serial port (CDC ACM): COM on Windows, `/dev/ttyACM*` on Linux.
     Serial,
+    /// Inside the PC, not on USB: the motherboard's fan headers, the graphics card's
+    /// fans. No USB id.
+    Host,
 }
 
 impl Model {
@@ -275,6 +307,12 @@ pub trait Driver {
         false
     }
 
+    /// Hands back, as `release` does, the fans camless drove and has no duty for
+    /// now, such as one whose curve was removed. `used` are the fans it still drives.
+    fn release_unused(&mut self, _used: &[&str]) -> Result<()> {
+        Ok(())
+    }
+
     fn lcd(&mut self) -> Option<&mut dyn Lcd> {
         None
     }
@@ -337,6 +375,31 @@ fn caps(path: &std::ffi::CStr) -> Option<hid::Caps> {
     return hidraw::caps(path);
 }
 
+/// Whether camless may drive a device of this model with these settings: another
+/// brand's with `other_brands` on, the motherboard's headers with `motherboard`, the
+/// graphics card's fans with `gpu`.
+pub fn allowed(model: &Model, devices: &Devices) -> bool {
+    match model.bus {
+        Bus::Host if model.slug == gpu::MODEL.slug => devices.gpu,
+        Bus::Host => model.slug == board::MODEL.slug && devices.motherboard,
+        _ => model.vendor.is_none() || devices.other_brands,
+    }
+}
+
+/// The devices inside the PC that the settings turn on.
+pub fn scan_host(devices: &Devices) -> Vec<Found> {
+    board::hand_back_abandoned();
+    gpu::hand_back_abandoned();
+    let mut found = Vec::new();
+    if devices.motherboard {
+        found.extend(board::found());
+    }
+    if devices.gpu {
+        found.extend(gpu::found());
+    }
+    found
+}
+
 /// The id of the next device of a model: its slug, then `#2`, `#3`. Models that
 /// share a slug count together.
 fn next_id(found: &[Found], m: &Model) -> String {
@@ -361,14 +424,29 @@ pub fn scan(api: &HidApi, other_brands: bool) -> (Vec<Found>, Vec<Unsupported>) 
         .collect();
     entries.sort_by_key(|(d, _)| d.path().to_owned());
     let (mut found, mut unsupported, mut keys) = (Vec::<Found>::new(), Vec::<Unsupported>::new(), Vec::new());
+    // Of the collections of one device that fit a model by their report lengths, the
+    // one with the shortest output reports, as Nexus picks them: the key, the index
+    // in `found`, and that length.
+    let mut shortest: Vec<(String, usize, usize)> = Vec::new();
+    let output = |d: &hidapi::DeviceInfo| caps(d.path()).map_or(usize::MAX, |c| c.output);
     for (d, model) in entries {
         let key = device_key(d);
         if keys.contains(&key) {
+            if let Some((_, i, len)) = shortest.iter_mut().find(|(k, _, _)| *k == key) {
+                let this = output(d);
+                if this < *len && model.is_some_and(|m| std::ptr::eq(m, found[*i].model)) {
+                    found[*i].path = d.path().to_owned();
+                    *len = this;
+                }
+            }
             continue;
         }
         match model {
             Some(m) if m.interface.is_some_and(|i| i != d.interface_number()) => continue,
             Some(m) => {
+                if matches!(m.usage, Some(Usage::Vendor { .. })) {
+                    shortest.push((key.clone(), found.len(), output(d)));
+                }
                 let id = next_id(&found, m);
                 found.push(Found { model: m, id, path: d.path().to_owned() });
             }
@@ -410,8 +488,24 @@ mod tests {
 
     #[test]
     fn experimental_models_are_the_ones_nexus_leaves_out_or_calls_experimental() {
-        let nzxt: Vec<_> = MODELS.iter().filter(|m| m.experimental && m.vendor.is_none()).map(|m| m.slug).collect();
-        assert_eq!(nzxt, ["kraken-x2", "kraken-m22", "kraken-x-asetek"]);
+        let mut nzxt: Vec<_> = MODELS.iter().filter(|m| m.experimental && m.vendor.is_none()).map(|m| m.slug).collect();
+        nzxt.dedup();
+        assert_eq!(
+            nzxt,
+            [
+                "kraken-x2",
+                "kraken-m22",
+                "kraken-x-asetek",
+                "smart-device",
+                "grid-v3",
+                "smart-device-v2",
+                "rgb-fan-controller",
+                "rgb-fan-controller-6",
+                "hue2",
+                "hue2-ambient",
+                "rgb-controller"
+            ]
+        );
         // Nexus badges its Lian Li support experimental.
         assert!(MODELS.iter().filter(|m| m.vendor.is_some()).all(|m| m.experimental));
         assert!(MODELS.iter().filter(|m| m.bus == Bus::Usb).all(|m| m.interface.is_none()));

@@ -356,11 +356,14 @@ fn lcd_test(duration: Duration) -> Result<()> {
 }
 
 /// Opens every supported device once and prints what the config can refer to;
-/// other brands' only with the config's `[devices] other_brands` on.
+/// other brands' only with the config's `[devices] other_brands` on, the
+/// motherboard's headers with `motherboard`. It sets nothing, except that it gives
+/// back the headers a camless that stopped without handing them back had taken.
 fn status(config: &Path) -> Result<()> {
     let api = HidApi::new()?;
-    let other_brands = Config::load(config).is_ok_and(|c| c.devices.other_brands);
-    let (found, unsupported) = drivers::scan(&api, other_brands);
+    let devices = Config::load(config).map(|c| c.devices).unwrap_or_default();
+    let (mut found, unsupported) = drivers::scan(&api, devices.other_brands);
+    found.extend(drivers::scan_host(&devices));
     if found.is_empty() {
         println!("no supported NZXT device found");
     }
@@ -661,7 +664,7 @@ fn watch(duration: Duration, raw: bool) -> Result<()> {
 
 /// Decodes the status reports of supported devices.
 fn describe_report(pid: u16, msg: &[u8]) -> Option<String> {
-    use drivers::{control_hub, kraken_elite_v2};
+    use drivers::{control_hub, kraken_elite_v2, smart_device2};
     if pid == kraken_elite_v2::MODEL.pid {
         let s = kraken_elite_v2::parse_status(msg)?;
         return Some(format!(
@@ -669,13 +672,17 @@ fn describe_report(pid: u16, msg: &[u8]) -> Option<String> {
             s.liquid_c, s.pump_rpm, s.pump_duty, s.fan_rpm, s.fan_duty
         ));
     }
-    if pid == control_hub::MODEL.pid {
-        let s = control_hub::parse_status(msg)?;
-        let fans: Vec<String> =
-            s.fans.iter().enumerate().map(|(i, f)| format!("fan{} {:?} {} rpm {} %", i + 1, f.mode, f.rpm, f.duty)).collect();
-        return Some(format!("{} | noise {} dB", fans.join(", "), s.noise_db));
-    }
-    None
+    let ports = if pid == control_hub::MODEL.pid {
+        5
+    } else if let Some(c) = smart_device2::channels(pid).filter(|c| c.fans > 0) {
+        c.fans
+    } else {
+        return None;
+    };
+    let s = control_hub::parse_status(msg, ports)?;
+    let fans: Vec<String> =
+        s.fans.iter().enumerate().map(|(i, f)| format!("fan{} {:?} {} rpm {} %", i + 1, f.mode, f.rpm, f.duty)).collect();
+    Some(format!("{} | noise {} dB", fans.join(", "), s.noise_db))
 }
 
 fn hex(b: &[u8]) -> String {

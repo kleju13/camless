@@ -179,6 +179,15 @@ pub struct Devices {
     /// brand's app runs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub other_brands: bool,
+    /// The motherboard's fan headers. Off unless turned on: the BIOS drives them
+    /// until camless gives one a curve, and gets each one back when camless stops.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub motherboard: bool,
+    /// The graphics card's fans. Off unless turned on: the card's own curve drives
+    /// them until camless gives one a curve, and gets each one back when camless
+    /// stops.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpu: bool,
 }
 
 impl Devices {
@@ -924,6 +933,12 @@ url = "http://127.0.0.1:30640/lcd"
         assert!(!c.devices.other_brands && !c.to_toml().unwrap().contains("[devices]"));
         let on = Config::parse("[devices]\nother_brands = true\n").unwrap();
         assert!(on.devices.other_brands);
+        assert!(!on.devices.motherboard);
+        let board = Config::parse("[devices]\nmotherboard = true\n").unwrap();
+        assert!(board.devices.motherboard && !board.devices.other_brands);
+        assert!(board.to_toml().unwrap().contains("[devices]\nmotherboard = true\n"));
+        let gpu = Config::parse("[devices]\ngpu = true\n").unwrap();
+        assert!(gpu.devices.gpu && !gpu.devices.motherboard);
         assert_eq!(Config::parse(&on.to_toml().unwrap()).unwrap(), on);
         assert!(Config::parse("[devices]\nkeyboards = true\n").is_err());
     }
