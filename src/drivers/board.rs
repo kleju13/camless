@@ -473,6 +473,10 @@ pub mod os {
         fn set_duties(&mut self, duties: &[(&str, u8)]) -> Result<()> {
             for &(fan, d) in duties {
                 let Some(h) = self.headers.iter_mut().find(|h| h.id == fan) else { bail!("no fan {fan:?} on the {}", self.name) };
+                // Left out until the board opens again, which leaves it out for good.
+                if refused(&h.enable) {
+                    continue;
+                }
                 let take = h.before.is_none();
                 if take {
                     let chip = h.enable.parent().and_then(|d| read(&d.join("name"))).unwrap_or_default();
@@ -726,6 +730,9 @@ pub mod os {
             let mut b = Board::open_at(&found_at(&dir), "Motherboard".into(), root.join("taken-fans")).unwrap();
             let e = b.set_duties(&[("fan1", 50)]).unwrap_err();
             assert!(format!("{e:#}").contains("left out"), "{e:#}");
+            // Until it opens again, the board skips the header and sets the others.
+            b.set_duties(&[("fan1", 50), ("fan2", 60)]).unwrap();
+            assert_eq!(read(&dir.join("pwm2")), Some(raw(60).to_string()));
             drop(b);
             let b = Board::open_at(&found_at(&dir), "Motherboard".into(), root.join("taken-fans")).unwrap();
             assert_eq!(b.describe().fans.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["fan2"]);
