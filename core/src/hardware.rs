@@ -69,6 +69,7 @@ mod tests {
         let list = parse(FILE).unwrap();
         assert!(!list.is_empty());
         assert!(is_verified(0x1e71, 0x3012));
+        assert!(is_verified(0x1e71, 0x300e));
         assert!(!is_verified(0x1e71, 0x2007));
     }
 

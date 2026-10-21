@@ -7,7 +7,8 @@
 //! Sources: liquidctl `kraken3.py`, the Linux `nzxt-kraken3` driver, and Nexus
 //! (`KrakenModel.cs`, `KrakenProtocol.cs`, `KrakenHub.cs`). docs/protocol.md says
 //! where they disagree and which one this follows.
-//! Not verified on hardware.
+//! Verified on hardware only for the Kraken 2023's pump and fan curves, by its owner
+//! (camless #29, firmware not reported). The rest is not verified.
 
 use super::kraken_elite_v2::{self as elite, Status};
 use super::{hid, hue2, Driver, FanReading, Found, Lcd, Model, Reading, NZXT_VID};
