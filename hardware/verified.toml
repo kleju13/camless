@@ -21,7 +21,7 @@ source = "the maintainer's hardware"
 
 [[device]]
 usb = "1e71:2022"
-name = "Control Hub"
+name = "Control Hub (the one in the H9 Flow RGB+)"
 checked = ["fans", "lighting"]
 source = "the maintainer's hardware"
 
