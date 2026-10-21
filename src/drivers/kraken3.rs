@@ -8,7 +8,8 @@
 //! (`KrakenModel.cs`, `KrakenProtocol.cs`, `KrakenHub.cs`). docs/protocol.md says
 //! where they disagree and which one this follows.
 //! Verified on hardware only for the Kraken 2023's pump and fan curves, by its owner
-//! (camless #29, firmware not reported). The rest is not verified.
+//! (camless #29, firmware not reported), and for the Elite 2023's pump curve and LCD
+//! stream, by its owner (camless #42, firmware 2.1.0). The rest is not verified.
 
 use super::kraken_elite_v2::{self as elite, Status};
 use super::{hid, hue2, Driver, FanReading, Found, Lcd, Model, Reading, NZXT_VID};
