@@ -32,6 +32,7 @@ pub mod lianli;
 pub mod lianli_tl;
 pub mod nollie;
 pub mod serial;
+pub mod smart_device;
 pub mod strimer;
 pub mod umbra;
 pub mod usb;
@@ -62,6 +63,8 @@ pub const MODELS: &[Model] = &[
     kraken2::M22,
     asetek::KRAKEN_X,
     control_hub::MODEL,
+    smart_device::SMART_DEVICE,
+    smart_device::GRID_V3,
     lianli::UNI_HUB,
     lianli::UNI_HUB_SL,
     lianli::UNI_HUB_AL,
@@ -441,7 +444,7 @@ mod tests {
     #[test]
     fn experimental_models_are_the_ones_nexus_leaves_out_or_calls_experimental() {
         let nzxt: Vec<_> = MODELS.iter().filter(|m| m.experimental && m.vendor.is_none()).map(|m| m.slug).collect();
-        assert_eq!(nzxt, ["kraken-x2", "kraken-m22", "kraken-x-asetek"]);
+        assert_eq!(nzxt, ["kraken-x2", "kraken-m22", "kraken-x-asetek", "smart-device", "grid-v3"]);
         // Nexus badges its Lian Li support experimental.
         assert!(MODELS.iter().filter(|m| m.vendor.is_some()).all(|m| m.experimental));
         assert!(MODELS.iter().filter(|m| m.bus == Bus::Usb).all(|m| m.interface.is_none()));
