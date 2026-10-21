@@ -10,6 +10,7 @@
 //! other input device.
 
 pub mod control_hub;
+pub mod corsair_cpro;
 pub mod corsair_link;
 pub mod demo;
 pub mod asetek;
@@ -68,6 +69,8 @@ pub const MODELS: &[Model] = &[
     strimer::MODEL,
     umbra::MODEL,
     corsair_link::MODEL,
+    corsair_cpro::COMMANDER_PRO,
+    corsair_cpro::OBSIDIAN_1000D,
     nollie::N32,
     nollie::N16,
     nollie::N8,

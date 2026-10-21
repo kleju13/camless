@@ -157,6 +157,16 @@ Sources:
 - Another program: every open handle gets every reply, and the hub sends nothing unasked. camless opens the hub without the read other HID devices get, so that a queued reply is heard, listens 2.5 s before it takes the hub, and lets it go at the first reply to a command it did not send, without hardware mode. After one, it takes the hub again only once a minute has passed without one, longer than iCUE's keep-alive (Nexus's 60 s).
 - camless never sends `1A 01`, which maps the chain again and powers it off and on, or anything to an LCD.
 
+**Corsair Commander Pro** (`1b1c:0c10`, and the Obsidian 1000D's `1b1c:1d00`; experimental, with `[devices] other_brands` on)
+- liquidctl's `commander_pro.py`, its tests (the replies below) and its guide. camless leaves the hub alone while iCUE runs, as for the iCUE LINK hub.
+- A 64-byte output report without an id, `<command> <args>`, then one 16-byte reply, a status byte first (0 in every sample). The reply does not name its command, so a request drops what is queued, writes, and reads one reply, as liquidctl does.
+- Probes `10` → four bytes, 1 for a connected probe (`00 01 01 00 01 ...`: 1, 2 and 4). Headers `20` → six bytes: 0 nothing, 1 a DC fan, 2 a PWM fan (`00 01 01 02 00 00 00`).
+- Temperature `11 <probe 0..3>` → BE16 in hundredths after the status (`00 0a 83` is 26.91 °C). Speed `21 <fan 0..5>` → BE16 rpm (`00 03 ac` is 940). camless drops a reply whose status is not 0, a probe at 0, and a fan above 10000 rpm.
+- Duty `23 <fan 0..5> <duty 0..100>`, sent only to a header with a fan, as liquidctl does. Its reply is read and dropped. The daemon sends the duties again every so often, as for every device.
+- No hand-back: no source has a command that gives the fans back to the hub's own settings. The failsafe duty stays when the service stops, the last duty if camless crashes.
+- On Linux the kernel's `corsair-cpro` driver binds the hub and sends its own commands when something reads its hwmon files. With no command in the replies, two programs on the hub mix them up, so camless refuses the hub while a kernel driver with a hwmon device has its hidraw node, the check liquidctl uses (`HwmonDevice.from_hidraw`). liquidctl reads it through hwmon then; camless does not.
+- camless never sends `25` (a curve on the hub's probes, in rpm), `28` (a header's fan type, kept across power cycles) or the LED commands (`33` to `38`).
+
 **HYTE and iBUYPOWER hubs: the serial port**
 - USB serial (CDC ACM), 115200 baud, 8N1, DTR and RTS on (Nexus `Np50SerialTransport`). On Windows camless finds the port through SetupAPI (the Ports class, the hardware id, the `PortName` value) as Nexus's `WindowsSmartHubPortDiscovery` does, and opens it exclusively.
 - A request drops the input left over, then writes, then reads the reply's length or until its timeout (Nexus `SendRequest`). Fan writes and LED frames get no reply.
