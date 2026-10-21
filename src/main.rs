@@ -357,7 +357,8 @@ fn lcd_test(duration: Duration) -> Result<()> {
 
 /// Opens every supported device once and prints what the config can refer to;
 /// other brands' only with the config's `[devices] other_brands` on, the
-/// motherboard's headers with `motherboard`. It sets nothing.
+/// motherboard's headers with `motherboard`. It sets nothing, except that it gives
+/// back the headers a camless that stopped without handing them back had taken.
 fn status(config: &Path) -> Result<()> {
     let api = HidApi::new()?;
     let devices = Config::load(config).map(|c| c.devices).unwrap_or_default();
