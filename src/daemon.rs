@@ -135,6 +135,9 @@ pub struct Daemon {
     slots: Vec<Slot>,
     unsupported: Vec<Unsupported>,
     next_scan: Instant,
+    /// The failsafe duties of the config before the one that turned other brands off,
+    /// for the hubs camless lets go of then: the new engine has none yet.
+    yield_duties: Option<Vec<(String, Duty)>>,
     last_tick: Option<Instant>,
     shared: Arc<Mutex<Snapshot>>,
     start: Instant,
@@ -183,6 +186,7 @@ impl Daemon {
             slots: Vec::new(),
             unsupported: Vec::new(),
             next_scan: Instant::now(),
+            yield_duties: None,
             last_tick: None,
             shared,
             start: Instant::now(),
@@ -328,6 +332,9 @@ impl Daemon {
                     }
                     _ => self.log("config changed, applying it"),
                 }
+                if self.cfg.devices.other_brands && !cfg.devices.other_brands {
+                    self.yield_duties = Some(self.safe_duties());
+                }
                 self.engine = Engine::new(&cfg);
                 if cfg.devices != self.cfg.devices {
                     // Other brands' devices come and go with the setting at once.
@@ -391,7 +398,10 @@ impl Daemon {
         }
         let on = self.cfg.devices.other_brands;
         let running = if on { drivers::vendor::running_processes() } else { HashSet::new() };
-        let duties = self.safe_duties();
+        let duties = match self.yield_duties.take() {
+            Some(d) if !on => d,
+            _ => self.safe_duties(),
+        };
         let mut notes = Vec::new();
         for s in &mut self.slots {
             let Some(vendor) = s.found.model.vendor else { continue };
@@ -399,7 +409,9 @@ impl Daemon {
             let batch = host_batch(s, &duties);
             let (Some(why), Some(dev)) = (why, s.dev.as_mut()) else { continue };
             // A hub with nothing to hand back to keeps these, as when the service stops.
-            if !batch.is_empty() {
+            // The others go back to their own control, which the brand's app may have
+            // taken already: they get nothing first.
+            if dev.keeps_duty() && !batch.is_empty() {
                 let _ = dev.set_duties(&batch);
             }
             let released = match dev.release() {
@@ -831,7 +843,7 @@ impl Daemon {
             let sent = if !batch.is_empty() && dev.set_duties(&batch).is_ok() { batch.len() } else { 0 };
             // Another brand's hub goes back to its own control or the motherboard's,
             // as when camless lets go of it; the failsafe duties stay if that fails.
-            if s.found.model.vendor.is_some() && dev.release().is_ok() {
+            if s.found.model.vendor.is_some() && dev.release().is_ok() && !dev.keeps_duty() {
                 handed += 1;
             } else {
                 set += sent;

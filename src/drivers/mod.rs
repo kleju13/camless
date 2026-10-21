@@ -268,6 +268,13 @@ pub trait Driver {
         Ok(())
     }
 
+    /// Whether the fans keep the last duty they got after `release`, with nothing to
+    /// hand them back to: the daemon then sets the failsafe duty first. Another brand's
+    /// hub only.
+    fn keeps_duty(&self) -> bool {
+        false
+    }
+
     fn lcd(&mut self) -> Option<&mut dyn Lcd> {
         None
     }
