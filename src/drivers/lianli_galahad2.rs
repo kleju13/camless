@@ -282,6 +282,11 @@ impl Driver for Galahad2 {
         anyhow::bail!("no light {light:?} on the {}: camless sets no lighting on it", self.model.name)
     }
 
+    /// The Trinity, and the LCD's pump when its rpm at open gave no duty.
+    fn keeps_duty(&self) -> bool {
+        !self.is_lcd() || self.pump_found.is_none()
+    }
+
     /// The LCD's fans and pump back to how they ran before camless, the pump even if
     /// the fans fail. The Trinity has nothing to go back to.
     fn release(&mut self) -> Result<()> {
