@@ -24,6 +24,7 @@ pub mod kraken2;
 pub mod kraken3;
 pub mod kraken_elite_v2;
 pub mod lianli;
+pub mod lianli_galahad2;
 pub mod lianli_tl;
 pub mod nollie;
 pub mod serial;
@@ -65,6 +66,9 @@ pub const MODELS: &[Model] = &[
     lianli::UNI_HUB_SL_V2_A105,
     lianli::UNI_HUB_SL_REDRAGON,
     lianli_tl::MODEL,
+    lianli_galahad2::TRINITY,
+    lianli_galahad2::PERFORMANCE,
+    lianli_galahad2::LCD,
     strimer::MODEL,
     umbra::MODEL,
     corsair_link::MODEL,
