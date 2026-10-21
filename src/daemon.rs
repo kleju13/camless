@@ -112,6 +112,15 @@ fn local<'a>(id: &str, channel: &'a str) -> Option<&'a str> {
     channel.split_once('/').filter(|(d, _)| *d == id).map(|(_, c)| c)
 }
 
+/// The duties of a device's host-driven fans among `duties`.
+fn host_batch<'a>(s: &Slot, duties: &'a [(String, Duty)]) -> Vec<(&'a str, u8)> {
+    duties
+        .iter()
+        .filter_map(|(c, d)| Some((local(&s.found.id, c)?, d.value()?)))
+        .filter(|(f, _)| !s.on_device.contains(*f) && s.info.fans.iter().any(|x| x.id == *f))
+        .collect()
+}
+
 pub struct Daemon {
     cfg: Config,
     cfg_path: PathBuf,
@@ -382,11 +391,17 @@ impl Daemon {
         }
         let on = self.cfg.devices.other_brands;
         let running = if on { drivers::vendor::running_processes() } else { HashSet::new() };
+        let duties = self.safe_duties();
         let mut notes = Vec::new();
         for s in &mut self.slots {
             let Some(vendor) = s.found.model.vendor else { continue };
             let why = if on { vendor.busy(&running) } else { Some("other brands are off".to_string()) };
+            let batch = host_batch(s, &duties);
             let (Some(why), Some(dev)) = (why, s.dev.as_mut()) else { continue };
+            // A hub with nothing to hand back to keeps these, as when the service stops.
+            if !batch.is_empty() {
+                let _ = dev.set_duties(&batch);
+            }
             let released = match dev.release() {
                 Ok(()) => "handed back".to_string(),
                 Err(e) => format!("not handed back ({e:#})"),
@@ -777,6 +792,26 @@ impl Daemon {
         };
     }
 
+    /// What every channel is left at without camless: the failsafe duty, or a fixed
+    /// curve's own.
+    fn safe_duties(&self) -> Vec<(String, Duty)> {
+        let failsafe = self.cfg.failsafe_duty;
+        let fixed: HashMap<String, u8> = self
+            .engine
+            .duties()
+            .iter()
+            .filter_map(|(c, d)| {
+                let curve = self.engine.device_curve(c)?;
+                Some((c.to_string(), curve.sensor.is_none().then_some(d.value()?)?))
+            })
+            .collect();
+        self.engine
+            .duties()
+            .into_iter()
+            .map(|(c, d)| (c.to_string(), if d == Duty::Unmanaged { d } else { Duty::Set(*fixed.get(c).unwrap_or(&failsafe)) }))
+            .collect()
+    }
+
     /// Leaves the devices in a state that is safe without camless running: host-driven
     /// fans at the failsafe duty (fixed ones at theirs), LCDs on their own screen.
     fn shutdown(&mut self) {
@@ -788,29 +823,11 @@ impl Daemon {
         }
         self.history.lock().unwrap_or_else(|e| e.into_inner()).finish();
         let failsafe = self.cfg.failsafe_duty;
-        let fixed: HashMap<String, u8> = self
-            .engine
-            .duties()
-            .iter()
-            .filter_map(|(c, d)| {
-                let curve = self.engine.device_curve(c)?;
-                Some((c.to_string(), curve.sensor.is_none().then_some(d.value()?)?))
-            })
-            .collect();
-        let duties: Vec<(String, Duty)> = self
-            .engine
-            .duties()
-            .into_iter()
-            .map(|(c, d)| (c.to_string(), if d == Duty::Unmanaged { d } else { Duty::Set(*fixed.get(c).unwrap_or(&failsafe)) }))
-            .collect();
+        let duties = self.safe_duties();
         let (mut set, mut handed) = (0, 0);
         for s in &mut self.slots {
+            let batch = host_batch(s, &duties);
             let Some(dev) = s.dev.as_mut() else { continue };
-            let batch: Vec<(&str, u8)> = duties
-                .iter()
-                .filter_map(|(c, d)| Some((local(&s.found.id, c)?, d.value()?)))
-                .filter(|(f, _)| !s.on_device.contains(*f) && s.info.fans.iter().any(|x| x.id == *f))
-                .collect();
             let sent = if !batch.is_empty() && dev.set_duties(&batch).is_ok() { batch.len() } else { 0 };
             // Another brand's hub goes back to its own control or the motherboard's,
             // as when camless lets go of it; the failsafe duties stay if that fails.
