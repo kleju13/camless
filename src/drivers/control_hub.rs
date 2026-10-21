@@ -38,12 +38,14 @@ pub struct Status {
     pub noise_db: u8,
 }
 
-/// The periodic `67 02` fan report: mode at [16+i], rpm LE at [24+2i], duty at [40+i].
-pub fn parse_status(msg: &[u8]) -> Option<Status> {
-    if msg.len() < 57 || msg[0] != 0x67 || msg[1] != 0x02 {
+/// The periodic `67 02` fan report: mode at [16+i], rpm LE at [24+2i], duty at [40+i],
+/// for the first `ports` of the eight it has room for. The Smart Device V2 and the RGB
+/// & Fan Controller send the same report for their three.
+pub fn parse_status(msg: &[u8], ports: usize) -> Option<Status> {
+    if msg.len() < 57 || msg[0] != 0x67 || msg[1] != 0x02 || ports > 8 {
         return None;
     }
-    let fans = (0..PORTS)
+    let fans = (0..ports)
         .map(|i| Port {
             mode: match msg[16 + i] {
                 0 => FanMode::None,
@@ -87,27 +89,39 @@ fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
     Ok(Box::new(ControlHub { hid, firmware, accessories, last: None }))
 }
 
-fn port(id: &str, prefix: &str) -> Option<usize> {
-    id.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok()).filter(|n| (1..=PORTS).contains(n)).map(|n| n - 1)
+/// `fan1`, `led3`: the zero-based port of `count`.
+pub(super) fn port(id: &str, prefix: &str, count: usize) -> Option<usize> {
+    id.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok()).filter(|n| (1..=count).contains(n)).map(|n| n - 1)
 }
 
-impl ControlHub {
-    fn status(&mut self) -> Result<Status> {
-        for msg in hid::pending(&self.hid) {
-            if let Some(s) = parse_status(&msg) {
-                self.last = Some((s, Instant::now()));
-            }
-        }
-        match &self.last {
-            Some((s, at)) if at.elapsed() < Duration::from_secs(3) => Ok(s.clone()),
-            _ => {
-                let msg = hid::read_prefix(&self.hid, &[0x67, 0x02])?;
-                let s = parse_status(&msg).context("malformed fan report")?;
-                self.last = Some((s.clone(), Instant::now()));
-                Ok(s)
-            }
+/// The newest fan report waiting, or the last one if it is under 3 s old, or the next
+/// one; the device sends one every 0.5 s.
+pub(super) fn status(hid: &HidDevice, last: &mut Option<(Status, Instant)>, ports: usize) -> Result<Status> {
+    for msg in hid::pending(hid) {
+        if let Some(s) = parse_status(&msg, ports) {
+            *last = Some((s, Instant::now()));
         }
     }
+    match last {
+        Some((s, at)) if at.elapsed() < Duration::from_secs(3) => Ok(s.clone()),
+        _ => {
+            let msg = hid::read_prefix(hid, &[0x67, 0x02])?;
+            let s = parse_status(&msg, ports).context("malformed fan report")?;
+            *last = Some((s.clone(), Instant::now()));
+            Ok(s)
+        }
+    }
+}
+
+/// What `poll` returns for a fan report.
+pub(super) fn reading(s: &Status) -> Reading {
+    let fans = s
+        .fans
+        .iter()
+        .zip(FAN_IDS)
+        .map(|(p, id)| (id, FanReading { rpm: Some(p.rpm), duty: Some(p.duty), connected: Some(p.mode != FanMode::None) }))
+        .collect();
+    Reading { sensors: Vec::new(), fans }
 }
 
 impl Driver for ControlHub {
@@ -139,23 +153,13 @@ impl Driver for ControlHub {
     }
 
     fn poll(&mut self) -> Result<Reading> {
-        let s = self.status()?;
-        let fans = s
-            .fans
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let connected = p.mode != FanMode::None;
-                (FAN_IDS[i], FanReading { rpm: Some(p.rpm), duty: Some(p.duty), connected: Some(connected) })
-            })
-            .collect();
-        Ok(Reading { sensors: Vec::new(), fans })
+        Ok(reading(&status(&self.hid, &mut self.last, PORTS)?))
     }
 
     fn set_duties(&mut self, duties: &[(&str, u8)]) -> Result<()> {
         let mut ports = Vec::new();
         for &(fan, duty) in duties {
-            ports.push((port(fan, "fan").with_context(|| format!("no fan {fan:?}; ports are fan1 to fan5"))?, duty));
+            ports.push((port(fan, "fan", PORTS).with_context(|| format!("no fan {fan:?}; ports are fan1 to fan5"))?, duty));
         }
         if !ports.is_empty() {
             hid::write(&self.hid, &duties_report(&ports))?;
@@ -164,7 +168,7 @@ impl Driver for ControlHub {
     }
 
     fn set_lighting(&mut self, light: &str, lighting: &Lighting) -> Result<()> {
-        let Some(i) = port(light, "led") else { bail!("no light {light:?}; ports are led1 to led5") };
+        let Some(i) = port(light, "led", PORTS) else { bail!("no light {light:?}; ports are led1 to led5") };
         let leds = self.accessories.get(i).map_or(hue2::DEFAULT_LEDS, |a| a.leds());
         hue2::write(&self.hid, LED_CHANNELS[i], lighting, leds)
     }
@@ -195,7 +199,7 @@ mod tests {
         m[40] = 45;
         m[41] = 30;
         m[56] = 27;
-        let s = parse_status(&m).unwrap();
+        let s = parse_status(&m, PORTS).unwrap();
         assert_eq!(s.fans[0], Port { mode: FanMode::Pwm, rpm: 1200, duty: 45 });
         assert_eq!(s.fans[1], Port { mode: FanMode::Dc, rpm: 800, duty: 30 });
         assert_eq!(s.fans[2].mode, FanMode::None);
@@ -204,9 +208,10 @@ mod tests {
 
     #[test]
     fn ports_are_one_based() {
-        assert_eq!(port("fan1", "fan"), Some(0));
-        assert_eq!(port("led5", "led"), Some(4));
-        assert_eq!(port("fan6", "fan"), None);
-        assert_eq!(port("fan0", "fan"), None);
+        assert_eq!(port("fan1", "fan", PORTS), Some(0));
+        assert_eq!(port("led5", "led", PORTS), Some(4));
+        assert_eq!(port("fan6", "fan", PORTS), None);
+        assert_eq!(port("fan0", "fan", PORTS), None);
+        assert_eq!(port("fan4", "fan", 3), None);
     }
 }

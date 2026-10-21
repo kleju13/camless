@@ -4,6 +4,7 @@ Sources:
 - liquidctl's `kraken3.py` and PRs #882 (lighting, 2024 Elite), #927 and #932;
 - the Linux `nzxt-kraken3` driver;
 - liquidctl's `kraken2.py` and `asetek.py` with their guides, and the Linux `nzxt-kraken2` driver, for the Kraken X2, the M22 and the Asetek-made Krakens, which Nexus leaves out;
+- liquidctl's `smart_device.py` (`SmartDevice2`) and issue #541, the Linux `nzxt-smart2` driver, and OpenRGB's `NZXTHue2Controller`, for the Smart Device V2 and the RGB & Fan Controller, which Nexus leaves out too;
 - [Nexus](https://github.com/hello-nexus/nexus) (`KrakenModel.cs`, `KrakenProtocol.cs`, `KrakenHub.cs`), for the Krakens camless has not run on. Nexus says only its Elite 2024 rows were run on hardware;
 - Nexus's `Peripherals/LianLi`, `Cooling/LianLiCoolingProvider.cs` and `Conflicts/ConflictAppDefinitions.cs`, which follow FanControl.LianLi and L-Connect 3, for the Lian Li Uni Hubs;
 - Nexus's `Peripherals` and `Lighting` handlers for the other brands' hubs: `LianLiTl`, `Strimer`, `AsiahorseUmbra`, `Nollie`, `CorsairLink` and `Hyte`. Each section below names its files;
@@ -92,6 +93,30 @@ Sources:
 - Periodic `67 02` reports: fan mode at `[16+i]`, rpm LE at `[24+2i]`, duty at `[40+i]`, noise at `[56]`.
 - Duties: `62 01 <mask> d1..d5`.
 - LED ports 1..5 are channel bytes `02 01 04 08 10`.
+
+**Smart Device V2 and RGB & Fan Controller** (`1e71:2006`, `200d`, `200f`; `2009`, `200e`, `2010`; the 3+6 channel one `2011`, `2019`, `201f`, `2020`; experimental)
+- liquidctl `smart_device.py` (`SmartDevice2`), the Linux `nzxt-smart2` driver, liquidctl #541 (a `2011`, with liquidctl's debug log) and OpenRGB's `NZXTHue2Controller`. Nexus drives none of them: it lists them only for OpenRGB's lighting.
+- Three fan ports on every one (liquidctl, Linux: the reports have room for eight). LED channels: two, and six on the 3+6 channel controller.
+- The same as on the Control Hub:
+  - the `67 02` fan report, at the same offsets, for the first three ports. A `67 04` report with voltages and currents comes in between (Linux); camless ignores it.
+  - duties `62 01 <mask> d1 d2 d3`. 0 stops a fan in either mode; on a DC fan 1 % is about 9 V (Linux).
+  - the accessory report, `20 03` → `21 03`.
+- Different:
+  - Init: `60 02 01 E8 01 01 E8 01` (a fan report every 0.5 s), then `60 03`, which detects the fans; the device answers it with `61 03` (Linux). The hub takes `66 01` instead of `60 03`. Linux sends `60 03` first and an interval of 1 s (`03`). camless follows liquidctl, whose log in #541 shows these bytes going to a `2011`.
+  - Firmware: `10 01` → `11 01`, the version at `[0x11..0x13]`; the hub uses `10 02`. The `2011` in #541 answered 1.7.0.
+  - Lighting, one report: `28 03 <ch> 00 <mode> <speed 0..4> 00 <01 backward> <color count> 00` and the colors as GRB (liquidctl `_write_colors`). The mode bytes are those of the `2A 04` layout: fixed and off `00`, fading `01`, spectrum wave `02`, covering marquee `04`, pulse `06`, breathing `07`, candle `08`, rainbow flow `0b`, super rainbow `0c`, rainbow pulse `0d`. There is no tai chi or water cooler, so these lights list the modes they take. The report has no LED count. Fixed and off go at speed `02`, liquidctl's default.
+  - LED channels are bits, `1 << i`: `01`, `02`, up to `20` on the 3+6 channel controller. The hub's ports are `02 01 04 08 10`.
+- The 3+6 channel controller:
+  - `2011`, `2019` and `201f`: fans only. In #541 a `2011` ignored `28 03` (`set led6 color fixed abcdef` sent `28 03 20 00 00 02 00 00 01 00 cd ab ef`, and nothing changed) and every effect in that layout. Only liquidctl's per-LED modes worked there: `22 10` and `22 11` with up to 20 GRB colors each, then `22 a0 <ch> 00 01 00 00 00 00 00 64 00 32 00 00 01` (`super-fixed`). liquidctl then turned their lights off ("protocol changed, see #541"), and the issue closed without a CAM capture. camless leaves their lights alone. A static color through `22 10` and `22 a0` is the first thing to try on one, with its owner watching.
+  - `2020`: six LED channels in `28 03`, as liquidctl has it: "Both RGB and fan control have been reported to work", on liquidctl's Discord.
+  - `201f` is not in the Linux driver's table; liquidctl added it in #733, with the others' settings.
+- Where the sources disagree:
+  - OpenRGB sends `28 03` effects to every 3+6 channel controller, the `2011` included, with `28` in byte 3 and the moving flag in byte 6 always set. liquidctl sends `00` in both, but for its moving alternating modes, which camless does not have. camless follows liquidctl, whose bytes ran on these devices.
+  - OpenRGB calls `1e71:2022`, the Control Hub, "RGB & Fan Controller 2024", with six LED channels and three fans in this layout. camless's Control Hub driver follows captures of CAM and liquidctl's `control_hub.py`: five fans and five LED ports, in the `26 04` and `2A 04` layouts, run on the hardware.
+  - OpenRGB has `201b` too, as the "NZXT B650E Motherboard", and sends it no fan commands. No other source has it, so camless leaves it out.
+- Not here: the HUE 2 (`2001`, four LED channels) and HUE 2 Ambient (`2002`, two), which liquidctl drives the same way without the fan init; the H1 V2 (`2015`), whose fans and pump come in a `75 02` report; and the 2023 RGB Controllers (`2012`, `2021`), which take `2A 04` effects.
+- On Linux, `nzxt-smart2` binds as a hwmon driver to all but `201f`, with `HID_CONNECT_HIDRAW`, so camless reaches the device beside it. It sets the report interval to 1 s when it binds and after a resume; camless sets 0.5 s when it opens the device.
+- Not run on hardware: nobody here has one.
 
 **Lian Li Uni Hubs** (`0cf2:7750`, `a100` to `a106`; experimental, with `[devices] other_brands` on)
 - Four fan ports. camless opens only the vendor collection on interface 1: usage page `FF72`, usage `A1`. Every command is a feature report, id `E0`, 7 bytes, which Windows pads to the hub's feature report length. Nexus calls its Lian Li support experimental and ran the SL-Infinity (`a102`) and SL (`a100`) hubs only; the other rows come from its table.
@@ -187,7 +212,7 @@ Sources:
 - LEDs: `FF EE 03 <port> 01 68 00` and G, R, B, padded to 50 LEDs (157 bytes), 100 on port 4 (307 bytes). Shorter frames leave LEDs lit. The LED mode is the whole hub's, so once the config sets a light camless sends every port's frame with every poll, the ports it does not set off, as Nexus writes every port.
 - No watchdog (Nexus `MiniHubHeartbeatWorker`): the hub keeps a duty until it loses power. camless hands the fans and the LEDs back to the motherboard when it lets go and when the service stops (Nexus's `ReleaseAll` does it for the fans). If camless crashes, the fans keep their last duty.
 
-**Hue 2 accessories** (the Krakens since the X3, and the Control Hub)
+**Hue 2 accessories** (the Krakens since the X3, the Control Hub, the Smart Device V2 and the RGB & Fan Controller)
 - `20 03` → `21 03`: the channel count at `[14]`, then six accessory ids per channel from `[15]`; `00` ends a channel.
 - Names follow liquidctl's `Hue2Accessory`. LED counts known from CAM captures: `0x19` 8, `0x1d` (F360 RGB Core) 24, `0x1e` (Kraken Elite ring) 24, `0x1f` 24. CAM sends 24 for channels it does not tell apart.
 - The LED count goes into byte 7 of `26 06` and the effect footer, as CAM sends it.

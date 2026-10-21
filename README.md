@@ -46,13 +46,17 @@ These follow liquidctl, the Linux driver and Nexus, and nobody has run camless o
 | Kraken Z3 (Z53, Z63, Z73) | `1e71:3008` | pump and fan curves, RGB header; the LCD shows only its own display |
 | Kraken X3 (X53, X63, X73) | `1e71:2007`, `1e71:2014` | pump curve, pump ring, logo and RGB header |
 
-Experimental: Nexus leaves these out, so the driver follows liquidctl alone, and the app marks them *Experimental*:
+Experimental: Nexus leaves these out, so the driver follows liquidctl and the Linux drivers alone, and the app marks them *Experimental*:
 
 | Device | USB id | What camless drives |
 |---|---|---|
 | Kraken X2 (X42, X52, X62, X72) | `1e71:170e` | pump and fan curves from firmware 3, pump ring and logo |
 | Kraken M22 | `1e71:1715` | pump ring and logo |
 | Kraken X31, X41, X61 (and X40, X60) | `2433:b200` | pump and fan duties, logo; on Windows, needs WinUSB bound to it with [Zadig](https://zadig.akeo.ie) |
+| Smart Device V2 (H510 Elite, H510i, H710i, H210i) | `1e71:2006`, `200d`, `200f` | duties and speeds on the three fan ports, two LED channels |
+| RGB & Fan Controller | `1e71:2009`, `200e`, `2010` | duties and speeds on the three fan ports, two LED channels |
+| RGB & Fan Controller (3+6 channels) | `1e71:2020` | duties and speeds on the three fan ports, six LED channels |
+| RGB & Fan Controller (3+6 channels) | `1e71:2011`, `2019`, `201f` | duties and speeds on the three fan ports; not the lighting, which liquidctl found changed ([protocol notes](docs/protocol.md)) |
 
 Other brands' fan hubs and LED controllers, off unless you turn on *Settings → Devices → Other brands*: camless never drives keyboards or mice, and leaves a hub alone while its brand's app runs ([how it works](docs/how-it-works.md#other-brands)). None of them has run with camless yet, so the app calls them experimental. Their lighting is off or one colour:
 

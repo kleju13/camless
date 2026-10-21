@@ -27,6 +27,7 @@ pub mod lianli;
 pub mod lianli_tl;
 pub mod nollie;
 pub mod serial;
+pub mod smart_device2;
 pub mod strimer;
 pub mod umbra;
 pub mod usb;
@@ -56,6 +57,16 @@ pub const MODELS: &[Model] = &[
     kraken2::M22,
     asetek::KRAKEN_X,
     control_hub::MODEL,
+    smart_device2::SMART_DEVICE_V2,
+    smart_device2::SMART_DEVICE_V2_200D,
+    smart_device2::SMART_DEVICE_V2_200F,
+    smart_device2::RGB_FAN_CONTROLLER,
+    smart_device2::RGB_FAN_CONTROLLER_200E,
+    smart_device2::RGB_FAN_CONTROLLER_2010,
+    smart_device2::RGB_FAN_CONTROLLER_6,
+    smart_device2::RGB_FAN_CONTROLLER_6_2019,
+    smart_device2::RGB_FAN_CONTROLLER_6_201F,
+    smart_device2::RGB_FAN_CONTROLLER_6_2020,
     lianli::UNI_HUB,
     lianli::UNI_HUB_SL,
     lianli::UNI_HUB_AL,
@@ -400,8 +411,12 @@ mod tests {
 
     #[test]
     fn experimental_models_are_the_ones_nexus_leaves_out_or_calls_experimental() {
-        let nzxt: Vec<_> = MODELS.iter().filter(|m| m.experimental && m.vendor.is_none()).map(|m| m.slug).collect();
-        assert_eq!(nzxt, ["kraken-x2", "kraken-m22", "kraken-x-asetek"]);
+        let mut nzxt: Vec<_> = MODELS.iter().filter(|m| m.experimental && m.vendor.is_none()).map(|m| m.slug).collect();
+        nzxt.dedup();
+        assert_eq!(
+            nzxt,
+            ["kraken-x2", "kraken-m22", "kraken-x-asetek", "smart-device-v2", "rgb-fan-controller", "rgb-fan-controller-6"]
+        );
         // Nexus badges its Lian Li support experimental.
         assert!(MODELS.iter().filter(|m| m.vendor.is_some()).all(|m| m.experimental));
         assert!(MODELS.iter().filter(|m| m.bus == Bus::Usb).all(|m| m.interface.is_none()));

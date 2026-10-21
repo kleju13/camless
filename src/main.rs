@@ -661,7 +661,7 @@ fn watch(duration: Duration, raw: bool) -> Result<()> {
 
 /// Decodes the status reports of supported devices.
 fn describe_report(pid: u16, msg: &[u8]) -> Option<String> {
-    use drivers::{control_hub, kraken_elite_v2};
+    use drivers::{control_hub, kraken_elite_v2, smart_device2};
     if pid == kraken_elite_v2::MODEL.pid {
         let s = kraken_elite_v2::parse_status(msg)?;
         return Some(format!(
@@ -669,13 +669,17 @@ fn describe_report(pid: u16, msg: &[u8]) -> Option<String> {
             s.liquid_c, s.pump_rpm, s.pump_duty, s.fan_rpm, s.fan_duty
         ));
     }
-    if pid == control_hub::MODEL.pid {
-        let s = control_hub::parse_status(msg)?;
-        let fans: Vec<String> =
-            s.fans.iter().enumerate().map(|(i, f)| format!("fan{} {:?} {} rpm {} %", i + 1, f.mode, f.rpm, f.duty)).collect();
-        return Some(format!("{} | noise {} dB", fans.join(", "), s.noise_db));
-    }
-    None
+    let ports = if pid == control_hub::MODEL.pid {
+        5
+    } else if smart_device2::led_channels(pid).is_some() {
+        smart_device2::FANS
+    } else {
+        return None;
+    };
+    let s = control_hub::parse_status(msg, ports)?;
+    let fans: Vec<String> =
+        s.fans.iter().enumerate().map(|(i, f)| format!("fan{} {:?} {} rpm {} %", i + 1, f.mode, f.rpm, f.duty)).collect();
+    Some(format!("{} | noise {} dB", fans.join(", "), s.noise_db))
 }
 
 fn hex(b: &[u8]) -> String {
