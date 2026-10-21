@@ -203,15 +203,26 @@ impl SmartDevice {
     }
 
     /// Every port's last report, reading more while one is missing or stale: the
-    /// device sends one port per report, in turn.
+    /// device sends one port per report, in turn. A port that stays silent leaves
+    /// the others, as liquidctl and the Linux driver read each port on its own; only
+    /// no report at all is an error.
     fn status(&mut self) -> Result<()> {
+        let mut got = false;
         for msg in hid::pending(&self.hid) {
+            got |= parse_status(&msg).is_some();
             self.keep(&msg);
         }
         let end = Instant::now() + hid::REPLY_TIMEOUT;
-        while !self.fresh() && Instant::now() < end {
-            let msg = hid::read_prefix_within(&self.hid, &[STATUS_ID], end.saturating_duration_since(Instant::now()))?;
-            self.keep(&msg);
+        while !self.fresh() {
+            let left = end.saturating_duration_since(Instant::now());
+            match hid::read_prefix_within(&self.hid, &[STATUS_ID], left) {
+                Ok(msg) => {
+                    got |= parse_status(&msg).is_some();
+                    self.keep(&msg);
+                }
+                Err(_) if got => break,
+                Err(e) => return Err(e),
+            }
         }
         Ok(())
     }
