@@ -29,6 +29,7 @@ pub mod kraken2;
 pub mod kraken3;
 pub mod kraken_elite_v2;
 pub mod lianli;
+pub mod lianli_galahad2;
 pub mod lianli_tl;
 pub mod nollie;
 pub mod serial;
@@ -89,6 +90,9 @@ pub const MODELS: &[Model] = &[
     lianli::UNI_HUB_SL_V2_A105,
     lianli::UNI_HUB_SL_REDRAGON,
     lianli_tl::MODEL,
+    lianli_galahad2::TRINITY,
+    lianli_galahad2::PERFORMANCE,
+    lianli_galahad2::LCD,
     strimer::MODEL,
     umbra::MODEL,
     corsair_link::MODEL,
@@ -143,8 +147,9 @@ pub enum Usage {
     Exact(u16, u16),
     /// Any collection on a vendor-defined page with output reports of at least
     /// `output` bytes, as Windows counts them (`Caps`), and with `input`, input
-    /// reports too: what the driver writes and reads. For devices whose usage no
-    /// source names.
+    /// reports too: what the driver writes and reads. Of a device's collections that
+    /// fit, the scan takes the one with the shortest output reports. For devices whose
+    /// usage no source names.
     Vendor { output: usize, input: bool },
     /// Any collection on a vendor-defined page whose output reports are exactly this
     /// long, as Windows counts them: for a device camless only writes, whose usage no
@@ -292,6 +297,13 @@ pub trait Driver {
         Ok(())
     }
 
+    /// Whether the fans keep the last duty they got after `release`, with nothing to
+    /// hand them back to: the daemon then sets the failsafe duty first. Another brand's
+    /// hub only.
+    fn keeps_duty(&self) -> bool {
+        false
+    }
+
     /// Hands back, as `release` does, the fans camless drove and has no duty for
     /// now, such as one whose curve was removed. `used` are the fans it still drives.
     fn release_unused(&mut self, _used: &[&str]) -> Result<()> {
@@ -409,14 +421,29 @@ pub fn scan(api: &HidApi, other_brands: bool) -> (Vec<Found>, Vec<Unsupported>) 
         .collect();
     entries.sort_by_key(|(d, _)| d.path().to_owned());
     let (mut found, mut unsupported, mut keys) = (Vec::<Found>::new(), Vec::<Unsupported>::new(), Vec::new());
+    // Of the collections of one device that fit a model by their report lengths, the
+    // one with the shortest output reports, as Nexus picks them: the key, the index
+    // in `found`, and that length.
+    let mut shortest: Vec<(String, usize, usize)> = Vec::new();
+    let output = |d: &hidapi::DeviceInfo| caps(d.path()).map_or(usize::MAX, |c| c.output);
     for (d, model) in entries {
         let key = device_key(d);
         if keys.contains(&key) {
+            if let Some((_, i, len)) = shortest.iter_mut().find(|(k, _, _)| *k == key) {
+                let this = output(d);
+                if this < *len && model.is_some_and(|m| std::ptr::eq(m, found[*i].model)) {
+                    found[*i].path = d.path().to_owned();
+                    *len = this;
+                }
+            }
             continue;
         }
         match model {
             Some(m) if m.interface.is_some_and(|i| i != d.interface_number()) => continue,
             Some(m) => {
+                if matches!(m.usage, Some(Usage::Vendor { .. })) {
+                    shortest.push((key.clone(), found.len(), output(d)));
+                }
                 let id = next_id(&found, m);
                 found.push(Found { model: m, id, path: d.path().to_owned() });
             }

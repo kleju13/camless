@@ -68,6 +68,7 @@ Other brands' fan hubs and LED controllers, off unless you turn on *Settings →
 |---|---|---|
 | Lian Li Uni Hub, SL, AL, SL-Infinity, SL v2, AL v2 | `0cf2:7750`, `0cf2:a100` to `a106` | fan duties and speeds on the four ports, and each port's lighting |
 | Lian Li Uni Fan TL controller | `0416:7372` | each TL fan's duty and speed, and each port's lighting |
+| Lian Li Galahad II Trinity, Trinity Performance, LCD | `0416:7373`, `7371`, `7395` | the radiator fans' and the pump's duty and speed, and on the LCD the liquid temperature |
 | Lian Li Strimer Plus V2 | `0cf2:a200` | the 24-pin and 8-pin cables' lighting |
 | Asiahorse Umbra V2 | `1a86:fe04` | one duty for all its fans, and one colour on its ten ARGB ports |
 | Nollie controllers, 1 to 32 channels | 16 models under `3061`, `16d2` and `16d5` ([list](docs/protocol.md)) | each channel's lighting |

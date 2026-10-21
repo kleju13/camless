@@ -115,6 +115,15 @@ fn local<'a>(id: &str, channel: &'a str) -> Option<&'a str> {
     channel.split_once('/').filter(|(d, _)| *d == id).map(|(_, c)| c)
 }
 
+/// The duties of a device's host-driven fans among `duties`.
+fn host_batch<'a>(s: &Slot, duties: &'a [(String, Duty)]) -> Vec<(&'a str, u8)> {
+    duties
+        .iter()
+        .filter_map(|(c, d)| Some((local(&s.found.id, c)?, d.value()?)))
+        .filter(|(f, _)| !s.on_device.contains(*f) && s.info.fans.iter().any(|x| x.id == *f))
+        .collect()
+}
+
 pub struct Daemon {
     cfg: Config,
     cfg_path: PathBuf,
@@ -129,6 +138,9 @@ pub struct Daemon {
     slots: Vec<Slot>,
     unsupported: Vec<Unsupported>,
     next_scan: Instant,
+    /// The failsafe duties of the config before the one that turned other brands off,
+    /// for the hubs camless lets go of then: the new engine has none yet.
+    yield_duties: Option<Vec<(String, Duty)>>,
     last_tick: Option<Instant>,
     shared: Arc<Mutex<Snapshot>>,
     start: Instant,
@@ -177,6 +189,7 @@ impl Daemon {
             slots: Vec::new(),
             unsupported: Vec::new(),
             next_scan: Instant::now(),
+            yield_duties: None,
             last_tick: None,
             shared,
             start: Instant::now(),
@@ -322,6 +335,9 @@ impl Daemon {
                     }
                     _ => self.log("config changed, applying it"),
                 }
+                if self.cfg.devices.other_brands && !cfg.devices.other_brands {
+                    self.yield_duties = Some(self.safe_duties());
+                }
                 self.engine = Engine::new(&cfg);
                 if cfg.devices != self.cfg.devices {
                     // Other brands' devices come and go with the setting at once.
@@ -387,6 +403,10 @@ impl Daemon {
             return;
         }
         let running = drivers::vendor::running_processes();
+        let duties = match self.yield_duties.take() {
+            Some(d) if !self.cfg.devices.other_brands => d,
+            _ => self.safe_duties(),
+        };
         let mut notes = Vec::new();
         for s in &mut self.slots {
             let Some(vendor) = s.found.model.vendor else { continue };
@@ -399,10 +419,19 @@ impl Daemon {
             } else {
                 Some("other brands are off".to_string())
             };
+            let batch = host_batch(s, &duties);
             let (Some(why), Some(dev)) = (why, s.dev.as_mut()) else { continue };
+            // A hub with nothing to hand back to keeps these, as when the service stops.
+            // The others go back to their own control, which the brand's app may have
+            // taken already: they get nothing first.
+            let failsafe = match (dev.keeps_duty() && !batch.is_empty()).then(|| dev.set_duties(&batch)) {
+                Some(Ok(())) => "; its fans left at the failsafe duty".to_string(),
+                Some(Err(e)) => format!("; its fans not set to the failsafe duty, they keep the last one ({e:#})"),
+                None => String::new(),
+            };
             let released = match dev.release() {
-                Ok(()) => "handed back".to_string(),
-                Err(e) => format!("not handed back ({e:#})"),
+                Ok(()) => format!("handed back{failsafe}"),
+                Err(e) => format!("not handed back ({e:#}){failsafe}"),
             };
             notes.push(format!("{}: {why}; {released}", s.found.id));
             s.dev = None;
@@ -808,6 +837,26 @@ impl Daemon {
         };
     }
 
+    /// What every channel is left at without camless: the failsafe duty, or a fixed
+    /// curve's own.
+    fn safe_duties(&self) -> Vec<(String, Duty)> {
+        let failsafe = self.cfg.failsafe_duty;
+        let fixed: HashMap<String, u8> = self
+            .engine
+            .duties()
+            .iter()
+            .filter_map(|(c, d)| {
+                let curve = self.engine.device_curve(c)?;
+                Some((c.to_string(), curve.sensor.is_none().then_some(d.value()?)?))
+            })
+            .collect();
+        self.engine
+            .duties()
+            .into_iter()
+            .map(|(c, d)| (c.to_string(), if d == Duty::Unmanaged { d } else { Duty::Set(*fixed.get(c).unwrap_or(&failsafe)) }))
+            .collect()
+    }
+
     /// Leaves the devices in a state that is safe without camless running: host-driven
     /// fans at the failsafe duty (fixed ones at theirs), LCDs on their own screen.
     fn shutdown(&mut self) {
@@ -819,34 +868,16 @@ impl Daemon {
         }
         self.history.lock().unwrap_or_else(|e| e.into_inner()).finish();
         let failsafe = self.cfg.failsafe_duty;
-        let fixed: HashMap<String, u8> = self
-            .engine
-            .duties()
-            .iter()
-            .filter_map(|(c, d)| {
-                let curve = self.engine.device_curve(c)?;
-                Some((c.to_string(), curve.sensor.is_none().then_some(d.value()?)?))
-            })
-            .collect();
-        let duties: Vec<(String, Duty)> = self
-            .engine
-            .duties()
-            .into_iter()
-            .map(|(c, d)| (c.to_string(), if d == Duty::Unmanaged { d } else { Duty::Set(*fixed.get(c).unwrap_or(&failsafe)) }))
-            .collect();
+        let duties = self.safe_duties();
         let (mut set, mut handed) = (0, 0);
         for s in &mut self.slots {
+            let batch = host_batch(s, &duties);
             let Some(dev) = s.dev.as_mut() else { continue };
-            let batch: Vec<(&str, u8)> = duties
-                .iter()
-                .filter_map(|(c, d)| Some((local(&s.found.id, c)?, d.value()?)))
-                .filter(|(f, _)| !s.on_device.contains(*f) && s.info.fans.iter().any(|x| x.id == *f))
-                .collect();
             let sent = if !batch.is_empty() && dev.set_duties(&batch).is_ok() { batch.len() } else { 0 };
             // Another brand's hub goes back to its own control or the motherboard's,
             // and a motherboard header to the BIOS, as when camless lets go of them;
             // the failsafe duties stay if that fails.
-            if s.found.model.vendor.is_some() && dev.release().is_ok() {
+            if s.found.model.vendor.is_some() && dev.release().is_ok() && !dev.keeps_duty() {
                 handed += 1;
             } else {
                 set += sent;
