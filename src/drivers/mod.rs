@@ -351,6 +351,7 @@ pub fn allowed(model: &Model, devices: &Devices) -> bool {
 
 /// The devices inside the PC that the settings turn on.
 pub fn scan_host(devices: &Devices) -> Vec<Found> {
+    board::hand_back_abandoned();
     if devices.motherboard {
         board::found()
     } else {

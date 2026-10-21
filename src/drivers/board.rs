@@ -55,6 +55,14 @@ pub fn found() -> Vec<Found> {
     return Vec::new();
 }
 
+/// Gives back the headers a camless that stopped without handing them back had
+/// taken, whatever the settings say now: a header left at a duty does not speed up
+/// when it gets hot.
+pub fn hand_back_abandoned() {
+    #[cfg(target_os = "linux")]
+    os::hand_back_abandoned();
+}
+
 fn open(_api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
     #[cfg(target_os = "linux")]
     return Ok(Box::new(os::Board::open(found, os::board_name(found)?)?));
@@ -173,11 +181,29 @@ pub mod os {
         REFUSED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.contains(enable))
     }
 
-    /// The headers camless has taken, with the mode and duty they had, in a file: a
-    /// service that was killed or crashed gives them back to that when it starts
-    /// again, instead of taking its own manual mode for what they had. For this boot
-    /// only, as the BIOS sets the chip again when the computer starts.
+    /// The headers camless has taken, with the mode and duty they had and the camless
+    /// that took them, in a file. Once that camless is gone without handing them back,
+    /// as after a crash, the next one gives them back to that, instead of taking its
+    /// own manual mode for what they had. For this boot only, as the BIOS sets the
+    /// chip again when the computer starts.
     static TAKEN: Mutex<()> = Mutex::new(());
+
+    /// The headers of this process's open chips, by `pwmN_enable`.
+    static HELD: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+
+    fn held(enable: &Path) -> bool {
+        HELD.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.contains(enable))
+    }
+
+    fn hold(enable: &Path, on: bool) {
+        let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+        let held = held.get_or_insert_with(HashSet::new);
+        if on {
+            held.insert(enable.to_path_buf());
+        } else {
+            held.remove(enable);
+        }
+    }
 
     fn taken_file() -> PathBuf {
         camless_core::config::xdg_dir("XDG_STATE_HOME", ".local/state").join("camless").join("taken-fans")
@@ -189,9 +215,15 @@ pub mod os {
 
     type Before = (String, String);
 
-    /// The file's lines: the boot, then a header's `pwmN_enable`, its mode and its
-    /// duty, by tabs.
-    fn load(file: &Path) -> BTreeMap<PathBuf, Before> {
+    #[derive(Clone, PartialEq)]
+    struct Entry {
+        before: Before,
+        pid: u32,
+    }
+
+    /// The file's lines: the boot, then a header's `pwmN_enable`, its mode, its duty
+    /// and the pid of the camless that took it, by tabs.
+    fn load(file: &Path) -> BTreeMap<PathBuf, Entry> {
         let Ok(text) = fs::read_to_string(file) else { return BTreeMap::new() };
         let mut lines = text.lines();
         if lines.next() != Some(boot().as_str()) {
@@ -200,36 +232,81 @@ pub mod os {
         lines
             .filter_map(|l| {
                 let mut p = l.split('\t');
-                Some((PathBuf::from(p.next()?), (p.next()?.to_string(), p.next()?.to_string())))
+                let (enable, mode, duty) = (p.next()?, p.next()?, p.next()?);
+                let pid = p.next()?.parse().ok()?;
+                Some((PathBuf::from(enable), Entry { before: (mode.to_string(), duty.to_string()), pid }))
             })
             .collect()
     }
 
-    fn saved(file: &Path) -> BTreeMap<PathBuf, Before> {
-        let _lock = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
-        load(file)
-    }
-
-    fn store(file: &Path, change: impl FnOnce(&mut BTreeMap<PathBuf, Before>)) -> Result<()> {
+    /// Changes the file, one change at a time in this process.
+    fn with_taken<T>(file: &Path, change: impl FnOnce(&mut BTreeMap<PathBuf, Entry>) -> T) -> Result<T> {
         let _lock = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = load(file);
-        change(&mut all);
+        let old = all.clone();
+        let out = change(&mut all);
+        if all == old {
+            return Ok(out);
+        }
         let what = || format!("writing {}", file.display());
         if all.is_empty() {
             return match fs::remove_file(file) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(what),
-                _ => Ok(()),
+                _ => Ok(out),
             };
         }
         let mut text = boot() + "\n";
-        for (enable, (mode, pwm)) in &all {
-            text += &format!("{}\t{mode}\t{pwm}\n", enable.display());
+        for (enable, e) in &all {
+            text += &format!("{}\t{}\t{}\t{}\n", enable.display(), e.before.0, e.before.1, e.pid);
         }
         if let Some(dir) = file.parent() {
             fs::create_dir_all(dir).with_context(what)?;
         }
         let new = file.with_extension("new");
-        fs::write(&new, text).and_then(|()| fs::rename(&new, file)).with_context(what)
+        fs::write(&new, text).and_then(|()| fs::rename(&new, file)).with_context(what)?;
+        Ok(out)
+    }
+
+    /// Whether nobody has a header camless took: the camless that took it is gone,
+    /// or is this one, which has the chip closed.
+    fn abandoned(enable: &Path, pid: u32) -> bool {
+        if pid == std::process::id() {
+            return !held(enable);
+        }
+        read(&Path::new("/proc").join(pid.to_string()).join("comm")).as_deref() != Some("camless")
+    }
+
+    /// `pwmN` of `pwmN_enable`.
+    fn pwm_of(enable: &Path) -> PathBuf {
+        let name = enable.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        enable.with_file_name(name.trim_end_matches("_enable"))
+    }
+
+    /// Gives back the headers nobody has: a crashed camless's, and this one's that a
+    /// chip it closed did not take back. Whatever the settings say now: a header
+    /// left at a duty does not speed up when it gets hot.
+    pub fn hand_back_abandoned() {
+        hand_back_abandoned_in(&taken_file());
+    }
+
+    fn hand_back_abandoned_in(file: &Path) {
+        let _ = with_taken(file, |all| {
+            all.retain(|enable, e| !abandoned(enable, e.pid) || restore(enable, &pwm_of(enable), &e.before).is_err());
+        });
+    }
+
+    /// Puts back the mode a header had, its duty too if that was manual. A chip that
+    /// refuses the mode gets automatic (2), then full speed (0), as Nexus falls back.
+    /// One that takes no mode at all gets the full duty, the last safe thing left.
+    fn restore(enable: &Path, pwm: &Path, (mode, duty): &Before) -> Result<()> {
+        if mode == "1" {
+            let _ = write(pwm, duty);
+        }
+        let r = write(enable, mode).or_else(|_| write(enable, "2")).or_else(|_| write(enable, "0"));
+        if r.is_err() {
+            let _ = write(pwm, "255");
+        }
+        r
     }
 
     struct Header {
@@ -278,19 +355,17 @@ pub mod os {
         fs::OpenOptions::new().write(true).open(path).is_ok()
     }
 
-    /// Hands one header back to the BIOS: the mode it had, its duty too if that was
-    /// manual. A chip that refuses the mode gets automatic (2), then full speed (0),
-    /// as Nexus falls back. The header stays camless's until that works.
+    /// Hands one header back to the BIOS, as `restore` does. The header stays
+    /// camless's until that works.
     fn hand_back(h: &mut Header, taken: &Path) -> Result<()> {
-        let Some((enable, pwm)) = h.before.clone() else { return Ok(()) };
-        if enable == "1" {
-            let _ = write(&h.pwm, &pwm);
-        }
-        write(&h.enable, &enable).or_else(|_| write(&h.enable, "2")).or_else(|_| write(&h.enable, "0"))?;
+        let Some(before) = h.before.clone() else { return Ok(()) };
+        restore(&h.enable, &h.pwm, &before)?;
         h.before = None;
-        store(taken, |all| {
+        // A line left behind gives the header the same mode again later: no harm.
+        let _ = with_taken(taken, |all| {
             all.remove(&h.enable);
-        })
+        });
+        Ok(())
     }
 
     impl Board {
@@ -300,7 +375,7 @@ pub mod os {
 
         fn open_at(found: &Found, name: String, taken: PathBuf) -> Result<Board> {
             let dir = dir(found);
-            let mut headers = Vec::new();
+            let mut headers: Vec<Header> = Vec::new();
             let mut locked = None;
             for n in self::headers(&dir) {
                 let (pwm, enable) = (dir.join(format!("pwm{n}")), dir.join(format!("pwm{n}_enable")));
@@ -326,20 +401,41 @@ pub mod os {
             if headers.is_empty() {
                 match locked {
                     Some(f) => bail!(
-                        "no write access to {}; install.sh's udev rules give it (/etc/udev/rules.d/72-camless-fans.rules), and apply after a restart",
+                        "no write access to {}; install.sh's udev rules give it (/etc/udev/rules.d/72-camless-fans.rules), and apply after a restart, unless the driver does not let it be set",
                         f.display()
                     ),
                     None => bail!("the {name} has no header camless can set"),
                 }
             }
-            let mut board = Board { model: found.model, name, headers, taken };
-            // Headers a service that stopped without handing them back had taken.
-            let saved = saved(&board.taken);
-            for h in &mut board.headers {
-                h.before = saved.get(&h.enable).cloned();
+            // Headers a camless that stopped without handing them back had taken go
+            // back; one that does not stays this one's, to try again. Another camless
+            // running keeps its own.
+            hand_back_abandoned_in(&taken);
+            let me = std::process::id();
+            let others = with_taken(&taken, |all| {
+                let mut others = HashSet::new();
+                for h in &mut headers {
+                    match all.get_mut(&h.enable) {
+                        Some(e) if abandoned(&h.enable, e.pid) => {
+                            e.pid = me;
+                            h.before = Some(e.before.clone());
+                        }
+                        Some(_) => {
+                            others.insert(h.enable.clone());
+                        }
+                        None => {}
+                    }
+                }
+                others
+            })?;
+            headers.retain(|h| !others.contains(&h.enable));
+            if headers.is_empty() {
+                bail!("another camless that runs has the {name}'s headers");
             }
-            board.release()?;
-            Ok(board)
+            for h in &headers {
+                hold(&h.enable, true);
+            }
+            Ok(Board { model: found.model, name, headers, taken })
         }
     }
 
@@ -376,21 +472,31 @@ pub mod os {
         fn set_duties(&mut self, duties: &[(&str, u8)]) -> Result<()> {
             for &(fan, d) in duties {
                 let Some(h) = self.headers.iter_mut().find(|h| h.id == fan) else { bail!("no fan {fan:?} on the {}", self.name) };
-                if h.before.is_none() {
+                let take = h.before.is_none();
+                if take {
                     let before = (read(&h.enable).context("reading the header's mode")?, read(&h.pwm).unwrap_or_default());
                     // Written down first: a header camless could not give back after a
                     // crash would keep its last duty however hot it gets.
-                    store(&self.taken, |all| {
-                        all.insert(h.enable.clone(), before.clone());
+                    let entry = Entry { before: before.clone(), pid: std::process::id() };
+                    with_taken(&self.taken, |all| {
+                        all.insert(h.enable.clone(), entry);
                     })?;
                     h.before = Some(before);
-                    write(&h.enable, "1")?;
+                }
+                // Manual mode when camless takes the header, and again if the chip went
+                // back to its own, as after a resume.
+                if take || read(&h.enable).as_deref() != Some("1") {
+                    let wrote = write(&h.enable, "1");
                     // A chip can refuse manual mode on a header, or the driver put it back.
                     let now = read(&h.enable).unwrap_or_default();
-                    if now != "1" {
+                    if wrote.is_err() || now != "1" {
                         REFUSED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashSet::new).insert(h.enable.clone());
                         let _ = hand_back(h, &self.taken);
-                        bail!("the chip keeps pwm{}_enable at {now}, not 1: it does not let camless set this header, which is left out from now on", h.n);
+                        let why = match wrote {
+                            Err(e) => format!("{e:#}"),
+                            Ok(()) => format!("the chip keeps pwm{}_enable at {now}, not 1", h.n),
+                        };
+                        bail!("{why}: it does not let camless set this header, which is left out from now on");
                     }
                 }
                 write(&h.pwm, &raw(d).to_string())?;
@@ -423,6 +529,10 @@ pub mod os {
     impl Drop for Board {
         fn drop(&mut self) {
             let _ = self.release();
+            // One that did not go back is nobody's now: the next scan tries again.
+            for h in &self.headers {
+                hold(&h.enable, false);
+            }
         }
     }
 
@@ -493,6 +603,9 @@ pub mod os {
                 ]
             );
             assert_eq!(headers(&a), [1, 2, 7]);
+            let f71 = Board::open_at(&found[0], "Motherboard".into(), root.join("taken-fans")).unwrap();
+            assert_eq!(f71.describe().fans.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["fan1", "fan3"]);
+            drop(f71);
             fs::remove_dir_all(&root).unwrap();
         }
 
@@ -554,18 +667,76 @@ pub mod os {
             let taken = root.join("state").join("taken-fans");
             let mut b = Board::open_at(&found_at(&dir), "Motherboard".into(), taken.clone()).unwrap();
             b.set_duties(&[("fan2", 30)]).unwrap();
-            // Killed: no Drop, the header stays manual.
+            // Killed: no Drop, the header stays manual, and the camless that took it
+            // is gone.
             std::mem::forget(b);
             assert_eq!(read(&dir.join("pwm2_enable")).unwrap(), "1");
-            assert!(fs::read_to_string(&taken).unwrap().contains("pwm2_enable\t5\t128"));
+            let text = fs::read_to_string(&taken).unwrap();
+            let me = format!("pwm2_enable\t5\t128\t{}\n", std::process::id());
+            assert!(text.contains(&me));
+            fs::write(&taken, text.replace(&me, "pwm2_enable\t5\t128\t99999999\n")).unwrap();
+            hold(&dir.join("pwm2_enable"), false);
             let b = Board::open_at(&found_at(&dir), "Motherboard".into(), taken.clone()).unwrap();
             assert_eq!(read(&dir.join("pwm2_enable")).unwrap(), "5");
             assert!(!taken.exists());
             drop(b);
             // From another boot, the file says nothing: the BIOS set the chip again.
             fs::create_dir_all(taken.parent().unwrap()).unwrap();
-            fs::write(&taken, format!("another boot\n{}\t2\t0\n", dir.join("pwm1_enable").display())).unwrap();
+            fs::write(&taken, format!("another boot\n{}\t2\t0\t99999999\n", dir.join("pwm1_enable").display())).unwrap();
             let _b = Board::open_at(&found_at(&dir), "Motherboard".into(), taken.clone()).unwrap();
+            assert_eq!(read(&dir.join("pwm1_enable")).unwrap(), "5");
+            fs::remove_dir_all(&root).unwrap();
+        }
+
+        #[test]
+        fn a_closed_chip_that_did_not_take_a_header_back_gets_it_at_the_next_scan() {
+            let root = tmp("closed");
+            let dir = chip(&root, "hwmon2", "nct6798", "nct6775.656", "platform", &[1]);
+            let taken = root.join("taken-fans");
+            let mut b = Board::open_at(&found_at(&dir), "Motherboard".into(), taken.clone()).unwrap();
+            b.set_duties(&[("fan1", 20)]).unwrap();
+            fs::remove_file(dir.join("pwm1_enable")).unwrap();
+            fs::create_dir(dir.join("pwm1_enable")).unwrap();
+            drop(b);
+            // No mode went in: the full duty, the last safe thing left.
+            assert_eq!(read(&dir.join("pwm1")).unwrap(), "255");
+            assert!(taken.exists());
+            fs::remove_dir(dir.join("pwm1_enable")).unwrap();
+            fs::write(dir.join("pwm1_enable"), "1\n").unwrap();
+            hand_back_abandoned_in(&taken);
+            assert_eq!(read(&dir.join("pwm1_enable")).unwrap(), "5");
+            assert!(!taken.exists());
+            fs::remove_dir_all(&root).unwrap();
+        }
+
+        #[test]
+        fn a_header_the_chip_does_not_keep_in_manual_mode_is_left_out() {
+            let root = tmp("keeps");
+            let dir = chip(&root, "hwmon2", "nct6798", "nct6775.656", "platform", &[1, 2]);
+            // Reads back empty, whatever camless writes.
+            fs::remove_file(dir.join("pwm1_enable")).unwrap();
+            symlink("/dev/null", dir.join("pwm1_enable")).unwrap();
+            let mut b = Board::open_at(&found_at(&dir), "Motherboard".into(), root.join("taken-fans")).unwrap();
+            let e = b.set_duties(&[("fan1", 50)]).unwrap_err();
+            assert!(format!("{e:#}").contains("left out"), "{e:#}");
+            drop(b);
+            let b = Board::open_at(&found_at(&dir), "Motherboard".into(), root.join("taken-fans")).unwrap();
+            assert_eq!(b.describe().fans.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["fan2"]);
+            drop(b);
+            fs::remove_dir_all(&root).unwrap();
+        }
+
+        #[test]
+        fn a_chip_that_went_back_to_its_own_mode_is_set_manual_again() {
+            let root = tmp("resume");
+            let dir = chip(&root, "hwmon2", "nct6798", "nct6775.656", "platform", &[1]);
+            let mut b = Board::open_at(&found_at(&dir), "Motherboard".into(), root.join("taken-fans")).unwrap();
+            b.set_duties(&[("fan1", 50)]).unwrap();
+            fs::write(dir.join("pwm1_enable"), "5\n").unwrap();
+            b.set_duties(&[("fan1", 60)]).unwrap();
+            assert_eq!(read(&dir.join("pwm1_enable")).unwrap(), "1");
+            drop(b);
+            // What it had before camless first took it, not the resume's mode.
             assert_eq!(read(&dir.join("pwm1_enable")).unwrap(), "5");
             fs::remove_dir_all(&root).unwrap();
         }
@@ -593,16 +764,19 @@ mod tests {
     fn the_fan_rule_names_the_chips_and_two_files_per_header() {
         let rules = include_str!("../../linux/72-camless-fans.rules");
         let lines: Vec<&str> = rules.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
-        assert_eq!(lines.len(), 1);
-        let line = lines[0];
-        assert!(line.contains(r#"SUBSYSTEM=="hwmon""#));
-        let names = line.split(r#"ATTRS{name}==""#).nth(1).unwrap().split('"').next().unwrap();
-        assert_eq!(names, "nct6*|w83*|it8*|f71*|f8*");
-        #[cfg(target_os = "linux")]
-        assert_eq!(names.split('|').map(|n| n.trim_end_matches('*')).collect::<Vec<_>>(), os::CHIPS);
-        let files: Vec<&str> = line.split_whitespace().filter(|w| w.starts_with("/sys%p/")).collect();
-        assert_eq!(files, ["/sys%p/pwm[1-9]", "/sys%p/pwm[1-9]_enable", "/sys%p/device/pwm[1-9]", "/sys%p/device/pwm[1-9]_enable;"]);
-        assert!(line.contains("chown @USER@ $$f"));
+        // The chip's own files, and its platform device's on hwmon's old interface.
+        assert_eq!(lines.len(), 2);
+        for (line, attr, dir) in [(lines[0], "ATTR{name}", "/sys%p/"), (lines[1], "ATTRS{name}", "/sys%p/device/")] {
+            assert!(line.starts_with(r#"ACTION=="add|change", SUBSYSTEM=="hwmon", "#), "{line}");
+            assert_eq!(line.contains(r#"SUBSYSTEMS=="platform""#), attr == "ATTRS{name}");
+            let names = line.split(&format!("{attr}==\"")).nth(1).unwrap().split('"').next().unwrap();
+            assert_eq!(names, "nct6*|w83*|it8*|f71*|f8*");
+            #[cfg(target_os = "linux")]
+            assert_eq!(names.split('|').map(|n| n.trim_end_matches('*')).collect::<Vec<_>>(), os::CHIPS);
+            let files: Vec<&str> = line.split_whitespace().filter(|w| w.starts_with("/sys%p/")).collect();
+            assert_eq!(files, [format!("{dir}pwm[1-9]"), format!("{dir}pwm[1-9]_enable;")]);
+            assert!(line.contains("chown @USER@ $$f"));
+        }
     }
 
     #[test]
