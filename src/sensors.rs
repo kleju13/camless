@@ -1,4 +1,5 @@
-//! Host sensors without CAM: GPU through NVML, and on Linux AMD GPUs through amdgpu;
+//! Host sensors without CAM: GPU through NVML, other cards through amdgpu on Linux
+//! and on Windows through what Windows keeps for Task Manager;
 //! CPU temperature and power through PawnIO on Windows, the one LibreHardwareMonitor
 //! and FanControl already install, and through hwmon and RAPL on Linux; CPU load and
 //! memory from the system. [`os`] holds what differs.
@@ -59,15 +60,21 @@ enum Gpu {
     Nvidia(Nvml),
     #[cfg(target_os = "linux")]
     Amd(os::AmdGpu),
+    /// Any card NVML does not read, AMD's and Intel's: temperature and load, no power.
+    #[cfg(windows)]
+    Wddm(os::WddmGpu),
 }
 
 impl Gpu {
     fn open() -> Result<Gpu> {
+        let nvml = match Nvml::open() {
+            Ok(n) => return Ok(Gpu::Nvidia(n)),
+            Err(e) => e,
+        };
         #[cfg(target_os = "linux")]
-        if let Err(e) = Nvml::open() {
-            return os::AmdGpu::open().map(Gpu::Amd).map_err(|amd| anyhow::anyhow!("{e:#}; {amd:#}"));
-        }
-        Nvml::open().map(Gpu::Nvidia)
+        return os::AmdGpu::open().map(Gpu::Amd).map_err(|amd| anyhow::anyhow!("{nvml:#}; {amd:#}"));
+        #[cfg(windows)]
+        return os::WddmGpu::open().map(Gpu::Wddm).map_err(|wddm| anyhow::anyhow!("{nvml:#}; {wddm:#}"));
     }
 
     fn name(&self) -> Option<String> {
@@ -75,10 +82,12 @@ impl Gpu {
             Gpu::Nvidia(n) => n.name().ok(),
             #[cfg(target_os = "linux")]
             Gpu::Amd(a) => Some(a.name.clone()),
+            #[cfg(windows)]
+            Gpu::Wddm(w) => Some(w.name.clone()),
         }
     }
 
-    fn read(&self, r: &mut Readings) {
+    fn read(&mut self, r: &mut Readings) {
         match self {
             Gpu::Nvidia(n) => {
                 r.gpu_temp_c = n.temperature().ok();
@@ -91,6 +100,11 @@ impl Gpu {
                 r.gpu_load_pct = a.utilization();
                 r.gpu_power_w = a.power_w();
             }
+            #[cfg(windows)]
+            Gpu::Wddm(w) => {
+                r.gpu_temp_c = w.temperature();
+                r.gpu_load_pct = w.utilization();
+            }
         }
     }
 }
@@ -100,6 +114,8 @@ pub struct Sensors {
     pub gpu_name: Option<String>,
     /// Why CPU temperature and power are off, when they are.
     pub cpu_error: Option<String>,
+    /// Why there is no GPU to read, when there is none.
+    pub gpu_error: Option<String>,
     gpu: Option<Gpu>,
     cpu: Option<os::Cpu>,
     times: Option<(u64, u64)>,
@@ -110,7 +126,13 @@ impl Sensors {
     /// without it, or without admin rights, CPU temperature and power are absent on
     /// Windows. Linux reads hwmon, which needs neither.
     pub fn open(pawnio_module: std::result::Result<Vec<u8>, String>) -> Sensors {
-        let gpu = Gpu::open().map_err(|e| eprintln!("gpu sensors off: {e:#}")).ok();
+        let (gpu, gpu_error) = match Gpu::open() {
+            Ok(gpu) => (Some(gpu), None),
+            Err(e) => {
+                eprintln!("gpu sensors off: {e:#}");
+                (None, Some(format!("{e:#}")))
+            }
+        };
         let (cpu, cpu_error) = match os::cpu(pawnio_module) {
             Ok(cpu) => (Some(cpu), None),
             Err(e) => {
@@ -119,7 +141,7 @@ impl Sensors {
             }
         };
         let gpu_name = gpu.as_ref().and_then(Gpu::name);
-        Sensors { cpu_name: os::cpu_name().unwrap_or_else(|| "CPU".into()), gpu_name, cpu_error, gpu, cpu, times: None }
+        Sensors { cpu_name: os::cpu_name().unwrap_or_else(|| "CPU".into()), gpu_name, cpu_error, gpu_error, gpu, cpu, times: None }
     }
 
     pub fn has_cpu_temp(&self) -> bool {
@@ -128,7 +150,7 @@ impl Sensors {
 
     pub fn read(&mut self) -> Readings {
         let mut r = Readings::default();
-        if let Some(g) = &self.gpu {
+        if let Some(g) = &mut self.gpu {
             g.read(&mut r);
         }
         if let Some(c) = &mut self.cpu {

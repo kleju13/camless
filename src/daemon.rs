@@ -218,7 +218,7 @@ impl Daemon {
             let why = if sensor == "cpu.temp" && !self.sensors.has_cpu_temp() {
                 crate::sensors::NO_CPU_TEMP
             } else if sensor.starts_with("gpu.") && !is_host {
-                if cfg!(windows) { "no NVIDIA GPU sensors" } else { "no NVIDIA or AMD GPU sensors" }
+                if cfg!(windows) { "no GPU sensors" } else { "no NVIDIA or AMD GPU sensors" }
             } else {
                 continue;
             };
@@ -818,6 +818,7 @@ impl Daemon {
                 pid: std::process::id(),
                 elevated: self.elevated,
                 cpu_sensor_error: self.sensors.cpu_error.clone(),
+                gpu_sensor_error: self.sensors.gpu_error.clone(),
                 fps_error: if self.cfg.games.enabled { self.games.error() } else { None },
             }),
             game: self.games.now(),

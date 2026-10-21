@@ -102,6 +102,8 @@ The app checks for a new release each time it starts and shows *Update available
 
 CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed `AMDFamily17.bin` in `%LOCALAPPDATA%\Programs\camless`. Without them, curves on CPU temperature hold the failsafe duty. The Kraken's liquid temperature needs none of this, so new curves use it by default.
 
+GPU temperature, load and power come from NVIDIA's driver (NVML) on an NVIDIA card. Any other card, such as AMD's or Intel's, gives the temperature and load that Task Manager shows, which Windows keeps for every card, and no power.
+
 ### Linux
 
 > [!NOTE]

@@ -26,6 +26,8 @@ miniz_oxide = "0.8"
 [target.'cfg(windows)'.dependencies]
 hidapi = { version = "2", default-features = false, features = ["windows-native"] }
 windows-sys = { version = "0.61", features = [
+    # Any graphics card's temperature and load, as Task Manager reads them.
+    "Wdk_Graphics_Direct3D",
     # HYTE's and iBUYPOWER's hubs: serial ports, found by their USB ids.
     "Win32_Devices_Communication",
     "Win32_Devices_DeviceAndDriverInstallation",
