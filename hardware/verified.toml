@@ -21,6 +21,12 @@ source = "the maintainer's hardware"
 
 [[device]]
 usb = "1e71:2022"
-name = "Control Hub"
+name = "Control Hub (the one in the H9 Flow RGB+)"
 checked = ["fans", "lighting"]
 source = "the maintainer's hardware"
+
+[[device]]
+usb = "1e71:300e"
+name = "Kraken 2023 (Kraken Base)"
+checked = ["pump", "fans"]
+source = "https://github.com/kleju13/camless/issues/29"

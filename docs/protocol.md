@@ -52,7 +52,8 @@ Sources:
 - camless asks: `30 01` → `31 01` has the width and height, u16 LE, at `[20]` and `[22]` (Nexus `DecodeLcdInfo`, from its Elite V2). If the cooler does not answer, 240×240.
 - LED channels: as many as `21 03` reports at `[14]`, at most two, as ring (`0b001`) and RGB header (`0b010`). None if it reports none. The table can come back empty right after reporting starts, so camless asks up to three times, as Nexus does. Each channel goes by the name of its first accessory, as in Nexus.
 
-**Kraken X3, Z3, 2023 and Elite 2023** (`1e71:2007`, `2014`, `3008`, `300e`, `300c`; not verified)
+**Kraken X3, Z3, 2023 and Elite 2023** (`1e71:2007`, `2014`, `3008`, `300e`, `300c`; the Kraken 2023's pump and fan curves verified, the rest not)
+- Verified on a Kraken 2023 (`300e`) by its owner, firmware not reported ([#29](https://github.com/kleju13/camless/issues/29)): the pump and fan speeds follow the curves stored with `72 01 01 00` and `72 02 01 01`. The owner says the LCD reacts to the app's settings, but did not say whether camless's own pictures reach it, which needs firmware 2.
 - Init, firmware, status layout and the 40-point curves are the Elite V2's. The same safety floor goes under every table.
 - Status: the Z3 and the 2023 models answer `74 01`. The X3 does not: the Linux driver never sends it one, and reads the `75` reports it sends every 0.5 s.
 - Curves: the X3 and Z3 take `72 01 00 00` (pump) and `72 02 00 00` (fan, Z3 only). The Kraken 2023 and Elite 2023 take the Elite V2's `72 01 01 00` and `72 02 01 01`.

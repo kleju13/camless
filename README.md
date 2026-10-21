@@ -31,10 +31,11 @@ camless is not affiliated with or endorsed by NZXT. NZXT, CAM and Kraken are tra
 
 ## Devices
 
-| Device | USB id | Tested on the maintainer's hardware, on Windows |
-|---|---|---|
-| Kraken Elite 2024 (Kraken Elite V2) | `1e71:3012` | pump and fan curves, lighting, LCD |
-| Control Hub (H9 Flow RGB+ and other recent cases) | `1e71:2022` | fan duties, lighting |
+| Device | USB id | Tested on Windows | Tested by |
+|---|---|---|---|
+| Kraken Elite 2024 (Kraken Elite V2) | `1e71:3012` | pump and fan curves, lighting, LCD | [@kleju13](https://github.com/kleju13) |
+| Control Hub, the one in the H9 Flow RGB+ | `1e71:2022` | fan duties, lighting | [@kleju13](https://github.com/kleju13) |
+| Kraken 2023 (Kraken Base) | `1e71:300e` | pump and fan curves; the LCD on firmware 2 is not tested yet | [@dominixik](https://github.com/dominixik) |
 
 These follow liquidctl, the Linux driver and Nexus, and nobody has run camless on them yet:
 
@@ -42,7 +43,6 @@ These follow liquidctl, the Linux driver and Nexus, and nobody has run camless o
 |---|---|---|
 | Kraken Plus 2024 | `1e71:3014` | pump and fan curves, lighting the cooler reports, LCD at the size it reports |
 | Kraken Elite 2023 | `1e71:300c` | pump and fan curves; LCD from firmware 2 |
-| Kraken 2023 (Kraken Base) | `1e71:300e` | pump and fan curves; LCD on firmware 2 |
 | Kraken Z3 (Z53, Z63, Z73) | `1e71:3008` | pump and fan curves, RGB header; the LCD shows only its own display |
 | Kraken X3 (X53, X63, X73) | `1e71:2007`, `1e71:2014` | pump curve, pump ring, logo and RGB header |
 
