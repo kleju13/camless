@@ -19,9 +19,9 @@
 //! cooler. When camless lets go, the LCD's pump gets the duty it ran at before
 //! camless set it, estimated from its rpm at open with Nexus's table, as Nexus does,
 //! and the LCD's fans 50 %, about the 1320 rpm the liquidctl guide finds they start
-//! at. The Trinity keeps the last duty, as in Nexus, which sends it nothing: the
-//! failsafe duty when the service stops. If camless crashes, the last duty stays
-//! until the cooler loses power.
+//! at. Nexus sends the Trinity nothing; camless leaves it at the failsafe duty, as it
+//! does when the service stops. If camless crashes, the last duty stays until the
+//! cooler loses power.
 //!
 //! The LCD's screen needs an H.264 stream, which camless does not send; liquidctl
 //! finds that fans, pump and status work without it. camless sets no lighting here.
