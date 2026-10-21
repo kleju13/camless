@@ -223,6 +223,10 @@ impl Driver for CommanderPro {
     fn set_lighting(&mut self, light: &str, _: &Lighting) -> Result<()> {
         bail!("no light {light:?} on the {}: camless sets no lighting on it", self.model.name)
     }
+
+    fn keeps_duty(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
