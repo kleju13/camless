@@ -364,6 +364,12 @@ pub mod os {
         fs::OpenOptions::new().write(true).open(path).is_ok()
     }
 
+    /// Leaves a header out until the service starts again, and hands it back.
+    fn refuse(h: &mut Header, taken: &Path) {
+        REFUSED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashSet::new).insert(h.enable.clone());
+        let _ = hand_back(h, taken);
+    }
+
     /// Hands one header back to the BIOS, as `restore` does. The header stays
     /// camless's until that works.
     fn hand_back(h: &mut Header, taken: &Path) -> Result<()> {
@@ -425,7 +431,7 @@ pub mod os {
                 }
             })?;
             if adopted.is_none() {
-                bail!("another camless that runs sets the motherboard's headers");
+                bail!("another camless that runs sets these fans");
             }
             for h in &headers {
                 hold(&h.enable, true);
@@ -478,7 +484,7 @@ pub mod os {
                     with_taken(&self.taken, |all| {
                         all.insert(h.enable.clone(), entry);
                     })?
-                    .context("another camless that runs sets the motherboard's headers")?;
+                    .context("another camless that runs sets these fans")?;
                     h.before = Some(before);
                 }
                 // Manual mode when camless takes the header, and again if the chip went
@@ -488,16 +494,20 @@ pub mod os {
                     // A chip can refuse manual mode on a header, or the driver put it back.
                     let now = read(&h.enable).unwrap_or_default();
                     if wrote.is_err() || now != "1" {
-                        REFUSED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashSet::new).insert(h.enable.clone());
-                        let _ = hand_back(h, &self.taken);
                         let why = match wrote {
                             Err(e) => format!("{e:#}"),
                             Ok(()) => format!("the chip keeps pwm{}_enable at {now}, not 1", h.n),
                         };
+                        refuse(h, &self.taken);
                         bail!("{why}: it does not let camless set this header, which is left out from now on");
                     }
                 }
-                write(&h.pwm, &raw(d).to_string())?;
+                // A duty the driver does not take, as on a card whose fans take a curve
+                // instead, leaves the header out too.
+                if let Err(e) = write(&h.pwm, &raw(d).to_string()) {
+                    refuse(h, &self.taken);
+                    bail!("{e:#}: the header is left out from now on");
+                }
             }
             Ok(())
         }
