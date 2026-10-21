@@ -27,7 +27,7 @@ stage=$root/dist/linux/camless
 rm -rf "$root/dist/linux"
 mkdir -p "$stage"
 cp "$target/camless" "$target/camless-gui" "$stage/"
-cp "$root/linux/install.sh" "$root/linux/uninstall.sh" "$root/linux/71-camless.rules" \
+cp "$root/linux/install.sh" "$root/linux/uninstall.sh" "$root/linux/71-camless.rules" "$root/linux/72-camless-fans.rules" \
   "$root/linux/camless.service" "$root/linux/camless.desktop" "$root/linux/camless.png" "$stage/"
 cp "$root/LICENSE" "$stage/"
 chmod 755 "$stage/camless" "$stage/camless-gui" "$stage/install.sh" "$stage/uninstall.sh"

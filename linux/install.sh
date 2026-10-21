@@ -24,7 +24,16 @@ bin=${CAMLESS_BIN_DIR:-$HOME/.local/bin}
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 config=${XDG_CONFIG_HOME:-$HOME/.config}
 rules=/etc/udev/rules.d/71-camless.rules
+fan_rules=/etc/udev/rules.d/72-camless-fans.rules
 me=$(id -u)
+user=$(id -un)
+
+# The name goes into a udev rule's shell command.
+case $user in
+  *[!A-Za-z0-9._-]*|-*)
+    echo "camless cannot be installed for a user named $user: only letters, digits, . _ and - fit in its udev rule." >&2
+    exit 1 ;;
+esac
 
 # The folders go into the menu entry and the service, where these characters would
 # mean something else.
@@ -55,26 +64,30 @@ cp "$here/uninstall.sh" "$data/camless/uninstall.sh"
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$data/applications" || true
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t "$data/icons/hicolor" || true
 
-# The udev rules, when they are new or changed. udev applies them to the devices
-# plugged in now too, though liquidctl finds that a hidraw node can keep its old
-# rights until the device is plugged in again or the PC restarts. Run as root, with
-# the rules file and where it goes.
-apply='install -D -m 644 "$1" "$2" || exit 1
-if ! { udevadm control --reload && udevadm trigger --action=change --subsystem-match=hidraw --subsystem-match=usb --subsystem-match=tty; }; then
+# The udev rules, when they are new or changed: the devices for the user at the
+# desk, and the motherboard's fan headers for this user. udev applies them to the
+# devices plugged in now too, though liquidctl finds that a hidraw node can keep its
+# old rights until the device is plugged in again or the PC restarts. Run as root,
+# with each rules file and where it goes.
+fans=$(mktemp)
+sed "s|@USER@|$user|g" "$here/72-camless-fans.rules" > "$fans"
+apply='while [ $# -ge 2 ]; do install -D -m 644 "$1" "$2" || exit 1; shift 2; done
+if ! { udevadm control --reload && udevadm trigger --action=change --subsystem-match=hidraw --subsystem-match=usb --subsystem-match=tty --subsystem-match=hwmon; }; then
   echo "udev did not reload its rules; they apply after a restart, or when the device is plugged in again." >&2
 fi'
-if ! cmp -s "$here/71-camless.rules" "$rules"; then
+if ! cmp -s "$here/71-camless.rules" "$rules" || ! cmp -s "$fans" "$fan_rules"; then
   if $update; then
     # No terminal to ask in: pkexec asks through the desktop, if it is there.
-    if ! { command -v pkexec >/dev/null 2>&1 && pkexec sh -c "$apply" sh "$here/71-camless.rules" "$rules"; }; then
+    if ! { command -v pkexec >/dev/null 2>&1 && pkexec sh -c "$apply" sh "$here/71-camless.rules" "$rules" "$fans" "$fan_rules"; }; then
       echo "The udev rules changed and were not installed. Run install.sh from the download to install them." >&2
     fi
   else
-    echo "Installing the udev rules in $rules; sudo asks for your password."
-    sudo sh -c "$apply" sh "$here/71-camless.rules" "$rules"
+    echo "Installing the udev rules in $rules and $fan_rules; sudo asks for your password."
+    sudo sh -c "$apply" sh "$here/71-camless.rules" "$rules" "$fans" "$fan_rules"
     echo "If camless cannot open a device yet, plug it in again or restart."
   fi
 fi
+rm -f "$fans"
 
 # The service the app started outside systemd: this user's `camless run` processes
 # other than the systemd service's. One started by hand in a terminal counts too, as

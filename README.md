@@ -68,6 +68,8 @@ Other brands' fan hubs and LED controllers, off unless you turn on *Settings →
 | HYTE Nexus Portal NP50 | `3402:0901` | the FP12 fans and the 4-pin header, and the lighting of each module and the logo |
 | iBUYPOWER MiniHub | `3402:0900` | duties and speeds on the two fan ports, and the four ARGB ports |
 
+On Linux, camless also sets the motherboard's fan headers, experimental and off unless you turn on *Settings → Devices → Motherboard fans*: a CPU fan, case fans, or the pump of an AIO without software on a header. The BIOS keeps every header no curve takes, and gets each one back when camless stops ([how it works](docs/how-it-works.md#motherboard-fans)). Windows needs the fan chip's registers, which camless does not drive yet.
+
 [hardware/verified.toml](hardware/verified.toml) lists the hardware camless was reported working on. With any other device camless drives, the app shows *Unverified hardware* in the sidebar, or *Experimental hardware* for the devices above. *It works* or *Something is wrong* there opens a GitHub issue with a hardware report filled in. Once you submit it there, *I submitted it* hides the prompt for that setup, and a works report adds the device to the list.
 
 The app lists other NZXT devices as "no driver yet". If you have one, *Settings → Devices → Create report* opens a GitHub issue with what a driver needs filled in, and shows you all of it first. A driver is one Rust file, and [CONTRIBUTING.md](CONTRIBUTING.md) shows how to write one.
@@ -101,14 +103,14 @@ It runs on x64 with glibc 2.34 or later and WebKitGTK 4.1: Ubuntu 22.04, Debian 
    tar -xzf camless-linux-x86_64.tar.gz
    ./camless/install.sh
    ```
-2. `install.sh` puts `camless` and `camless-gui` in `~/.local/bin`, adds camless to your desktop's menu, and runs the service as a systemd user service that starts when you log in. It also installs udev rules, `/etc/udev/rules.d/71-camless.rules`. They let whoever is logged in at the computer open the devices camless drives, and no others. They are the only part that needs root, so sudo asks for your password. If camless cannot open a device right after, plug it in again or restart.
+2. `install.sh` puts `camless` and `camless-gui` in `~/.local/bin`, adds camless to your desktop's menu, and runs the service as a systemd user service that starts when you log in. It also installs udev rules, `/etc/udev/rules.d/71-camless.rules`. They let whoever is logged in at the computer open the devices camless drives, and no others. `72-camless-fans.rules` gives you the motherboard's fan headers, for *Motherboard fans*. They are the only part that needs root, so sudo asks for your password. If camless cannot open a device right after, plug it in again or restart.
 3. The app needs WebKitGTK 4.1 and GTK 3 (`libwebkit2gtk-4.1-0` on Debian and Ubuntu), and curl for updates. Its tray icon needs `libayatana-appindicator3-1` (or `libappindicator3-1`) and a desktop that shows such icons: KDE Plasma does, and GNOME with the AppIndicator extension. Without one, closing the window quits the app, and the service keeps running.
 
 What is different from Windows:
 - **No frame rates**, which come from Windows' ETW. Games finds Steam games, native and under Proton. camless does not ask which window is in front (Wayland does not say), so a game counts as played while it runs.
 - **CPU temperature** comes from hwmon (k10temp, zenpower or coretemp) and needs no PawnIO. CPU power comes from RAPL, which only root can read, so it has no reading.
 - **No admin rights**: the service runs as you. *Import from NZXT CAM* is on Windows only, like CAM, and so are firmware updates, which camless never installs: CAM on Windows does.
-- **Kernel drivers** such as `nzxt-kraken3` can stay loaded. Do not run another program that sets the same fans, such as CoolerControl, liquidctl or fancontrol.
+- **Kernel drivers** such as `nzxt-kraken3` can stay loaded. Do not run another program that sets the same fans, such as CoolerControl, liquidctl or fancontrol. camless leaves the motherboard's headers alone while CoolerControl runs, but does not see fancontrol.
 - **Updates** download the new tarball and run its `install.sh`. When the udev rules have changed, the desktop asks for your password (pkexec), or you run `install.sh` from the download.
 
 To uninstall, run `~/.local/share/camless/uninstall.sh`. It keeps your settings in `~/.config/camless`.
