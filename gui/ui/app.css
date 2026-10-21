@@ -30,7 +30,7 @@ body.light { background: #fff; }
   --alert-bg: rgba(208, 2, 27, .16); --warn-bg: rgba(245, 165, 36, .12);
   --shadow: 0 12px 40px rgba(0, 0, 0, .55);
   --radius: 4px;
-  --ce-grid: rgba(255, 255, 255, .06); --ce-text: #8a8996; --ce-line: #be9fff; --ce-line-w: 2; --ce-fill: #7416e6; --ce-fill-top: .38;
+  --ce-grid: rgba(255, 255, 255, .06); --ce-band: rgba(255, 255, 255, .035); --ce-band-edge: rgba(255, 255, 255, .16); --ce-text: #8a8996; --ce-line: #be9fff; --ce-line-w: 2; --ce-fill: #7416e6; --ce-fill-top: .38;
   --ce-point: #1a1c1e; --ce-live: #fff; --ce-live-text: #e8ebed; --ce-tip-bg: #494851; --ce-tip-fg: #fff;
   --ce-floor: rgba(255, 2, 45, .22); --ce-floor-line: rgba(255, 2, 45, .5);
   height: 100vh; height: 100dvh;
@@ -52,7 +52,7 @@ body.light { background: #fff; }
   --track: #dcdce3; --knob: #fff;
   --alert-bg: rgba(208, 2, 27, .08); --warn-bg: rgba(245, 165, 36, .14);
   --shadow: 0 12px 40px rgba(28, 29, 30, .18);
-  --ce-grid: rgba(0, 0, 0, .07); --ce-text: #7c8792; --ce-line: #640a92; --ce-fill: #7416e6; --ce-fill-top: .22;
+  --ce-grid: rgba(0, 0, 0, .07); --ce-band: rgba(0, 0, 0, .03); --ce-band-edge: rgba(0, 0, 0, .18); --ce-text: #7c8792; --ce-line: #640a92; --ce-fill: #7416e6; --ce-fill-top: .22;
   --ce-point: #fff; --ce-live: #1c1d1e; --ce-live-text: #444259; --ce-tip-bg: #1c1d1e; --ce-tip-fg: #fff;
   --ce-floor: rgba(208, 2, 27, .14); --ce-floor-line: rgba(208, 2, 27, .45);
   color-scheme: light;
@@ -356,6 +356,14 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-hgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .cam-hpanel { padding: 14px 16px 10px; min-width: 0; }
 .cam-hgrid > .cam-hpanel:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.cam-hgrid > .cam-hpanel.wide { grid-column: 1 / -1; }
+/* After a wide chart the pairs start one later. */
+.cam-hgrid > .wide ~ .cam-hpanel:last-child:nth-child(odd) { grid-column: auto; }
+.cam-hgrid > .wide ~ .cam-hpanel:last-child:nth-child(even) { grid-column: 1 / -1; }
+.cam-hpanel.wide canvas { height: 190px; }
+.cam-hzoom { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 8px 8px 8px 14px; border-radius: var(--radius); background: var(--accent-soft); font-size: 12.5px; color: var(--t2); }
+.cam-hzoom b { color: var(--t1); font-weight: 600; }
+.cam-hist canvas { touch-action: none; }
 .cam-hpanel > header { margin-bottom: 4px; }
 .cam-hpanel > header h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; line-height: 20px; }
 .cam-hlegend { display: flex; flex-wrap: wrap; gap: 2px 16px; min-height: 20px; }
@@ -364,6 +372,26 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-hpanel .cam-legend b { font-weight: 600; color: var(--t1); }
 .cam-hpanel .cam-legend small { font-size: 11px; font-weight: 500; color: var(--t3); }
 .cam-hpanel .cam-legend small:empty { display: none; }
+/* A session's strips: names and readings on the left, the chart on the right. */
+.cam-strips { padding: 0; overflow: hidden; }
+.cam-strip { display: grid; grid-template-columns: 224px minmax(0, 1fr); border-top: 1px solid var(--panel-line); }
+.cam-strip:first-child { border-top: 0; }
+.cam-strip > header { padding: 10px 12px 10px 16px; border-right: 1px solid var(--panel-line); min-width: 0; }
+.cam-strip:first-child > header { padding-top: 30px; }
+.cam-strip > header h3 { margin: 0 0 4px; font-size: 12.5px; font-weight: 600; line-height: 18px; color: var(--t1); }
+.cam-strip .cam-hlegend { flex-direction: column; flex-wrap: nowrap; gap: 0; }
+.cam-strip .cam-legend { display: flex; gap: 7px; min-width: 0; line-height: 19px; }
+.cam-strip .cam-legend i { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.cam-strip .cam-legend span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t3); }
+.cam-strip .cam-legend b { font-weight: 600; color: var(--t1); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cam-strip .cam-legend small { font-size: 11px; color: var(--t4); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cam-strip .cam-legend small:empty { display: none; }
+.cam-strip .cam-chart-plot { min-height: 96px; }
+.cam-strip .cam-chart-plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.cam-strip.k-fps .cam-chart-plot { min-height: 150px; }
+.cam-strip.k-temp .cam-chart-plot { min-height: 128px; }
+.cam-strip:last-child .cam-chart-plot { min-height: 118px; }
+@container app (max-width: 640px) { .cam-strip { grid-template-columns: minmax(0, 1fr); } .cam-strip > header { border-right: 0; padding-bottom: 0; } .cam-strip:first-child > header { padding-top: 12px; } }
 .cam-hpanel canvas { width: 100%; height: 150px; display: block; }
 .cam-chart { padding: 16px 20px 14px; margin-top: 16px; }
 .cam-chart > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 8px; }
@@ -397,6 +425,8 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-table tbody tr:first-child td { border-top: 0; }
 .cam-table .num { text-align: right; }
 .cam-table td.name { width: 100%; white-space: normal; min-width: 140px; font-weight: 600; color: var(--t1); }
+.cam-table tr.dim td { padding-top: 0; border-top: 0; font-size: 12px; color: var(--t4); }
+.cam-table tr.dim td.name { font-weight: 500; color: var(--t3); }
 
 /* Games: covers, a card for each game, the sessions, and one session. */
 .cam-cover { position: relative; overflow: hidden; display: grid; place-items: center; aspect-ratio: 460 / 215; border-radius: calc(var(--radius) - 1px); background: linear-gradient(135deg, hsl(var(--hue) 42% 36%), hsl(calc(var(--hue) + 50) 48% 17%)); color: rgba(255, 255, 255, .88); font-size: 24px; font-weight: 700; letter-spacing: .04em; user-select: none; }
@@ -404,6 +434,10 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-cover.art > span { visibility: hidden; }
 .cam-cover.small { flex: none; width: 92px; font-size: 13px; }
 .cam-cover.big { width: 100%; font-size: 44px; }
+.cam-cover.icon { background: #0d0f12; }
+.cam-cover.icon img { inset: 14%; width: 72%; height: 72%; object-fit: contain; filter: drop-shadow(0 6px 16px rgba(0, 0, 0, .55)); }
+.cam-cover.icon img.blur { inset: -20%; width: 140%; height: 140%; object-fit: cover; filter: blur(22px) saturate(1.4); opacity: .55; }
+.cam-shero .cam-cover.icon { aspect-ratio: 460 / 215; }
 .cam-game.has-art { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: 16px; align-items: start; }
 .cam-game.has-art > .cam-cover { grid-row: span 3; width: 112px; }
 .cam-game > header .cam-btn { align-self: center; }
@@ -433,7 +467,31 @@ button.cam-ch-pic:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cam-srow .st { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .cam-srow .st b { font-size: 14px; font-weight: 600; color: var(--t1); }
 .cam-srow .go svg { width: 16px; height: 16px; transform: rotate(-90deg); color: var(--t4); }
-.cam-sback { margin-bottom: 12px; }
+.cam-sback { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.cam-stiles > div > span.good { color: var(--green); }
+.cam-stiles > div > span.bad { color: var(--alert); }
+.cam-swhat { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.cam-swhat > section { padding: 14px 16px; min-width: 0; }
+.cam-swhat h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.cam-sdrop { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; padding: 8px 6px; border-top: 1px solid var(--panel-line); cursor: pointer; font-size: 12.5px; }
+.cam-sdrop:first-child { border-top: 0; }
+.cam-sdrop:hover { background: var(--accent-soft); }
+.cam-sdrop:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cam-sdrop time { font-weight: 650; color: var(--t1); }
+.cam-sdrop span { display: flex; flex-direction: column; min-width: 0; }
+.cam-sdrop b { font-weight: 600; color: var(--t1); }
+.cam-sdrop small { font-size: 11.5px; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cam-sdrop .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 3px; background: var(--warn-bg); color: var(--amber); white-space: nowrap; }
+.cam-sdrop .tag.hot { background: var(--alert-bg); color: var(--alert); }
+.cam-sband { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: center; margin: 8px 0; font-size: 12px; color: var(--t2); }
+.cam-sband.dim { margin-top: -4px; color: var(--t4); font-size: 11px; }
+.cam-sband.dim .stack { height: 8px; opacity: .7; }
+.cam-sband .stack { display: flex; height: 14px; border-radius: 3px; overflow: hidden; background: var(--btn2); }
+.cam-sband .stack i { flex-basis: 0; }
+.cam-swhat .b0 { background: #3d7bc4; } .cam-swhat .b1 { background: var(--green); } .cam-swhat .b2 { background: var(--amber); } .cam-swhat .b3 { background: var(--alert); }
+.cam-sbandkey { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 10px 0 0; font-size: 11px; color: var(--t4); }
+.cam-sbandkey i { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; }
+@container app (max-width: 760px) { .cam-swhat { grid-template-columns: minmax(0, 1fr); } }
 .cam-shero { display: grid; grid-template-columns: minmax(200px, 340px) minmax(0, 1fr); gap: 20px; padding: 16px; align-items: start; }
 .cam-shero h2 { margin: 2px 0 4px; font-size: 20px; font-weight: 650; }
 .cam-shero .when { margin: 0 0 14px; font-size: 13px; color: var(--t3); }

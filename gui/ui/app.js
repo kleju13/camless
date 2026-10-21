@@ -277,6 +277,8 @@
   // The session open on the Games page, by its start, or 'now' for the game being
   // played. It stays open while the page is built again, until another page opens.
   let gameOpen = null;
+  // The session it is compared with, by its start; none for none.
+  let gameCmp = null;
 
   /* What the pages are built from. When it changes, say after a profile switch or
      once the service answers, the page is built again. */
@@ -410,7 +412,7 @@
     // the config loads, Games stays where it is.
     if (!PAGES[id] || (S.config && !navShown(id))) id = 'cooling';
     if (K.prefs.page !== id) K.setPref('page', id);
-    if (id !== page) gameOpen = null;
+    if (id !== page) gameOpen = gameCmp = null;
     const top = main.scrollTop;
     if (dispose) dispose();
     K.closeOverlays();
@@ -1877,10 +1879,13 @@
   // A temperature is drawn in the unit picked in Settings, so its grid lines are round.
   const histConv = (kind) => (kind === 'temp' ? K.toUnit : (v) => v);
   const NICE = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
+  // A round step that fits `range` in at most `most` steps, a power of ten past the table.
+  const niceStep = (range, most) => NICE.find((k) => range / k <= most) ?? 10 ** Math.ceil(Math.log10(range / most));
 
-  // { lo, hi, step, label } of an axis around the readings from lo0 to hi0 (drawn units).
-  function histAxis(kind, lo0, hi0) {
-    if (kind === 'load') return { lo: 0, hi: 100, step: 25, label: (v) => `${v}%` };
+  // { lo, hi, step, label } of an axis around the readings from lo0 to hi0 (drawn units),
+  // in at most `most` steps.
+  function histAxis(kind, lo0, hi0, most = 5) {
+    if (kind === 'load') return { lo: 0, hi: 100, step: most < 5 ? 50 : 25, label: (v) => `${v}%` };
     if (kind === 'temp') {
       // Close around the readings, so that a change of a degree shows, and at least
       // 10 degrees tall, so that noise does not fill the chart.
@@ -1889,12 +1894,12 @@
       a -= pad; b += pad;
       const least = K.prefs.unit === 'f' ? 18 : 10;
       if (b - a < least) { const m = (a + b) / 2; a = m - least / 2; b = m + least / 2; }
-      const step = NICE.find((k) => (b - a) / k <= 5);
+      const step = niceStep(b - a, most);
       return { lo: Math.floor(a / step) * step, hi: Math.ceil(b / step) * step, step, label: (v) => `${Math.round(v)}°` };
     }
     const least = kind === 'power' ? 50 : kind === 'rpm' ? 1000 : 60;
     const want = Math.max(least, (hi0 ?? 0) * 1.1);
-    const step = NICE.find((k) => want / k <= 5);
+    const step = niceStep(want, most);
     const label = kind === 'power' ? (v) => `${v} W` : kind === 'rpm' ? (v) => K.rpm(v) : (v) => String(v);
     return { lo: 0, hi: Math.ceil(want / step) * step, step, label };
   }
@@ -1909,33 +1914,76 @@
   /* The charts over the range picked above them, or over a window of their own, `win`:
      { from, to, panels }, a game session's in ms. A window without an end goes on to
      now and loads again every few seconds, for the game being played. A session's
-     charts are only those with readings. */
+     readings load from SESSION_AROUND before it to as long after it, to show the PC
+     warm up and cool down; `win.around` shows that much of them, or only the game
+     when false. The game's time is shaded. A session's charts are only those with
+     readings; their time runs from the session's start, a drag across one zooms them
+     all in, and `win.cmp`, another session { from, to, label }, is drawn dashed under
+     them, lined up at the game's start and at its end (see lineUp); its `lo` and `hi`
+     are where the games next to it end and begin, past which it is left out.
+     `win.near` are other games played around this one, { from, to, label }, shaded
+     and named.
+     `win.onData(points, cmpPoints, step)` hears of each load, the compared session's
+     points at their own times, and
+     `win.tools` go in the header. */
   function historyCharts(win) {
-    const el = h('<section class="cam-section cam-hist"><header><h2 class="cam-h2"></h2><span class="grow"></span></header><p class="cam-hint cam-hist-note" hidden></p><div class="cam-hgrid"></div></section>');
-    el.querySelector('h2').textContent = win ? 'During the session' : 'History';
-    const grid = el.querySelector('.cam-hgrid'), note = el.querySelector('.cam-hist-note');
+    const el = h('<section class="cam-section cam-hist"><header><h2 class="cam-h2"></h2><span class="grow"></span></header><p class="cam-hint cam-hist-note" hidden></p><div class="cam-hzoom" hidden><span></span><span class="grow"></span></div><div class="cam-hgrid"></div></section>');
+    el.querySelector('h2').textContent = win ? (win.around ? 'Before, during and after the game' : 'During the game') : 'History';
+    const grid = el.querySelector('.cam-hgrid'), note = el.querySelector('.cam-hist-note'), zoomBar = el.querySelector('.cam-hzoom');
     let span = HIST_RANGES.some((r) => r.value === K.prefs.histSpan) ? K.prefs.histSpan : 600;
-    let panels = [], key = '', data = null, live = [], hoverT = null, asked = 0;
+    let panels = [], key = '', data = null, cdata = null, live = [], hoverT = null, asked = 0, zoom = null, drag = null;
     // What the legends switched off; a session's are not kept.
     const hidden = new Set(win ? [] : K.prefs.histHidden || []);
     if (!win) el.firstElementChild.appendChild(choice({ options: HIST_RANGES, value: span, label: 'Range', onChange: (v) => { span = v; K.setPref('histSpan', v); load(); } }));
-    // The time the charts cover, in ms.
-    const range = () => { const now = Date.now(); return win ? [win.from, win.to ?? now] : [now - span * 1000, now]; };
-    const during = () => (win ? 'during the session' : `over the last ${HIST_RANGES.find((r) => r.value === span).label}`);
+    if (win) {
+      zoomBar.appendChild(button('See it all', { small: true, onClick: () => zoomTo(null) }));
+      if (win.tools) el.querySelector('header').append(...[].concat(win.tools));
+    }
+    // The game, the readings loaded around it, the part of them shown, and the part
+    // the charts show now, in ms. Nothing is asked for after now.
+    const game = () => [win.from, win.to ?? Date.now()];
+    const loaded = () => { const [a, b] = game(); return [a - SESSION_AROUND, Math.min(Date.now(), b + SESSION_AROUND)]; };
+    // Around the game, from the first reading: the service may have started with it.
+    const firstT = () => { const q = data && unpack(data).find((x) => Object.keys(x.v).length); return q ? q.t : null; };
+    const whole = () => {
+      if (!win) return null;
+      if (!win.around) return game();
+      const [a, b] = loaded();
+      return [Math.min(win.from, Math.max(a, firstT() ?? a)), b];
+    };
+    const range = () => { const now = Date.now(); return win ? zoom || whole() : [now - span * 1000, now]; };
+    // A session's time, from its start: "1:05" is an hour and five minutes in.
+    const elapsed = (t) => sinceStart(t, win.from);
+    function zoomTo(r) {
+      const [a, b] = whole();
+      zoom = r && r[1] - r[0] >= 60e3 ? [Math.max(a, r[0]), Math.min(b, r[1])] : null;
+      zoomBar.hidden = !zoom;
+      if (zoom) zoomBar.firstElementChild.innerHTML = `Zoomed in on <b class="num">${elapsed(zoom[0])} – ${elapsed(zoom[1])}</b>; the numbers on the left are the averages of that part.`;
+      drawAll();
+    }
+    el.zoomTo = zoomTo;
+    const during = () => (win ? (zoom ? `from ${elapsed(zoom[0])} to ${elapsed(zoom[1])}` : 'during the game') : `over the last ${HIST_RANGES.find((r) => r.value === span).label}`);
     const keyOf = (list) => list.map((p) => `${p.id}:${p.series.map((s) => s.id).join(',')}`).join('|');
     const has = (id) => !!data && !!data.series[id] && data.series[id].avg.some((v) => v != null);
     const wanted = () => (win ? win.panels.map((p) => ({ ...p, series: p.series.filter((s) => has(s.id)) })).filter((p) => p.series.length) : histPanels());
 
+    // A session's charts are strips under each other on one time axis, each named on
+    // its left with its readings; the others are a grid of panels.
+    if (win) grid.className = 'cam-panel cam-strips';
     function build(list) {
       key = keyOf(list);
       grid.textContent = '';
+      grid.hidden = !list.length;
       panels = list.map((p) => {
-        const box = h(`<section class="cam-panel cam-hpanel"><header><h3></h3><div class="cam-hlegend"></div></header><div class="cam-chart-plot"><canvas role="img"></canvas><div class="cam-chart-tip" hidden></div><p class="cam-chart-note" hidden>No readings in this range.</p></div></section>`);
+        const box = h(`<section class="${win ? `cam-strip k-${p.id}` : `cam-panel cam-hpanel${p.wide ? ' wide' : ''}`}"><header><h3></h3><div class="cam-hlegend"></div></header><div class="cam-chart-plot"><canvas role="img"></canvas><div class="cam-chart-tip" hidden></div><p class="cam-chart-note" hidden>No readings in this range.</p></div></section>`);
         box.querySelector('h3').textContent = p.title;
         const cv = box.querySelector('canvas');
+        // A strip leaves out what is in brackets, the device, while the names stay apart.
+        const short = (l) => l.replace(/\s*\(.*\)$/, '');
+        const shorten = win && new Set(p.series.map((s) => short(s.label))).size === p.series.length;
         const items = p.series.map((s, i) => {
           const b = h('<button type="button" class="cam-legend"><i></i><span></span><b class="num"></b><small class="num"></small></button>');
-          b.children[1].textContent = s.label;
+          b.children[1].textContent = shorten ? short(s.label) : s.label;
           b.firstElementChild.style.setProperty('--c', seriesColor(i));
           b.setAttribute('aria-pressed', String(!hidden.has(s.id)));
           b.addEventListener('click', () => {
@@ -1948,8 +1996,14 @@
           return { s, b, now: b.children[2], stat: b.children[3] };
         });
         const panel = Object.assign({}, p, { box, cv, items, tip: box.querySelector('.cam-chart-tip'), empty: box.querySelector('.cam-chart-note') });
-        cv.addEventListener('pointermove', (e) => { const r = cv.getBoundingClientRect(); hoverT = panel.tAt ? panel.tAt(e.clientX - r.left) : null; drawAll(); });
+        const tAt = (e) => { const r = cv.getBoundingClientRect(); return panel.tAt ? panel.tAt(e.clientX - r.left) : null; };
+        cv.addEventListener('pointermove', (e) => { hoverT = tAt(e); if (drag && hoverT != null) drag[1] = hoverT; drawAll(); });
         cv.addEventListener('pointerleave', () => { hoverT = null; drawAll(); });
+        if (win) {
+          cv.addEventListener('pointerdown', (e) => { const t = tAt(e); if (t == null) return; drag = [t, t]; cv.setPointerCapture(e.pointerId); });
+          cv.addEventListener('pointerup', () => { if (!drag) return; const [a, b] = drag; drag = null; if (Math.abs(b - a) >= 60e3) zoomTo([Math.min(a, b), Math.max(a, b)]); else drawAll(); });
+          cv.addEventListener('dblclick', () => zoomTo(null));
+        }
         grid.appendChild(box);
         return panel;
       });
@@ -1958,96 +2012,165 @@
     async function load() {
       const ask = ++asked;
       const ids = [...new Set((win ? win.panels : panels).flatMap((p) => p.series.map((s) => s.id)))].map(encodeURIComponent).join(',');
-      const [t0, t1] = range();
-      const window_ = win ? `from=${Math.floor(t0 / 1000)}&to=${Math.ceil(t1 / 1000)}` : `span=${span}`;
-      let r = null, err = null;
+      const between = ([t0, t1]) => `from=${Math.floor(t0 / 1000)}&to=${Math.ceil(t1 / 1000)}`;
+      const window_ = win ? between(loaded()) : `span=${span}`;
+      let r = null, c = null, err = null;
       if (ids && S.status) {
         try { r = await S.api('GET', `history?${window_}&ids=${ids}`); } catch (e) { err = e; }
+        // The session compared with: its readings, if they are still kept.
+        if (win && win.cmp) { try { c = await S.api('GET', `history?${between([win.cmp.from - SESSION_AROUND, win.cmp.to + SESSION_AROUND])}&ids=${ids}`); } catch (e) { c = null; } }
       }
       if (ask !== asked) return;
       data = r;
+      cdata = c;
       live = [];
       if (win && keyOf(wanted()) !== key) build(wanted());
       const step = data ? data.step : 0;
       note.textContent = !S.status ? (win ? 'The service is not running, so the readings of the session cannot be read now.' : 'The service records history while it runs. It is not running now.')
         : err ? `No history: ${err.message}`
         : !panels.length ? (win ? 'No readings were kept for this session: camless keeps them for 30 days, while the service runs.' : 'Nothing to show here on this PC.')
-        : win && step >= 60 ? `Every point stands for ${step === 60 ? 'a minute' : `${step / 60} minutes`}: the line is the average, and the shade above it how high the readings went.`
+        : win ? `${step >= 60 ? `Every point is the average of ${step === 60 ? 'a minute' : `${step / 60} minutes`}. ` : ''}The numbers on the left are the averages during the game; point at a moment to read it, and drag across to zoom in.`
         : !win && span > 3600 ? 'Every point stands for several minutes: the line is their average, and the shade above it how high they went.' : '';
       note.hidden = !note.textContent;
+      if (win && win.cmp && cdata && panels.length) note.textContent += ` ${cmpNote()}`;
+      if (win && win.onData) win.onData(points(), win.cmp ? unpack(cdata) : [], data ? data.step * 1000 : 60e3);
       drawAll();
     }
 
-    // [{ t (ms), v: { id: [average, highest] } }], oldest first: the service's points,
-    // then the readings since they were loaded.
-    function points() {
-      const out = [];
-      if (data) {
-        const ids = Object.keys(data.series);
-        for (let i = 0; i < data.count; i++) {
-          const v = {};
-          for (const id of ids) { const x = data.series[id]; if (x.avg[i] != null) v[id] = [x.avg[i], x.max[i]]; }
-          out.push({ t: (data.from + i * data.step) * 1000, v });
-        }
+    /* The compared session's points lined up with this game: its game and what came
+       before from this game's start, and what came after from this game's end, so
+       that warming up lies over warming up and cooling down over cooling down. A
+       longer game is cut where this one ends. While this game is played, it has no
+       end to line up with, and the compared session shows up to its own end. */
+    function lineUp(list) {
+      const c = win.cmp, end = win.to, half = (cdata ? cdata.step : 60) * 500, out = [];
+      for (const q of list) {
+        if (q.t + half < (c.lo ?? -Infinity) || q.t + half >= (c.hi ?? Infinity)) continue;
+        if (q.t + half <= c.to) { const t = q.t + win.from - c.from; if (end == null || t <= end) out.push({ t, v: q.v }); }
+        else if (end != null) out.push({ t: q.t + end - c.to, v: q.v });
       }
+      return out;
+    }
+    // What the dashed lines are, and how the two games' lengths differ.
+    function cmpNote() {
+      const c = win.cmp, mins = Math.round(Math.abs((c.to - c.from) - ((win.to ?? Date.now()) - win.from)) / 60e3);
+      if (win.to == null) return `The dashed lines are ${c.label}, from its start.`;
+      const diff = mins < 1 ? '' : (c.to - c.from) < win.to - win.from ? `; it ended ${plural(mins, 'minute')} sooner` : `; it went on ${plural(mins, 'minute')} longer, which is left out`;
+      return `The dashed lines are ${c.label}, lined up with this game at its start and at its end${diff}.`;
+    }
+
+    // [{ t (ms), v: { id: [average, highest] } }] of a load, oldest first.
+    function unpack(d) {
+      const out = [];
+      if (!d) return out;
+      const ids = Object.keys(d.series);
+      for (let i = 0; i < d.count; i++) {
+        const v = {};
+        for (const id of ids) { const x = d.series[id]; if (x.avg[i] != null) v[id] = [x.avg[i], x.max[i]]; }
+        out.push({ t: (d.from + i * d.step) * 1000, v });
+      }
+      return out;
+    }
+
+    // The service's points, then the readings since they were loaded.
+    function points() {
+      const out = unpack(data);
       const after = out.length ? out[out.length - 1].t + data.step * 1000 : 0;
       return out.concat(live.filter((p) => p.t >= after));
     }
 
     function drawAll() {
       const [t0, t1] = range();
-      const pts = points().filter((p) => p.t >= t0 - (data ? data.step * 1000 : 0));
-      for (const p of panels) drawPanel(p, pts, t0, t1);
+      const pad = data ? data.step * 1000 : 0;
+      const inside = (p) => p.t >= t0 - pad && p.t <= t1 + pad;
+      const pts = points().filter(inside);
+      // The compared session, lined up with this one.
+      const cpts = win && win.cmp ? lineUp(unpack(cdata)).filter(inside) : [];
+      for (const p of panels) drawPanel(p, pts, t0, t1, cpts);
     }
 
-    function drawPanel(p, pts, t0, t1) {
+    function drawPanel(p, pts, t0, t1, cpts = []) {
       const { cv } = p;
       if (!cv.isConnected) return;
       const conv = histConv(p.kind);
       const shown = p.series.filter((s) => !hidden.has(s.id));
       const color = (s) => seriesColor(p.series.indexOf(s));
-      // Per series over the range: lowest and mean of the averages, highest of the peaks.
-      // `any` counts shown series only, for the axis; `has` any series, for the note.
+      // Per series over the game, or the part zoomed in on: lowest and mean of the
+      // averages, highest of the peaks. The axis takes in the whole range, of the shown
+      // series only; `has` is any series, for the note.
+      const [s0, s1] = win && !zoom ? game() : [t0, t1];
       let lo0 = null, hi0 = null, any = false, has = false;
+      // In a session, the legend says each reading where the pointer is, and the
+      // compared session's after it; the pointer shows no tip.
+      // The point nearest the pointer, if one is within a step and a half of it: none
+      // where the compared game had ended.
+      const reach = (data ? data.step : 1) * 1500;
+      const nearest = (list) => { let best = null; for (const q of list) if (!best || Math.abs(q.t - hoverT) < Math.abs(best.t - hoverT)) best = q; return best && Math.abs(best.t - hoverT) <= reach ? best : null; };
+      const at = win && hoverT != null ? nearest(pts) : null, cat = win && hoverT != null && cpts.length ? nearest(cpts) : null;
       for (const it of p.items) {
-        let mn = Infinity, mx = -Infinity, sum = 0, n = 0;
+        let mn = Infinity, mx = -Infinity, sum = 0, n = 0, amn = Infinity, amx = -Infinity;
         for (const pt of pts) {
           const v = pt.v[it.s.id];
-          if (!v) continue;
+          if (!v || pt.t < t0 || pt.t > t1) continue;
+          amn = Math.min(amn, v[0]); amx = Math.max(amx, v[1] ?? v[0]);
+          if (pt.t < s0 || pt.t > s1) continue;
           mn = Math.min(mn, v[0]); mx = Math.max(mx, v[1] ?? v[0]); sum += v[0]; n++;
         }
-        it.now.textContent = it.s.now ? histValue(p.kind, it.s.id, it.s.now()) : '';
-        it.stat.textContent = n && p.series.length <= 3 ? `avg ${histValue(p.kind, it.s.id, sum / n)}, max ${histValue(p.kind, it.s.id, mx)}` : '';
+        const val = (q) => (q && q.v[it.s.id] ? histValue(p.kind, it.s.id, q.v[it.s.id][0]) : '');
+        // A strip says the reading where the pointer is, or else the average.
+        it.now.textContent = win ? (at ? val(at) : n ? histValue(p.kind, it.s.id, sum / n) : '') : it.s.now ? histValue(p.kind, it.s.id, it.s.now()) : '';
+        const vs = val(cat);
+        it.stat.textContent = win ? (at && vs ? `vs ${vs}` : '') : at ? (vs ? `vs ${vs}` : '') : n && p.series.length <= 3 ? `avg ${histValue(p.kind, it.s.id, sum / n)}, max ${histValue(p.kind, it.s.id, mx)}` : '';
         it.b.title = n ? `${it.s.label} ${during()}: lowest ${histValue(p.kind, it.s.id, mn)}, average ${histValue(p.kind, it.s.id, sum / n)}, highest ${histValue(p.kind, it.s.id, mx)}` : it.s.label;
-        if (n) has = true;
-        if (n && !hidden.has(it.s.id)) { any = true; lo0 = Math.min(lo0 ?? Infinity, conv(mn)); hi0 = Math.max(hi0 ?? -Infinity, conv(mx)); }
+        if (amn <= amx) has = true;
+        if (amn <= amx && !hidden.has(it.s.id)) { any = true; lo0 = Math.min(lo0 ?? Infinity, conv(amn)); hi0 = Math.max(hi0 ?? -Infinity, conv(amx)); }
+        if (!hidden.has(it.s.id)) for (const q of cpts) { const v = q.v[it.s.id]; if (v) { lo0 = Math.min(lo0 ?? Infinity, conv(v[0])); hi0 = Math.max(hi0 ?? -Infinity, conv(v[0])); } }
       }
       p.empty.hidden = has || !data;
       const { ctx, w, h: hh } = D.fit(cv);
       ctx.clearRect(0, 0, w, hh);
       const css = getComputedStyle(cv);
       const gridC = css.getPropertyValue('--ce-grid').trim(), text = css.getPropertyValue('--t4').trim(), ink = css.getPropertyValue('--t3').trim();
-      const ax = histAxis(p.kind, lo0, hi0);
-      const pl = 46, pr = 8, pt = 8, pb = 20;
+      // A short strip takes fewer, rounder steps.
+      const most = win && hh < 130 ? 3 : 5;
+      let ax = histAxis(p.kind, lo0, hi0, most);
+      // A session's frame rate from near its lowest, so that a drop shows. Before and
+      // after the game there are no frame rates, so these are the game's.
+      if (win && p.kind === 'fps' && lo0 != null) {
+        const a = lo0 * 0.85, b = Math.max(hi0 * 1.08, a + 30), step = niceStep(b - a, most);
+        ax = { ...ax, lo: Math.floor(a / step) * step, hi: Math.ceil(b / step) * step, step };
+      }
+      // A strip has its values on the right, the names of before, the game and after
+      // over the first, and the time under the last.
+      const first = p === panels[0], last = p === panels[panels.length - 1];
+      const pl = win ? 0 : 46, pr = win ? 44 : 8, pt = win ? (first ? 30 : 14) : 8, pb = win ? (last ? 26 : 10) : 20;
       const X = (t) => pl + ((t - t0) / (t1 - t0)) * (w - pl - pr);
       const Y = (v) => pt + (1 - (clamp(conv(v), ax.lo, ax.hi) - ax.lo) / (ax.hi - ax.lo)) * (hh - pt - pb);
       p.tAt = (x) => (x < pl || x > w - pr ? null : t0 + ((x - pl) / (w - pl - pr)) * (t1 - t0));
       ctx.font = `500 10.5px ${FONT}`;
-      ctx.textAlign = 'right';
-      for (let v = ax.lo; v <= ax.hi + 1e-6; v += ax.step) {
+      ctx.textAlign = win ? 'left' : 'right';
+      // On a short strip, every other value is named.
+      const every = (hh - pt - pb) / ((ax.hi - ax.lo) / ax.step) < 18 ? 2 : 1;
+      for (let v = ax.lo, i = 0; v <= ax.hi + 1e-6; v += ax.step, i++) {
         const y = Math.round(pt + (1 - (v - ax.lo) / (ax.hi - ax.lo)) * (hh - pt - pb)) + 0.5;
         ctx.strokeStyle = gridC; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(w - pr, y); ctx.stroke();
-        ctx.fillStyle = text; ctx.fillText(ax.label(Math.round(v * 10) / 10), pl - 8, y + 3.5);
+        if (i % every) continue;
+        ctx.fillStyle = text; ctx.fillText(ax.label(Math.round(v * 10) / 10), win ? w - pr + 8 : pl - 8, y + 3.5);
+      }
+      const ticks = win ? elapsedTicks(t0, t1, win.from) : histTicks(span, t1);
+      // Strips share the time's lines, so a moment reads down all of them.
+      if (win) {
+        ctx.strokeStyle = gridC;
+        for (const [t] of ticks) { const x = Math.round(X(t)) + 0.5; ctx.beginPath(); ctx.moveTo(x, pt); ctx.lineTo(x, hh - pb); ctx.stroke(); }
       }
       // Time labels from the right, leaving out those that would touch the one before.
       ctx.textAlign = 'center';
       let room = Infinity;
-      const ticks = win ? clockTicks(t0, t1) : histTicks(span, t1);
-      for (const [x, s] of ticks.map(([t, s]) => [clamp(X(t), pl + 18, w - pr - 18), s]).sort((a, b) => b[0] - a[0])) {
+      for (const [x, s] of (!win || last ? ticks : []).map(([t, s]) => [clamp(X(t), pl + 18, w - pr - 18), s]).sort((a, b) => b[0] - a[0])) {
         const half = ctx.measureText(s).width / 2;
         if (x + half > room - 8) continue;
-        ctx.fillText(s, x, hh - 5);
+        ctx.fillText(s, x, hh - 7);
         room = x - half;
       }
       // Where camless sends every fan to 100%, when the readings come near it.
@@ -2063,10 +2186,10 @@
       // A gap in the readings, such as the service being off, breaks the line.
       const tick = (S.config && S.config.interval_ms) || 1000;
       const gap = Math.max(3e3, tick * 2.5, (data ? data.step : 1) * 2000);
-      const runs = (s) => {
+      const runs = (s, list = pts) => {
         const out = [];
         let cur = null, last = 0;
-        for (const pt of pts) {
+        for (const pt of list) {
           const v = pt.v[s.id];
           if (!v || pt.t - last > gap) cur = null;
           if (!v) continue;
@@ -2077,11 +2200,70 @@
         return out;
       };
       const bottom = hh - pb;
+      // Zoomed in, the lines stop at the plot's edges.
+      ctx.save();
+      ctx.beginPath(); ctx.rect(pl, 0, w - pl - pr, hh); ctx.clip();
+      // The game's time, a column down every strip, when they go on before or after it,
+      // and fainter, the other games played around it.
+      if (win && (t0 < win.from || t1 > game()[1])) {
+        const [a, b] = game(), xa = Math.max(pl, X(a)), xb = Math.min(w - pr, X(b));
+        const others = (win.near || []).map((n) => ({ ...n, xa: Math.max(pl, X(n.from)), xb: Math.min(w - pr, X(n.to ?? Date.now())) })).filter((n) => n.xb > n.xa);
+        ctx.fillStyle = css.getPropertyValue('--ce-band').trim();
+        ctx.fillRect(xa, 0, xb - xa, hh);
+        ctx.globalAlpha = 0.5;
+        for (const n of others) ctx.fillRect(n.xa, 0, n.xb - n.xa, hh);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = css.getPropertyValue('--ce-band-edge').trim(); ctx.lineWidth = 1;
+        for (const x of win.to == null ? [X(a)] : [X(a), X(b)]) { ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, 0); ctx.lineTo(Math.round(x) + 0.5, hh); ctx.stroke(); }
+        ctx.save(); ctx.globalAlpha = 0.5;
+        for (const n of others) for (const t of n.to == null ? [n.from] : [n.from, n.to]) { const x = Math.round(X(t)) + 0.5; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, hh); ctx.stroke(); }
+        ctx.restore();
+        // Where a shorter compared game ended, dashed down every strip.
+        const cEnd = win.cmp && cdata && win.to != null && win.from + (win.cmp.to - win.cmp.from);
+        const xc = cEnd && cEnd < b - 60e3 ? X(cEnd) : null;
+        if (xc != null) {
+          ctx.save(); ctx.strokeStyle = css.getPropertyValue('--ce-band-edge').trim(); ctx.setLineDash([2, 3]);
+          ctx.beginPath(); ctx.moveTo(Math.round(xc) + 0.5, first ? 26 : 0); ctx.lineTo(Math.round(xc) + 0.5, hh); ctx.stroke();
+          ctx.restore();
+        }
+        // Over the first strip: before, the game, after and the games around them, each
+        // named where it fits, and the end of the compared game where it does not touch
+        // them. Before and after stop at those games.
+        if (first) {
+          ctx.font = `600 11px ${FONT}`; ctx.textAlign = 'center';
+          const lo = Math.max(pl, ...others.filter((n) => n.xb <= xa).map((n) => n.xb)), hi = Math.min(w - pr, ...others.filter((n) => n.xa >= xb).map((n) => n.xa));
+          const parts = [[lo, X(a), 'Before', text], [xa, xb, win.to == null ? 'Playing now' : 'Game', css.getPropertyValue('--t2').trim()], [X(b), hi, 'After', text], ...others.map((n) => [n.xa, n.xb, n.label, text, true])];
+          const taken = [];
+          for (const [l, r, s0, c, cut] of parts) {
+            // Another game's name is cut short where it does not fit.
+            const room = Math.min(w - pr, r) - Math.max(pl, l) - 16;
+            let s = s0;
+            if (cut) while (s.length > 3 && ctx.measureText(s).width > room) s = `${s0.slice(0, s.length - 2).trimEnd()}…`;
+            const tw = ctx.measureText(s).width;
+            if (tw > room) continue;
+            const x = (Math.max(pl, l) + Math.min(w - pr, r)) / 2;
+            ctx.fillStyle = c; ctx.fillText(s, x, 18);
+            taken.push([x - tw / 2, x + tw / 2]);
+          }
+          if (xc != null) {
+            ctx.font = `500 10.5px ${FONT}`; ctx.textAlign = 'right';
+            const s = `${win.cmp.label} ends`, tw = ctx.measureText(s).width, l = xc - 5 - tw, r = xc - 5;
+            if (l > xa + 4 && !taken.some(([p, q]) => l < q + 8 && r > p - 8)) { ctx.fillStyle = text; ctx.fillText(s, r, 18); }
+          }
+          ctx.font = `500 10.5px ${FONT}`;
+        }
+      }
+      // The compared session, dashed and dimmer, under this one.
+      for (const s of cpts.length ? shown : []) {
+        ctx.strokeStyle = color(s); ctx.lineWidth = 1.4; ctx.globalAlpha = 0.55; ctx.setLineDash([4, 3]);
+        for (const r of runs(s, cpts)) { ctx.beginPath(); r.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); }
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+      }
       for (const s of shown) {
         const c = color(s), rs = runs(s);
         for (const r of rs) {
           // How high the readings went within each point, over several minutes a point.
-          if (data && data.step > 1) {
+          if (data && data.step > 1 && !win) {
             ctx.beginPath();
             r.forEach(([x, , ym], i) => (i ? ctx.lineTo(x, ym) : ctx.moveTo(x, ym)));
             for (let i = r.length - 1; i >= 0; i--) ctx.lineTo(r[i][0], r[i][1]);
@@ -2091,7 +2273,7 @@
           if (p.area && shown.length === 1) {
             const g = ctx.createLinearGradient(0, pt, 0, bottom);
             const rgb = S.color.hexToRgb(c);
-            g.addColorStop(0, S.color.css(rgb, 0.28)); g.addColorStop(1, S.color.css(rgb, 0));
+            g.addColorStop(0, S.color.css(rgb, win ? 0.18 : 0.28)); g.addColorStop(1, S.color.css(rgb, 0));
             ctx.beginPath();
             r.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
             ctx.lineTo(r[r.length - 1][0], bottom); ctx.lineTo(r[0][0], bottom); ctx.closePath();
@@ -2104,6 +2286,13 @@
           if (r.length === 1) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(r[0][0], r[0][1], 2, 0, TAU); ctx.fill(); }
         }
       }
+      // The part being dragged across, to zoom in on.
+      if (drag) {
+        const a = X(Math.min(...drag)), b = X(Math.max(...drag));
+        ctx.fillStyle = css.getPropertyValue('--accent-soft').trim(); ctx.fillRect(a, pt, b - a, bottom - pt);
+        ctx.strokeStyle = css.getPropertyValue('--accent').trim(); ctx.lineWidth = 1; ctx.strokeRect(Math.round(a) + 0.5, pt + 0.5, Math.round(b - a), bottom - pt - 1);
+      }
+      ctx.restore();
       cv.setAttribute('aria-label', `${p.title} ${during()}`);
       p.tip.hidden = true;
       if (hoverT == null || !pts.length) return;
@@ -2113,8 +2302,9 @@
       const x = X(best.t);
       if (!on.length || x < pl || x > w - pr) return;
       ctx.strokeStyle = ink; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, pt); ctx.lineTo(Math.round(x) + 0.5, bottom); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, win ? 0 : pt); ctx.lineTo(Math.round(x) + 0.5, win ? hh : bottom); ctx.stroke();
       for (const s of on) { ctx.fillStyle = color(s); ctx.beginPath(); ctx.arc(x, Y(best.v[s.id][0]), 3, 0, TAU); ctx.fill(); }
+      if (win) return;
       // A point that stands for several samples also says how high it went.
       const many = data && data.step > 1 && best.t < (data.from + data.count * data.step) * 1000;
       p.tip.innerHTML = `<time>${esc(histTime(best.t, (t1 - t0) / 1000))}</time>` + on.map((s) => {
@@ -2143,7 +2333,9 @@
       }
       drawAll();
     }));
-    const timer = setInterval(() => { if (!document.hidden && (!win || win.to == null)) load(); }, win ? 10e3 : 60e3);
+    // A session loads again while it is played, and while its cooling down is still
+    // coming in.
+    const timer = setInterval(() => { if (!document.hidden && (!win || win.to == null || Date.now() < win.to + SESSION_AROUND + 60e3)) load(); }, win ? 10e3 : 60e3);
     track(() => clearInterval(timer));
     track(K.on('prefs', (k) => { if (k === 'theme') build(win ? wanted() : histPanels()); drawAll(); }));
     const ro = new ResizeObserver(() => drawAll());
@@ -2154,17 +2346,23 @@
     return el;
   }
 
-  // Clock times across a window, about five of them: [ms, text].
-  function clockTicks(t0, t1) {
-    const every = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440].find((m) => (t1 - t0) / 60e3 / m <= 5) || 2880;
-    const d = new Date(t0);
-    d.setSeconds(0, 0);
-    if (every < 60) d.setMinutes(Math.floor(d.getMinutes() / every) * every);
-    else d.setHours(Math.floor(d.getHours() / (every / 60)) * (every / 60), 0);
+  // How long the charts of a session go on before and after it, in ms.
+  const SESSION_AROUND = 30 * 60e3;
+  // How long the service keeps its history, in ms: KEEP_DAYS in src/history.rs.
+  const HISTORY_KEPT = 30 * 86_400e3;
+
+  // A time from a session's start at `origin`, in hours and minutes: "1:05" is an hour
+  // and five minutes in, "−0:20" twenty minutes before.
+  function sinceStart(t, origin) {
+    const m = Math.round((t - origin) / 60e3), a = Math.abs(m);
+    return `${m < 0 ? '−' : ''}${Math.floor(a / 60)}:${String(a % 60).padStart(2, '0')}`;
+  }
+
+  // A session's time across a window, from its start at `origin`: [ms, "1:20"].
+  function elapsedTicks(t0, t1, origin) {
+    const every = [1, 2, 5, 10, 15, 20, 30, 60, 120, 180].find((m) => (t1 - t0) / 60e3 / m <= 6) || 360;
     const out = [];
-    for (let t = d.getTime(); t <= t1; t += every * 60e3) {
-      if (t >= t0) out.push([t, new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })]);
-    }
+    for (let m = Math.ceil((t0 - origin) / 60e3 / every) * every; origin + m * 60e3 <= t1; m += every) out.push([origin + m * 60e3, sinceStart(origin + m * 60e3, origin)]);
     return out;
   }
 
@@ -2241,6 +2439,7 @@
       g.played += s.played;
       g.last = Math.max(g.last, s.end);
       g.steam = g.steam || s.steam || null;
+      g.icon = g.icon || s.icon || null;
       if (s.fps) { g.frames += s.frames; g.secs += s.frames / s.fps; }
       if (s.low1 && s.frames) { g.lows += s.low1 * s.frames; g.lowFrames += s.frames; }
       m.set(s.game, g);
@@ -2250,8 +2449,9 @@
   const avgFps = (g) => (g.secs ? g.frames / g.secs : null);
 
   // A game's initials on a colour of its own, under its cover from Steam's cache on
-  // this PC when there is one. Nothing is downloaded.
-  function cover(name, steam, cls) {
+  // this PC when there is one, or the icon of its program over a blur of it. Nothing
+  // is downloaded.
+  function cover(name, steam, cls, icon) {
     const el = h(`<div class="cam-cover${cls ? ` ${cls}` : ''}" aria-hidden="true"><span></span></div>`);
     let hash = 7;
     for (const c of name) hash = (hash * 31 + c.codePointAt(0)) >>> 0;
@@ -2262,6 +2462,12 @@
       img.alt = '';
       img.addEventListener('load', () => { el.classList.add('art'); el.appendChild(img); });
       img.src = `/api/game-art?steam=${encodeURIComponent(steam)}`;
+    } else if (icon) {
+      const img = new Image(), blur = new Image();
+      img.alt = blur.alt = '';
+      blur.className = 'blur';
+      img.addEventListener('load', () => { el.classList.add('art', 'icon'); el.append(blur, img); });
+      img.src = blur.src = icon;
     }
     return el;
   }
@@ -2271,7 +2477,7 @@
     const el = h('<div class="cam-gcards"></div>');
     for (const g of list) {
       const b = h('<button type="button" class="cam-panel cam-gcard"><div class="body"><h3></h3><p class="fps"></p><p class="meta"></p></div></button>');
-      b.prepend(cover(g.game, g.steam));
+      b.prepend(cover(g.game, g.steam, '', g.icon));
       b.querySelector('h3').textContent = g.game;
       const avg = avgFps(g), fps = b.querySelector('.fps');
       if (avg == null) fps.innerHTML = '<span>No frame rates</span>';
@@ -2301,7 +2507,7 @@
         el.append(head, box);
       }
       const b = h('<button type="button" class="cam-srow"><span class="what"><b></b><small></small></span></button>');
-      b.prepend(cover(s.game, s.steam, 'small'));
+      b.prepend(cover(s.game, s.steam, 'small', s.icon));
       b.querySelector('.what b').textContent = s.game;
       b.querySelector('.what small').textContent = `${clock(s.start)} – ${clock(s.end)} · ${playTime(s.played)}`;
       const stats = [['avg FPS', fpsText(s.fps)], ['1% low', fpsText(s.low1)], ...PEAKS.map(([label, pick]) => {
@@ -2321,26 +2527,116 @@
     return el;
   }
 
-  // The charts of a session: the frame rate, then what it may have held it back.
-  function sessionPanels(s) {
+  // The charts of a session: the frame rate, then what it may have held it back; the
+  // detailed view adds the load and the fans and pump that cooled it.
+  function sessionPanels(s, detailed) {
     const liquids = [...new Set([...Object.keys(s.temps || {}), ...S.sensors().map((x) => x.id)])].filter(S.isLiquid);
     const liquid = liquids.map((id) => { const d = S.device(id.split('.')[0]); return { id, label: d ? d.name : id.split('.')[0] }; });
+    const fans = S.fans().filter((f) => f.hw && f.hw.connected !== false).map((f) => ({ id: `${f.id}.rpm`, label: fanLabel(f.id) }));
     return [
-      { id: 'fps', title: 'Frame rate', kind: 'fps', area: true, series: [{ id: 'fps', label: 'FPS' }] },
+      { id: 'fps', title: 'Frame rate', kind: 'fps', area: true, wide: true, series: [{ id: 'fps', label: 'FPS' }] },
       { id: 'temp', title: 'CPU and GPU temperature', kind: 'temp', series: [{ id: 'cpu.temp', label: 'CPU' }, { id: 'gpu.temp', label: 'GPU' }] },
       { id: 'liquid', title: 'Liquid temperature', kind: 'temp', area: true, mark: 55, series: liquid },
-      { id: 'load', title: 'Load', kind: 'load', series: [{ id: 'cpu.load', label: 'CPU' }, { id: 'gpu.load', label: 'GPU' }] },
-    ].filter((p) => p.series.length);
+      detailed ? { id: 'load', title: 'Load', kind: 'load', series: [{ id: 'cpu.load', label: 'CPU' }, { id: 'gpu.load', label: 'GPU' }] } : null,
+      detailed ? { id: 'fans', title: 'Fan and pump speeds', kind: 'rpm', series: fans } : null,
+    ].filter((p) => p && p.series.length);
   }
+
+  // Where a session's frame rate fell under 85% of its average for a minute or more:
+  // [{ from, to, low, at }], from the history's points.
+  function fpsDrops(points, avg) {
+    const out = [];
+    let cur = null;
+    for (const q of points) {
+      const v = q.v.fps && q.v.fps[0];
+      if (v != null && avg && v < avg * 0.85) {
+        if (!cur) out.push((cur = { from: q.t, to: q.t, low: v, at: q }));
+        cur.to = q.t;
+        if (v < cur.low) { cur.low = v; cur.at = q; }
+      } else cur = null;
+    }
+    return out;
+  }
+
+  // The share of a session's points in each band of a temperature: under 60, 60 to
+  // 70, 70 to 80 and over 80 °C.
+  const TEMP_BANDS = [60, 70, 80];
+  function tempBands(points, id) {
+    const n = [0, 0, 0, 0];
+    let all = 0;
+    for (const q of points) { const v = q.v[id] && q.v[id][0]; if (v == null) continue; n[TEMP_BANDS.filter((b) => v >= b).length]++; all++; }
+    return all ? n.map((x) => x / all) : null;
+  }
+
+  /* How a temperature `id` warmed up in a game from `s0` to `s1` (ms) and cooled down
+     after it, from the history's points `step` ms apart:
+     { before, game, top, rise, warm, cool, still, after }. `before` is the average of
+     the half hour before, or null with under 3 minutes of it. `warm` is how long it
+     took to reach 90% of its rise, `cool` how long after the game it took to come
+     within 2 °C, or a tenth of the rise, of before; null when it did not. `still` is
+     how far above before it was at the last reading after the game, `after` when.
+     Before starts at `b0` and after stops at `a1`, where other games end and begin
+     (see aroundBounds). `rest` is false when a game ended in the half hour before, so
+     that before may still be warm: then there is no `cool` or `still`. `fell` is how
+     far the last reading after the game was under the game's average, `after` when,
+     and `next` how long after the game the next one began. */
+  function warmCool(points, id, s0, s1, step, b0 = -Infinity, a1 = Infinity) {
+    const before = [], during = [], after = [];
+    for (const q of points) {
+      const v = q.v[id];
+      if (!v) continue;
+      const m = q.t + step / 2;
+      if (m < b0 || m >= a1) continue;
+      (m < s0 ? before : m <= s1 ? during : after).push([m, v[0], v[1] ?? v[0]]);
+    }
+    if (!during.length) return null;
+    const mean = (l) => l.reduce((a, x) => a + x[1], 0) / l.length;
+    const out = { before: before.length >= 3 ? mean(before) : null, game: mean(during), top: Math.max(...during.map((x) => x[2])), warm: null, cool: null, still: null, fell: null, after: null, next: null, rest: !(b0 > s0 - SESSION_AROUND) };
+    const last = after[after.length - 1];
+    if (last) { out.fell = out.game - last[1]; out.after = last[0] - s1; }
+    if (a1 <= Date.now()) out.next = a1 - s1;
+    if (out.before == null) return out;
+    out.rise = out.game - out.before;
+    if (out.rise < 2) return out;
+    const hit = during.find((x) => x[1] >= out.before + out.rise * 0.9);
+    if (hit) out.warm = hit[0] - s0;
+    if (!out.rest) return out;
+    const back = after.find((x) => x[1] <= out.before + Math.max(2, out.rise * 0.1));
+    if (back) out.cool = back[0] - s1;
+    else if (last) out.still = last[1] - out.before;
+    return out;
+  }
+
+  /* Where the readings around session `x` stop for the other games played near it,
+     `near` [{ from, to, label }] with `to` null for the one being played: [the end of
+     the last one before it, the start of the first one after it], in ms. */
+  function aroundBounds(x, near) {
+    let lo = -Infinity, hi = Infinity;
+    for (const n of near) { if (n.from < x.start) lo = Math.max(lo, n.to ?? Date.now()); else hi = Math.min(hi, n.from); }
+    return [lo, hi];
+  }
+  const minutes = (ms) => `${Math.max(1, Math.round(ms / 60e3))} min`;
+  // A difference of temperatures in the unit picked, in whole degrees.
+  const degrees = (d) => Math.round(K.toUnit(d) - K.toUnit(0));
 
   /* One session: what it came to, and the readings over it from the history. `s` is a
      kept session, or { live: true, ... } for the game being played, which goes on
-     until it closes. `others` are the game's other sessions, to compare with. */
-  function sessionView(host, s, others, back) {
-    const bar = h('<div class="cam-sback"></div>');
-    bar.appendChild(button('All sessions', { small: true, onClick: back }));
+     until it closes. `others` are the game's other sessions, to compare with. `again`
+     builds the view again, after a pick above it. `near(x)` are the games, of any
+     kind, played within SESSION_AROUND of session `x`: { from, to, label }. */
+  function sessionView(host, s, others, back, again, near) {
+    const detailed = K.prefs.sessionView !== 'summary';
+    const cmp = others.find((x) => x.start === gameCmp) || null;
+    const bar = h('<div class="cam-sback"><span class="grow"></span></div>');
+    bar.prepend(button('All sessions', { small: true, onClick: back }));
+    if (others.length) {
+      const opts = [{ value: 0, label: 'Compare with nothing' }].concat([...others].sort((a, b) => b.start - a.start)
+        .map((x) => ({ value: x.start, label: `Compare with ${shortDay(x.start)}, ${clock(x.start)}`, desc: `${playTime(x.played)}${x.fps ? ` · ${fpsText(x.fps)} fps` : ''}${x.end < Date.now() - HISTORY_KEPT ? ' · no charts kept' : ''}` })));
+      bar.appendChild(select({ options: opts, value: cmp ? cmp.start : 0, label: 'Compare with', onChange: (v) => { gameCmp = v || null; again(); } }));
+    }
+    bar.appendChild(choice({ options: [{ value: 'summary', label: 'Summary' }, { value: 'detailed', label: 'Detailed' }], value: detailed ? 'detailed' : 'summary', label: 'View', onChange: (v) => { K.setPref('sessionView', v); again(); } }));
     const hero = h('<section class="cam-panel cam-shero"><div class="info"><h2></h2><p class="when"></p><div class="cam-stiles"></div></div></section>');
-    hero.prepend(cover(s.game, s.steam, 'big'));
+    hero.prepend(cover(s.game, s.steam, 'big', s.icon));
     hero.querySelector('h2').textContent = s.game;
     const whenEl = hero.querySelector('.when'), tiles = hero.querySelector('.cam-stiles');
     const tile = (label) => {
@@ -2349,38 +2645,138 @@
       tiles.appendChild(t);
       return t;
     };
-    const set = (t, v, sub) => { t.children[1].textContent = v; t.children[2].textContent = sub || ''; };
+    const set = (t, v, sub, cls) => { t.children[1].textContent = v; t.children[2].textContent = sub || ''; t.children[2].className = cls || ''; };
     const [played, avg, low1, low01] = ['Played', 'Average FPS', '1% low', '0.1% low'].map(tile);
     host.append(bar, hero);
-    // How this session's frame rate compares with the game's others.
+    // How this session compares: with the one picked, or with the game's others.
     const usual = avgFps(byGame(others)[0] || {});
-    const versus = (fps) => {
-      if (fps == null || usual == null) return '';
-      const d = Math.round(((fps - usual) / usual) * 100);
-      return d === 0 ? 'as usual for this game' : `${d > 0 ? '+' : ''}${d}% vs its other sessions`;
+    const cmpDay = cmp ? shortDay(cmp.start) : '';
+    const delta = (v, w, unit, higherIsBetter) => {
+      if (v == null || w == null) return ['', ''];
+      const d = Math.round((v - w) * 10) / 10;
+      if (Math.abs(d) < 0.5) return [`same as ${cmpDay}`, ''];
+      const txt = `${d > 0 ? '+' : ''}${Math.abs(d) >= 10 ? Math.round(d) : d}${unit} vs ${cmpDay}`;
+      return [txt, (d > 0) === higherIsBetter ? 'good' : 'bad'];
     };
-    const win = { from: s.start, to: s.live ? null : s.end, panels: sessionPanels(s) };
+    const versus = (fps) => {
+      if (cmp) return delta(fps, cmp.fps, '', true);
+      if (fps == null || usual == null) return ['', ''];
+      const d = Math.round(((fps - usual) / usual) * 100);
+      return [d === 0 ? 'as usual for this game' : `${d > 0 ? '+' : ''}${d}% vs its other sessions`, ''];
+    };
+    const around = K.prefs.sessionAround !== false;
+    const tools = choice({ options: [{ value: 'around', label: '30 min around' }, { value: 'game', label: 'Game only' }], value: around ? 'around' : 'game', label: 'Charts', onChange: (v) => { K.setPref('sessionAround', v === 'around'); again(); } });
+    // Games played just before or after this one, and the compared one: their before
+    // and after stop there.
+    const nearS = near(s), [b0, a1] = aroundBounds(s, nearS);
+    const nearC = cmp ? near(cmp) : [], [cb0, ca1] = cmp ? aroundBounds(cmp, nearC) : [];
+    const win = { from: s.start, to: s.live ? null : s.end, around, tools, panels: sessionPanels(s, detailed), near: nearS, cmp: cmp ? { from: cmp.start, to: cmp.end, label: cmpDay, lo: cb0, hi: ca1 } : null };
     function fill() {
       const g = s.live && S.status && S.status.game;
       if (s.live && g && g.start === s.start) Object.assign(s, { played: g.played, fps: g.avg_fps, low1: g.low1 });
       else if (s.live && win.to == null) win.to = Date.now();
       const end = win.to == null ? 'now' : clock(win.to);
       whenEl.textContent = `${dayLabel(s.start)}, ${clock(s.start)} – ${end}${s.exe ? ` · ${s.exe}` : ''}${s.live && win.to != null ? ' · the game has closed' : ''}`;
-      set(played, playTime(s.played));
-      set(avg, fpsText(s.fps), versus(s.fps));
-      set(low1, fpsText(s.low1));
-      set(low01, fpsText(s.low01));
+      set(played, playTime(s.played), cmp ? `${playTime(cmp.played)} on ${cmpDay}` : '');
+      set(avg, fpsText(s.fps), ...versus(s.fps));
+      set(low1, fpsText(s.low1), ...(cmp ? delta(s.low1, cmp.low1, '', true) : []));
+      set(low01, fpsText(s.low01), ...(cmp ? delta(s.low01, cmp.low01, '', true) : []));
     }
     for (const [label, pick] of PEAKS) {
       const v = sessionPeak(s, pick);
-      if (v != null) set(tile(label), K.temp(v, 0));
+      if (v == null) continue;
+      const w = cmp ? sessionPeak(cmp, pick) : null;
+      set(tile(label), K.temp(v, 0), ...(w != null ? delta(K.toUnit(v), K.toUnit(w), '°', false) : []));
     }
     fill();
     if (s.live) track(S.on('state', fill));
-    host.appendChild(historyCharts(win));
+    // Every temperature here is in the unit picked.
+    track(K.on('prefs', (k) => { if (k === 'unit') again(); }));
+    // What happened: where the frame rate fell, and how long it ran how warm.
+    const what = h('<div class="cam-swhat"><section class="cam-panel cam-sdrops"><h3>Frame rate drops</h3><div></div></section><section class="cam-panel cam-sbands"><h3>Time at temperature</h3><div></div></section></div>');
+    // Warming up and cooling down, of each temperature charted.
+    const warmBox = h('<div></div>');
+    const warmIds = win.panels.filter((p) => p.kind === 'temp').flatMap((p) => p.series);
+    win.onData = (all, call, step) => {
+      const end = win.to ?? Date.now();
+      showWarm(all, call, step, end);
+      // The rest is about the games only.
+      const pts = all.filter((q) => q.t + step / 2 >= s.start && q.t + step / 2 <= end);
+      const cpts = cmp ? call.filter((q) => q.t + step / 2 >= cmp.start && q.t + step / 2 <= cmp.end) : [];
+      const drops = fpsDrops(pts, s.fps), box = what.querySelector('.cam-sdrops div');
+      box.textContent = '';
+      if (!pts.some((q) => q.v.fps)) box.innerHTML = '<p class="cam-muted">No frame rates were kept for this session.</p>';
+      else if (!drops.length) box.innerHTML = `<p class="cam-muted">It never fell under 85% of its average, ${fpsText(s.fps * 0.85)} fps, for a minute.</p>`;
+      for (const d of drops.slice(0, 6)) {
+        const gpu = d.at.v['gpu.load'] && d.at.v['gpu.load'][0];
+        const tag = gpu == null ? '' : gpu >= 95 ? `<span class="tag hot">GPU at ${Math.round(gpu)}%</span>` : `<span class="tag">GPU at ${Math.round(gpu)}%</span>`;
+        const temps = ['cpu.temp', 'gpu.temp'].map((id) => (d.at.v[id] ? `${id === 'cpu.temp' ? 'CPU' : 'GPU'} ${K.temp(d.at.v[id][0], 0)}` : null)).filter(Boolean).join(', ');
+        const r = h(`<button type="button" class="cam-sdrop"><time class="num"></time><span><b class="num">${fpsText(d.low)} fps</b><small></small></span>${tag}</button>`);
+        r.querySelector('time').textContent = elapsedOf(d.from);
+        const mins = Math.round((d.to - d.from) / 60e3) + 1;
+        r.querySelector('small').textContent = `for ${plural(mins, 'minute')}${temps ? ` · ${temps}` : ''}`;
+        r.title = 'Zoom the charts in on it';
+        r.addEventListener('click', () => { charts.zoomTo([d.from - 6 * 60e3, d.to + 6 * 60e3]); charts.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+        box.appendChild(r);
+      }
+      const bands = what.querySelector('.cam-sbands div');
+      bands.textContent = '';
+      const rows = [['CPU', 'cpu.temp', pts], ['GPU', 'gpu.temp', pts]].flatMap(([label, id, list]) => [[label, id, list], ...(cpts.length ? [[cmpDay, id, cpts, true]] : [])]);
+      for (const [label, id, list, dim] of rows) {
+        const b = tempBands(list, id);
+        if (!b) continue;
+        const r = h(`<div class="cam-sband${dim ? ' dim' : ''}"><span></span><div class="stack">${b.map((x, i) => `<i class="b${i}" style="flex-grow:${x}" title="${Math.round(x * 100)}%"></i>`).join('')}</div></div>`);
+        r.firstElementChild.textContent = label;
+        bands.appendChild(r);
+      }
+      if (!bands.children.length) bands.innerHTML = '<p class="cam-muted">No CPU or GPU temperatures were kept for this session.</p>';
+      else bands.insertAdjacentHTML('beforeend', `<p class="cam-sbandkey">${['under', '', '', 'over'].map((w, i) => `<span><i class="b${i}"></i>${i === 0 ? `under ${K.temp(60, 0)}` : i === 3 ? `over ${K.temp(80, 0)}` : `${K.temp(TEMP_BANDS[i - 1], 0)}–${K.temp(TEMP_BANDS[i], 0)}`}</span>`).join('')}</p>`);
+    };
+    function showWarm(all, call, step, end) {
+      const deg = (d) => { const n = degrees(d); return `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n)}°`; };
+      const rows = warmIds.flatMap((x) => {
+        const w = warmCool(all, x.id, s.start, end, step, b0, a1);
+        const c = cmp ? warmCool(call, x.id, cmp.start, cmp.end, step, cb0, ca1) : null;
+        return [w && [x.label, w, s.live && win.to == null, end, false, b0 > s.start - SESSION_AROUND], c && [`${x.label}, ${cmpDay}`, c, false, cmp.end, true, cb0 > cmp.start - SESSION_AROUND]].filter(Boolean);
+      });
+      warmBox.textContent = '';
+      if (!rows.length) { warmBox.innerHTML = '<p class="cam-muted">No temperatures were kept for this game.</p>'; return; }
+      warmBox.appendChild(table([
+        { label: 'Sensor', value: ([label]) => label },
+        { label: 'Before', num: true, value: ([, w, , , , cut]) => (w.before != null ? K.temp(w.before, 0) : cut ? 'Right after a game' : 'No readings') },
+        { label: 'In game', num: true, value: ([, w]) => `${K.temp(w.game, 0)}${w.before == null ? '' : ` (${deg(w.rise)})`}` },
+        { label: 'Highest', num: true, value: ([, w]) => K.temp(w.top, 0) },
+        { label: 'Warmed up in', num: true, value: ([, w]) => (w.before == null ? '' : w.rise < 2 ? 'Hardly warmed' : w.warm == null ? 'Kept rising' : minutes(w.warm)) },
+        { label: 'Cooled down in', num: true, value: ([, w, playing, e]) => {
+          if (playing) return 'Still playing';
+          if (w.cool != null) return minutes(w.cool);
+          // After another game, or up to the next one, only how far it fell.
+          if (!w.rest || w.next != null) {
+            if (w.after == null) return w.next != null ? 'Next game right after' : 'No readings after';
+            return degrees(w.fell) >= 1 ? `Fell ${degrees(w.fell)}° in ${minutes(w.after)}` : `No cooler in ${minutes(w.after)}`;
+          }
+          if (w.before == null || w.rise < 2) return '';
+          if (w.still == null) return Date.now() - e < 2 * 60e3 ? 'Just ended' : 'No readings after';
+          return Date.now() - e < SESSION_AROUND ? `${deg(w.still)} so far` : `${deg(w.still)} after ${minutes(w.after)}`;
+        } },
+      ], rows, ([, , , , dim]) => (dim ? 'dim' : '')));
+      // What the games just before and after this one did to its numbers.
+      const prev = nearS.find((n) => n.from < s.start && (n.to ?? Date.now()) === b0), next = nearS.find((n) => n.from === a1);
+      const cuts = [];
+      if (prev) cuts.push(b0 >= s.start ? `${prev.label} was still open when this game began, so there is no before, and cooling down says how far it fell.` : `${prev.label} ended ${minutes(s.start - b0)} before this game, so the PC may not have been at rest: before is only the time between them, and cooling down says how far it fell.`);
+      if (next) cuts.push(`${next.label} began ${minutes(a1 - end)} after it, so cooling down stops there.`);
+      const hint = h('<p class="cam-hint"></p>');
+      hint.textContent = `Before is the average of the 30 minutes before the game. Warmed up is when a temperature reached 90% of its rise in the game; cooled down is when it came back within ${degrees(2)}° of before.${cuts.length ? ` ${cuts.join(' ')}` : ''}`;
+      warmBox.appendChild(hint);
+    }
+    const elapsedOf = (t) => sinceStart(t, s.start);
+    const charts = historyCharts(win);
+    host.appendChild(charts);
+    K.section(host, 'Warming up and cooling down').appendChild(warmBox);
+    host.appendChild(what);
     // Every temperature the session kept, also once the history of it is gone.
     const temps = Object.entries(s.temps || {});
-    if (temps.length) {
+    if (temps.length && detailed) {
       const order = (id) => (id === 'cpu.temp' ? 0 : id === 'gpu.temp' ? 1 : S.isLiquid(id) ? 2 : 3);
       temps.sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b));
       K.section(host, 'Temperatures while in front').appendChild(table([
@@ -2391,13 +2787,15 @@
     }
   }
 
-  // A table of `rows`, a column for each of `cols`: { label, value(row), num }.
-  function table(cols, rows) {
+  // A table of `rows`, a column for each of `cols`: { label, value(row), num }, and
+  // each row's class from `rowClass(row)`.
+  function table(cols, rows, rowClass) {
     const el = h('<div class="cam-panel cam-tablewrap"><table class="cam-table"><thead><tr></tr></thead><tbody></tbody></table></div>');
     const head = el.querySelector('tr'), body = el.querySelector('tbody');
     for (const c of cols) { const th = h(`<th scope="col"${c.num ? ' class="num"' : ''}></th>`); th.textContent = c.label; head.appendChild(th); }
     for (const r of rows) {
       const tr = h('<tr></tr>');
+      if (rowClass && rowClass(r)) tr.className = rowClass(r);
       cols.forEach((c, i) => { const td = h(`<td class="${c.num ? 'num' : i === 0 ? 'name' : ''}"></td>`); td.textContent = c.value(r); tr.appendChild(td); });
       body.appendChild(tr);
     }
@@ -2416,6 +2814,14 @@
     // recorded it.
     const steamOf = (game) => { const x = (sessions || []).find((y) => y.game === game && y.steam); return x ? x.steam : null; };
     const back = () => { gameOpen = null; show(); };
+    // The other games, of any kind, played within SESSION_AROUND of session `x`, the
+    // one being played too: { from, to, label }, `to` null while it is played.
+    const near = (x) => {
+      const a = x.start - SESSION_AROUND, b = (x.end ?? Date.now()) + SESSION_AROUND, g = S.status && S.status.game;
+      const list = (sessions || []).map((y) => ({ from: y.start, to: y.end, label: y.game }));
+      if (g && !list.some((y) => y.from === g.start)) list.push({ from: g.start, to: null, label: g.name });
+      return list.filter((y) => y.from !== x.start && y.from < b && (y.to ?? Date.now()) > a);
+    };
 
     // The list, or the session that is open.
     function show() {
@@ -2423,14 +2829,14 @@
       if (gameOpen === 'now' && g) {
         const s = { live: true, game: g.name, exe: g.exe, steam: g.steam || steamOf(g.name), start: g.start, end: null, played: g.played, fps: g.avg_fps, low1: g.low1, low01: null, temps: {} };
         shown = 'now';
-        draw((el) => sessionView(el, s, (sessions || []).filter((x) => x.game === g.name), back));
+        draw((el) => sessionView(el, s, (sessions || []).filter((x) => x.game === g.name), back, show, near));
         return;
       }
       const s = gameOpen != null && sessions && sessions.find((x) => x.start === gameOpen);
       if (s) {
         s.steam = s.steam || steamOf(s.game);
         shown = `s${s.start}`;
-        draw((el) => sessionView(el, s, sessions.filter((x) => x.game === s.game && x !== s), back));
+        draw((el) => sessionView(el, s, sessions.filter((x) => x.game === s.game && x !== s), back, show, near));
         return;
       }
       // Until the sessions load, the one asked for.
