@@ -53,6 +53,8 @@ Experimental: Nexus leaves these out, so the driver follows liquidctl alone, and
 | Kraken X2 (X42, X52, X62, X72) | `1e71:170e` | pump and fan curves from firmware 3, pump ring and logo |
 | Kraken M22 | `1e71:1715` | pump ring and logo |
 | Kraken X31, X41, X61 (and X40, X60) | `2433:b200` | pump and fan duties, logo; on Windows, needs WinUSB bound to it with [Zadig](https://zadig.akeo.ie) |
+| Smart Device (V1; H200i, H400i, H500i, H700i) | `1e71:1714` | duties and speeds on the three fan ports, the LED channel |
+| Grid+ V3 | `1e71:1711` | duties and speeds on the six fan ports |
 
 Other brands' fan hubs and LED controllers, off unless you turn on *Settings → Devices → Other brands*: camless never drives keyboards or mice, and leaves a hub alone while its brand's app runs ([how it works](docs/how-it-works.md#other-brands)). None of them has run with camless yet, so the app calls them experimental. Their lighting is off or one colour:
 
