@@ -35,8 +35,9 @@ pub struct ServiceInfo {
     /// Why a GPU that is read has no power, when that is known.
     #[serde(default)]
     pub gpu_power_error: Option<String>,
-    /// Each way the GPU's power is read, side by side, where more than one is tried:
-    /// an AMD card on Windows. GPU power shows the first one with a reading.
+    /// The ways the GPU's power is read, in order, up to the one GPU power shows, or
+    /// all of them when it shows none: an AMD card's on Windows. Each one before it
+    /// says why it gave nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gpu_power_sources: Vec<PowerSource>,
     /// Why games have no frame rates, when they have none.
