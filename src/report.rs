@@ -954,36 +954,32 @@ about the table"
     }
 
     #[test]
-    fn sets_the_gpu_power_sources_side_by_side() {
+    fn lists_the_gpu_power_sources() {
         let mut f = facts();
         assert!(!render(&f).contains("GPU power sources"), "no section without sources");
         let Ok(st) = &mut f.service else { unreachable!() };
         let stats = PowerStats { last: 259.4, mean: 251.2, min: 240.0, max: 262.0, sd: 5.6, readings: 60 };
         st.service.as_mut().unwrap().gpu_power_sources = vec![
+            // A log the driver stopped filling, and the snapshot shown in its place.
             PowerSource {
                 name: "ADL2_Adapter_PMLog_Start".into(),
                 detail: Some("board power (73), filled every 1000 ms".into()),
-                shown: true,
-                stats: Some(stats),
-                ..Default::default()
-            },
-            PowerSource { name: "ADL2_New_QueryPMLogData_Get".into(), missed: 3, ..Default::default() },
-            PowerSource {
-                name: "ADL2_Overdrive8_PMLog_ShareMemory_Read".into(),
-                detail: Some("board power (73)".into()),
                 missed: 5,
                 stats: Some(stats),
                 ..Default::default()
             },
-            PowerSource { name: "ADL2_Overdrive8_PMLog_ShareMemory_Read".into(), error: Some("the driver shares no log for the card".into()), ..Default::default() },
+            PowerSource { name: "ADL2_New_QueryPMLogData_Get".into(), detail: Some("board power (73)".into()), shown: true, stats: Some(stats), ..Default::default() },
+            // A driver without the log, and a snapshot that gives nothing.
+            PowerSource { name: "ADL2_Adapter_PMLog_Start".into(), error: Some("this AMD driver has no ADL2_Adapter_PMLog_Start".into()), ..Default::default() },
+            PowerSource { name: "ADL2_New_QueryPMLogData_Get".into(), missed: 3, ..Default::default() },
         ];
         let text = render(&f);
         assert!(text.contains(
             "\n**GPU power sources** (the last minute, in watts)\n\
-             - `ADL2_Adapter_PMLog_Start`, board power (73), filled every 1000 ms, shown: now 259, mean 251, min 240, max 262, sd 6, 60 readings\n\
-             - `ADL2_New_QueryPMLogData_Get`, nothing in the last 3 readings: no readings in the last minute\n\
-             - `ADL2_Overdrive8_PMLog_ShareMemory_Read`, board power (73), nothing in the last 5 readings: now 259, mean 251, min 240, max 262, sd 6, 60 readings\n\
-             - `ADL2_Overdrive8_PMLog_ShareMemory_Read`: no (the driver shares no log for the card)\n\n**Devices camless drives**"
+             - `ADL2_Adapter_PMLog_Start`, board power (73), filled every 1000 ms, nothing in the last 5 readings: now 259, mean 251, min 240, max 262, sd 6, 60 readings\n\
+             - `ADL2_New_QueryPMLogData_Get`, board power (73), shown: now 259, mean 251, min 240, max 262, sd 6, 60 readings\n\
+             - `ADL2_Adapter_PMLog_Start`: no (this AMD driver has no ADL2_Adapter_PMLog_Start)\n\
+             - `ADL2_New_QueryPMLogData_Get`, nothing in the last 3 readings: no readings in the last minute\n\n**Devices camless drives**"
         ), "{text}");
     }
 
