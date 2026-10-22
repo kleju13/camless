@@ -374,8 +374,8 @@ const ADL_PMLOG_ASIC_POWER: usize = 23;
 const LOG_EVERY_MS: u32 = 1000;
 /// A log the driver has not filled for this long reads as nothing.
 const LOG_STALE: Duration = Duration::from_secs(5);
-/// The readings each source keeps for the report: a minute, at the default interval.
-const WINDOW: usize = 60;
+/// How far back each source's readings go in the report.
+const WINDOW: Duration = Duration::from_secs(60);
 
 /// `AdapterInfo` in `adl_structures.h`, as built for Windows.
 #[repr(C)]
@@ -510,25 +510,32 @@ fn fresh(seen: &mut Option<(u64, Instant)>, updated: u64, now: Instant) -> bool 
     }
 }
 
-/// A source's last readings, for the report.
+/// A source's readings of the last `WINDOW`, with when each was taken, for the report.
 #[derive(Default)]
-struct Window(std::collections::VecDeque<f32>);
+struct Window(std::collections::VecDeque<(Instant, f32)>);
 
 impl Window {
-    fn push(&mut self, watts: f32) {
-        if self.0.len() == WINDOW {
+    /// Drops the readings older than `WINDOW`, so a source that stopped reading
+    /// empties within a minute.
+    fn expire(&mut self, now: Instant) {
+        while self.0.front().is_some_and(|&(at, _)| now.duration_since(at) > WINDOW) {
             self.0.pop_front();
         }
-        self.0.push_back(watts);
+    }
+
+    fn push(&mut self, now: Instant, watts: f32) {
+        self.expire(now);
+        self.0.push_back((now, watts));
     }
 
     fn stats(&self) -> Option<PowerStats> {
-        let last = *self.0.back()?;
+        let last = self.0.back()?.1;
+        let watts = || self.0.iter().map(|&(_, w)| w);
         let n = self.0.len() as f32;
-        let mean = self.0.iter().sum::<f32>() / n;
-        let sd = (self.0.iter().map(|w| (w - mean).powi(2)).sum::<f32>() / n).sqrt();
-        let min = self.0.iter().copied().fold(f32::INFINITY, f32::min);
-        let max = self.0.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let mean = watts().sum::<f32>() / n;
+        let sd = (watts().map(|w| (w - mean).powi(2)).sum::<f32>() / n).sqrt();
+        let min = watts().fold(f32::INFINITY, f32::min);
+        let max = watts().fold(f32::NEG_INFINITY, f32::max);
         Some(PowerStats { last, mean, min, max, sd, readings: self.0.len() as u32 })
     }
 }
@@ -773,15 +780,16 @@ impl AdlPower {
     /// Reads every source, so the report can set them side by side, and gives the
     /// first one's watts.
     fn watts(&mut self) -> Option<f32> {
-        let (context, index) = (self.context, self.index);
+        let (context, index, now) = (self.context, self.index, Instant::now());
         let mut shown = None;
         for s in &mut self.sources {
             let Ok(reader) = &mut s.reader else { continue };
             let reading = reader.read(context, index);
+            s.window.expire(now);
             s.shown = shown.is_none() && reading.is_some();
             s.missed = if reading.is_some() { 0 } else { s.missed.saturating_add(1) };
             if let Some((sensor, watts, every)) = reading {
-                s.window.push(watts);
+                s.window.push(now, watts);
                 s.detail = Some(match every {
                     Some(ms) => format!("{}, filled every {ms} ms", sensor_name(sensor)),
                     None => sensor_name(sensor).to_string(),
@@ -888,19 +896,26 @@ mod tests {
 
     #[test]
     fn a_window_keeps_the_last_minute() {
+        let t = Instant::now();
+        let at = |s: u64| t + Duration::from_secs(s);
         let mut w = Window::default();
         assert_eq!(w.stats(), None);
-        // The 60 W / 470 W jumps of #42, then a minute at a steady 250 W.
-        for i in 0..WINDOW {
-            w.push(if i % 2 == 0 { 60.0 } else { 470.0 });
+        // The 60 W / 470 W jumps of #42, one a second, then a minute at a steady 250 W.
+        for i in 0..60 {
+            w.push(at(i), if i % 2 == 0 { 60.0 } else { 470.0 });
         }
         let s = w.stats().unwrap();
         assert_eq!((s.last, s.mean, s.min, s.max, s.sd, s.readings), (470.0, 265.0, 60.0, 470.0, 205.0, 60));
-        for _ in 0..WINDOW {
-            w.push(250.0);
+        for i in 60..121 {
+            w.push(at(i), 250.0);
         }
         let s = w.stats().unwrap();
-        assert_eq!((s.mean, s.min, s.max, s.sd, s.readings), (250.0, 250.0, 250.0, 0.0, 60));
+        assert_eq!((s.mean, s.min, s.max, s.sd, s.readings), (250.0, 250.0, 250.0, 0.0, 61));
+        // A source that stops reading empties within a minute.
+        w.expire(at(180));
+        assert_eq!(w.stats().unwrap().readings, 1);
+        w.expire(at(181));
+        assert_eq!(w.stats(), None);
     }
 
     #[test]

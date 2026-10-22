@@ -381,7 +381,7 @@ fn render(f: &Facts) -> String {
                     }
                     let _ = match (&p.error, &p.stats) {
                         (Some(e), _) => writeln!(s, "- {head}: no ({e})"),
-                        (None, None) => writeln!(s, "- {head}: no readings yet"),
+                        (None, None) => writeln!(s, "- {head}: no readings in the last minute"),
                         (None, Some(t)) => writeln!(
                             s,
                             "- {head}: now {:.0}, mean {:.0}, min {:.0}, max {:.0}, sd {:.0}, {} readings",
@@ -981,7 +981,7 @@ about the table"
         assert!(text.contains(
             "\n**GPU power sources** (the last minute, in watts)\n\
              - `ADL2_Adapter_PMLog_Start`, board power (73), filled every 1000 ms, shown: now 259, mean 251, min 240, max 262, sd 6, 60 readings\n\
-             - `ADL2_New_QueryPMLogData_Get`, nothing in the last 3 readings: no readings yet\n\
+             - `ADL2_New_QueryPMLogData_Get`, nothing in the last 3 readings: no readings in the last minute\n\
              - `ADL2_Overdrive8_PMLog_ShareMemory_Read`, board power (73), nothing in the last 5 readings: now 259, mean 251, min 240, max 262, sd 6, 60 readings\n\
              - `ADL2_Overdrive8_PMLog_ShareMemory_Read`: no (the driver shares no log for the card)\n\n**Devices camless drives**"
         ), "{text}");
