@@ -5,7 +5,7 @@
 //! memory from the system. [`os`] holds what differs.
 
 use anyhow::{bail, Context, Result};
-use camless_core::status::{Sensor, Unit};
+use camless_core::status::{PowerSource, Sensor, Unit};
 use libloading::Library;
 use serde::Serialize;
 use std::ffi::c_void;
@@ -150,6 +150,15 @@ impl Sensors {
             _ => None,
         };
         Sensors { cpu_name: os::cpu_name().unwrap_or_else(|| "CPU".into()), gpu_name, cpu_error, gpu_error, gpu_power_error, gpu, cpu, times: None }
+    }
+
+    /// Each way the GPU's power is read, where there is more than one.
+    pub fn gpu_power_sources(&self) -> Vec<PowerSource> {
+        match &self.gpu {
+            #[cfg(windows)]
+            Some(Gpu::Wddm(w)) => w.power_sources(),
+            _ => Vec::new(),
+        }
     }
 
     pub fn has_cpu_temp(&self) -> bool {

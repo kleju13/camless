@@ -35,9 +35,44 @@ pub struct ServiceInfo {
     /// Why a GPU that is read has no power, when that is known.
     #[serde(default)]
     pub gpu_power_error: Option<String>,
+    /// Each way the GPU's power is read, side by side, where more than one is tried:
+    /// an AMD card on Windows. GPU power shows the first one with a reading.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_power_sources: Vec<PowerSource>,
     /// Why games have no frame rates, when they have none.
     #[serde(default)]
     pub fps_error: Option<String>,
+}
+
+/// One way of reading the GPU's power, and what it read over the last minute.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct PowerSource {
+    /// The library call it reads through.
+    pub name: String,
+    /// What it reads, such as the sensor and how often the driver fills it.
+    pub detail: Option<String>,
+    /// Why it reads nothing, when it could not start.
+    pub error: Option<String>,
+    /// GPU power shows this one now.
+    pub shown: bool,
+    /// Its readings in a row that gave nothing: a source that stopped keeps its
+    /// last minute.
+    #[serde(default)]
+    pub missed: u32,
+    /// None before its first reading.
+    pub stats: Option<PowerStats>,
+}
+
+/// The last minute of one source's readings, in watts.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct PowerStats {
+    pub last: f32,
+    pub mean: f32,
+    pub min: f32,
+    pub max: f32,
+    /// The standard deviation: a steady draw has a small one, spikes a large one.
+    pub sd: f32,
+    pub readings: u32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

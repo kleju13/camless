@@ -369,6 +369,27 @@ fn render(f: &Facts) -> String {
                 }
             }
             let _ = writeln!(s, "{}", parts.join(", "));
+            if let Some(sv) = st.service.as_ref().filter(|sv| !sv.gpu_power_sources.is_empty()) {
+                let _ = writeln!(s, "\n**GPU power sources** (the last minute, in watts)");
+                for p in &sv.gpu_power_sources {
+                    let mut head = format!("`{}`", p.name);
+                    for part in p.detail.iter().map(String::as_str).chain(p.shown.then_some("shown")) {
+                        let _ = write!(head, ", {part}");
+                    }
+                    if p.missed > 0 && p.error.is_none() {
+                        let _ = write!(head, ", nothing in the last {} readings", p.missed);
+                    }
+                    let _ = match (&p.error, &p.stats) {
+                        (Some(e), _) => writeln!(s, "- {head}: no ({e})"),
+                        (None, None) => writeln!(s, "- {head}: no readings yet"),
+                        (None, Some(t)) => writeln!(
+                            s,
+                            "- {head}: now {:.0}, mean {:.0}, min {:.0}, max {:.0}, sd {:.0}, {} readings",
+                            t.last, t.mean, t.min, t.max, t.sd, t.readings
+                        ),
+                    };
+                }
+            }
         }
         Err(e) => {
             let _ = writeln!(s, "Service: {e}, so no firmware versions or device errors");
@@ -606,6 +627,7 @@ fn scrub_facts(f: &mut Facts) {
             }
             if let Some(sv) = &mut st.service {
                 sv.cpu_sensor_error.iter_mut().chain(sv.gpu_sensor_error.iter_mut()).chain(sv.gpu_power_error.iter_mut()).for_each(clean);
+                sv.gpu_power_sources.iter_mut().flat_map(|p| p.error.iter_mut().chain(p.detail.iter_mut())).for_each(clean);
             }
         }
         Err(e) => clean(e),
@@ -689,7 +711,7 @@ fn mask(text: &str, marker: &str, keep_marker: bool, end: fn(char) -> bool, with
 #[cfg(test)]
 mod tests {
     use super::*;
-    use camless_core::status::{Device, FanChannel, LcdInfo, LightChannel, Sensor, ServiceInfo, Unit};
+    use camless_core::status::{Device, FanChannel, LcdInfo, LightChannel, PowerSource, PowerStats, Sensor, ServiceInfo, Unit};
 
     // Rebuilt by Windows from a Kraken Elite 2024 (firmware 1.2.0) and a Control Hub,
     // read with `get_report_descriptor`.
@@ -929,6 +951,40 @@ about the table"
         let Ok(st) = &mut f.service else { unreachable!() };
         st.service.as_mut().unwrap().gpu_power_error = Some("atiadlxx.dll not found: no AMD driver".into());
         assert!(render(&f).contains("GPU readings: yes, GPU power: no (atiadlxx.dll not found: no AMD driver)\n"));
+    }
+
+    #[test]
+    fn sets_the_gpu_power_sources_side_by_side() {
+        let mut f = facts();
+        assert!(!render(&f).contains("GPU power sources"), "no section without sources");
+        let Ok(st) = &mut f.service else { unreachable!() };
+        let stats = PowerStats { last: 259.4, mean: 251.2, min: 240.0, max: 262.0, sd: 5.6, readings: 60 };
+        st.service.as_mut().unwrap().gpu_power_sources = vec![
+            PowerSource {
+                name: "ADL2_Adapter_PMLog_Start".into(),
+                detail: Some("board power (73), filled every 1000 ms".into()),
+                shown: true,
+                stats: Some(stats),
+                ..Default::default()
+            },
+            PowerSource { name: "ADL2_New_QueryPMLogData_Get".into(), missed: 3, ..Default::default() },
+            PowerSource {
+                name: "ADL2_Overdrive8_PMLog_ShareMemory_Read".into(),
+                detail: Some("board power (73)".into()),
+                missed: 5,
+                stats: Some(stats),
+                ..Default::default()
+            },
+            PowerSource { name: "ADL2_Overdrive8_PMLog_ShareMemory_Read".into(), error: Some("the driver shares no log for the card".into()), ..Default::default() },
+        ];
+        let text = render(&f);
+        assert!(text.contains(
+            "\n**GPU power sources** (the last minute, in watts)\n\
+             - `ADL2_Adapter_PMLog_Start`, board power (73), filled every 1000 ms, shown: now 259, mean 251, min 240, max 262, sd 6, 60 readings\n\
+             - `ADL2_New_QueryPMLogData_Get`, nothing in the last 3 readings: no readings yet\n\
+             - `ADL2_Overdrive8_PMLog_ShareMemory_Read`, board power (73), nothing in the last 5 readings: now 259, mean 251, min 240, max 262, sd 6, 60 readings\n\
+             - `ADL2_Overdrive8_PMLog_ShareMemory_Read`: no (the driver shares no log for the card)\n\n**Devices camless drives**"
+        ), "{text}");
     }
 
     #[test]
