@@ -4,6 +4,8 @@
 
 A light replacement for NZXT CAM. It handles fan and pump curves, lighting and the Kraken LCD in two small exes, about 4 MB together, where CAM installs about 500 MB of Electron.
 
+**[Project page](https://kleju.dev/camless.html?lang=en)**: camless and KrakenDial, how they started, and how much CPU they use next to CAM.
+
 ![The Cooling page: liquid, CPU and GPU temperatures, and each fan on its curve](docs/screenshots/cooling.png)
 
 **[Download camless-setup.exe](https://github.com/kleju13/camless/releases/latest/download/camless-setup.exe)** · Windows 10 and 11, x64 · [Linux](#linux), x64, not yet run on hardware
