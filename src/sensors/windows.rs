@@ -6,7 +6,8 @@
 use anyhow::{bail, Context, Result};
 use libloading::Library;
 use std::ffi::c_void;
-use std::time::Instant;
+use camless_core::status::{PowerSource, PowerStats};
+use std::time::{Duration, Instant};
 use windows_sys::Wdk::Graphics::Direct3D::{
     D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, D3DKMT_ADAPTERINFO,
     D3DKMT_ADAPTERREGISTRYINFO, D3DKMT_ADAPTERTYPE, D3DKMT_ADAPTER_PERFDATA, D3DKMT_CLOSEADAPTER, D3DKMT_ENUMADAPTERS2,
@@ -330,8 +331,13 @@ impl WddmGpu {
         Ok(gpu)
     }
 
-    pub fn power_w(&self) -> Option<f32> {
-        self.power.as_ref()?.watts()
+    pub fn power_w(&mut self) -> Option<f32> {
+        self.power.as_mut()?.watts()
+    }
+
+    /// Each way ADL gives the card's power, and its last minute.
+    pub fn power_sources(&self) -> Vec<PowerSource> {
+        self.power.as_ref().map_or_else(Vec::new, AdlPower::sources)
     }
 
     /// None when the driver reports none, which it does as 0.
@@ -363,6 +369,13 @@ impl WddmGpu {
 /// has from RDNA 3 on, and the chip's own draw, which cards before have.
 const ADL_PMLOG_BOARD_POWER: usize = 73;
 const ADL_PMLOG_ASIC_POWER: usize = 23;
+/// How often the driver fills a log camless starts, as LibreHardwareMonitor and
+/// AMD's samples ask.
+const LOG_EVERY_MS: u32 = 1000;
+/// A log the driver has not filled for this long reads as nothing.
+const LOG_STALE: Duration = Duration::from_secs(5);
+/// How far back each source's readings go in the report.
+const WINDOW: Duration = Duration::from_secs(60);
 
 /// `AdapterInfo` in `adl_structures.h`, as built for Windows.
 #[repr(C)]
@@ -391,39 +404,228 @@ struct AdlPmLog {
     sensors: [[i32; 2]; 256],
 }
 
-type AdlQuery = unsafe extern "C" fn(*mut c_void, i32, *mut AdlPmLog) -> i32;
+/// `ADLPMLogSupportInfo`: the sensors the driver can log, ended by 0.
+#[repr(C)]
+struct AdlLogSupport {
+    sensors: [u16; 256],
+    reserved: [i32; 16],
+}
 
-/// Some ADL calls hand back memory they get from this; none camless makes does.
+/// `ADLPMLogStartInput`: the sensors to log, ended by 0, and how often.
+#[repr(C)]
+struct AdlLogStart {
+    sensors: [u16; 256],
+    sample_rate_ms: u32,
+    reserved: [i32; 15],
+}
+
+/// `ADLPMLogStartOutput`: where the driver keeps the log.
+#[repr(C)]
+struct AdlLogStarted {
+    address: *const AdlLogData,
+    reserved: [i32; 14],
+}
+
+/// `ADLPMLogData`: the log the driver keeps filling, a `sensor`, `value` pair for each
+/// sensor logged, ended by sensor 0.
+#[repr(C)]
+struct AdlLogData {
+    version: u32,
+    sample_rate_ms: u32,
+    updated: u64,
+    values: [[u32; 2]; 256],
+    reserved: [u32; 256],
+}
+
+type AdlQuery = unsafe extern "C" fn(*mut c_void, i32, *mut AdlPmLog) -> i32;
+type DeviceCreate = unsafe extern "C" fn(*mut c_void, i32, *mut u32) -> i32;
+type DeviceDestroy = unsafe extern "C" fn(*mut c_void, u32) -> i32;
+type LogSupport = unsafe extern "C" fn(*mut c_void, i32, *mut AdlLogSupport) -> i32;
+type LogStart = unsafe extern "C" fn(*mut c_void, i32, *mut AdlLogStart, *mut AdlLogStarted, u32) -> i32;
+type LogStop = unsafe extern "C" fn(*mut c_void, i32, u32) -> i32;
+type ShareSupport = unsafe extern "C" fn(*mut c_void, i32, *mut i32, i32) -> i32;
+type ShareSensors = unsafe extern "C" fn(*mut c_void, i32, *mut i32, *mut *mut i32) -> i32;
+type ShareStart = unsafe extern "C" fn(*mut c_void, i32, i32, i32, *mut i32, *mut u32, *mut *mut c_void, i32) -> i32;
+type ShareRead = unsafe extern "C" fn(*mut c_void, i32, i32, *mut i32, *mut *mut c_void, *mut AdlPmLog) -> i32;
+type ShareStop = unsafe extern "C" fn(*mut c_void, i32, *mut u32) -> i32;
+
+extern "C" {
+    fn malloc(size: usize) -> *mut c_void;
+    fn free(p: *mut c_void);
+}
+
+/// Where ADL gets memory it hands back, which the caller frees with `free`.
 extern "C" fn adl_alloc(size: i32) -> *mut c_void {
-    extern "C" {
-        fn malloc(size: usize) -> *mut c_void;
-    }
     unsafe { malloc(size.max(0) as usize) }
 }
 
+/// Only `ADL_OK`, as AMD's samples and LibreHardwareMonitor take it from the log calls:
+/// a warning may come without the device or log.
+fn adl_ok(status: i32, call: &str) -> std::result::Result<(), String> {
+    if status != 0 {
+        return Err(format!("{call} failed ({status})"));
+    }
+    Ok(())
+}
+
+/// What a reading came from, for the report.
+fn sensor_name(sensor: usize) -> &'static str {
+    if sensor == ADL_PMLOG_BOARD_POWER {
+        "board power (73)"
+    } else {
+        "chip power (23)"
+    }
+}
+
 /// Board power, or the chip's on a card without it, in watts, as LibreHardwareMonitor
-/// reads them. None when the card has neither.
-fn pmlog_watts(log: &AdlPmLog) -> Option<f32> {
+/// reads them, with the sensor it came from. None when the card has neither.
+fn pmlog_watts(log: &AdlPmLog) -> Option<(usize, f32)> {
     [ADL_PMLOG_BOARD_POWER, ADL_PMLOG_ASIC_POWER]
         .into_iter()
-        .map(|i| log.sensors[i])
-        .find(|&[supported, _]| supported != 0)
-        .and_then(|[_, watts]| (watts >= 0).then_some(watts as f32))
+        .find(|&i| log.sensors[i][0] != 0)
+        .and_then(|i| (log.sensors[i][1] >= 0).then_some((i, log.sensors[i][1] as f32)))
+}
+
+/// The same from a log the driver keeps, whose pairs end at sensor 0.
+fn log_watts(values: &[[u32; 2]]) -> Option<(usize, f32)> {
+    let logged = |sensor: usize| values.iter().take_while(|v| v[0] != 0).find(|v| v[0] as usize == sensor);
+    [ADL_PMLOG_BOARD_POWER, ADL_PMLOG_ASIC_POWER]
+        .into_iter()
+        .find_map(|i| Some((i, logged(i)?[1])))
+        .and_then(|(i, w)| (w as i32 >= 0).then_some((i, w as f32)))
+}
+
+/// Whether a log's time stamp moved within `LOG_STALE`. `seen` is the last stamp and
+/// when it changed.
+fn fresh(seen: &mut Option<(u64, Instant)>, updated: u64, now: Instant) -> bool {
+    if updated == 0 {
+        return false;
+    }
+    match *seen {
+        Some((stamp, since)) if stamp == updated => now.duration_since(since) < LOG_STALE,
+        _ => {
+            *seen = Some((updated, now));
+            true
+        }
+    }
+}
+
+/// A source's readings of the last `WINDOW`, with when each was taken, for the report.
+#[derive(Default)]
+struct Window(std::collections::VecDeque<(Instant, f32)>);
+
+impl Window {
+    /// Drops the readings older than `WINDOW`, so a source that stopped reading
+    /// empties within a minute.
+    fn expire(&mut self, now: Instant) {
+        while self.0.front().is_some_and(|&(at, _)| now.duration_since(at) > WINDOW) {
+            self.0.pop_front();
+        }
+    }
+
+    fn push(&mut self, now: Instant, watts: f32) {
+        self.expire(now);
+        self.0.push_back((now, watts));
+    }
+
+    fn stats(&self) -> Option<PowerStats> {
+        let last = self.0.back()?.1;
+        let watts = || self.0.iter().map(|&(_, w)| w);
+        let n = self.0.len() as f32;
+        let mean = watts().sum::<f32>() / n;
+        let sd = (watts().map(|w| (w - mean).powi(2)).sum::<f32>() / n).sqrt();
+        let min = watts().fold(f32::INFINITY, f32::min);
+        let max = watts().fold(f32::NEG_INFINITY, f32::max);
+        Some(PowerStats { last, mean, min, max, sd, readings: self.0.len() as u32 })
+    }
+}
+
+/// One way ADL gives the card's power.
+enum Reader {
+    /// `ADL2_Adapter_PMLog_Start`: a log the driver fills once a second in memory it
+    /// shares, as LibreHardwareMonitor reads RDNA 3 since its #1308. That fixed power
+    /// jumping by 100 W within a second while AMD's overlay held still (its #1285).
+    Log { device: u32, data: *const AdlLogData, stop: LogStop, seen: Option<(u64, Instant)> },
+    /// `ADL2_Overdrive8_PMLog_ShareMemory_Read`: what ADL 18.1 has in place of the
+    /// snapshot, in AMD's Overdrive 8 sample. Its output has no time stamp, so a log
+    /// the driver stopped filling would still read, frozen.
+    Shared { device: u32, memory: *mut c_void, sensors: Vec<i32>, read: ShareRead, stop: ShareStop },
+    /// `ADL2_New_QueryPMLogData_Get`, which ADL 18.1 deprecates: on an RX 9070 XT it
+    /// jumped between 60 and 470 W each second under a steady 260 W (camless #42).
+    Snapshot(AdlQuery),
+}
+
+impl Reader {
+    /// Watts, the sensor they came from, and how often the driver fills the log.
+    fn read(&mut self, context: *mut c_void, index: i32) -> Option<(usize, f32, Option<u32>)> {
+        match self {
+            Reader::Log { data, seen, .. } => {
+                // A copy, as LibreHardwareMonitor takes one: the driver keeps writing
+                // it, a whole number at a time, and ADL promises no alignment.
+                let log = unsafe { std::ptr::read_unaligned(*data) };
+                if !fresh(seen, log.updated, Instant::now()) {
+                    return None;
+                }
+                let (sensor, watts) = log_watts(&log.values)?;
+                Some((sensor, watts, Some(log.sample_rate_ms)))
+            }
+            Reader::Shared { memory, sensors, read, .. } => {
+                let mut log: AdlPmLog = unsafe { std::mem::zeroed() };
+                let status = unsafe { read(context, index, sensors.len() as i32, sensors.as_mut_ptr(), memory, &mut log) };
+                let (sensor, watts) = (status >= 0).then(|| pmlog_watts(&log))??;
+                Some((sensor, watts, None))
+            }
+            Reader::Snapshot(query) => {
+                let (sensor, watts) = pmlog_watts(&snapshot(*query, context, index).ok()?)?;
+                Some((sensor, watts, None))
+            }
+        }
+    }
+}
+
+struct Source {
+    name: &'static str,
+    reader: std::result::Result<Reader, String>,
+    detail: Option<String>,
+    shown: bool,
+    /// Readings in a row that gave nothing.
+    missed: u32,
+    window: Window,
+}
+
+impl Source {
+    fn new(name: &'static str, reader: std::result::Result<Reader, String>) -> Source {
+        Source { name, reader, detail: None, shown: false, missed: 0, window: Window::default() }
+    }
+}
+
+/// `ADL2_New_QueryPMLogData_Get`'s log, or ADL's status when it gives none.
+fn snapshot(query: AdlQuery, context: *mut c_void, index: i32) -> std::result::Result<AdlPmLog, i32> {
+    let mut log: AdlPmLog = unsafe { std::mem::zeroed() };
+    let status = unsafe { query(context, index, &mut log) };
+    if status < 0 {
+        return Err(status);
+    }
+    Ok(log)
 }
 
 /// An AMD card's power in watts, through AMD's ADL (`atiadlxx.dll`, which comes with
-/// the driver): the Overdrive 8 log, `ADL2_New_QueryPMLogData_Get`, as
-/// LibreHardwareMonitor reads it. ADL lists each card once for each display output,
-/// by its PCI bus and device; the card is the one at D3DKMT's address.
+/// the driver). ADL lists each card once for each display output, by its PCI bus and
+/// device; the card is the one at D3DKMT's address.
+///
+/// ADL gives power three ways, and until one is confirmed on a card each is read
+/// side by side, for the report. GPU power shows the first with a reading: the log
+/// LibreHardwareMonitor reads, else the snapshot 0.5.0-beta.6 read. The shared log
+/// comes last, as nothing would show it frozen.
 struct AdlPower {
-    _lib: Library,
+    lib: Library,
     context: *mut c_void,
     index: i32,
-    query: AdlQuery,
     destroy: unsafe extern "C" fn(*mut c_void) -> i32,
+    sources: Vec<Source>,
 }
 
-// One thread reads the sensors at a time, and the context is this reader's own.
+// One thread reads the sensors at a time, and the context and logs are this reader's own.
 unsafe impl Send for AdlPower {}
 
 impl AdlPower {
@@ -441,16 +643,15 @@ impl AdlPower {
             let count: unsafe extern "C" fn(*mut c_void, *mut i32) -> i32 = *lib.get(b"ADL2_Adapter_NumberOfAdapters_Get\0")?;
             let info: unsafe extern "C" fn(*mut c_void, *mut AdlAdapterInfo, i32) -> i32 =
                 *lib.get(b"ADL2_Adapter_AdapterInfo_Get\0")?;
-            let query: AdlQuery = *lib.get(b"ADL2_New_QueryPMLogData_Get\0")
-                .context("this AMD driver has no ADL2_New_QueryPMLogData_Get")?;
+            let query: Option<AdlQuery> = lib.get(b"ADL2_New_QueryPMLogData_Get\0").ok().map(|f| *f);
             let mut context = std::ptr::null_mut();
             // 1: only the adapters connected now, as LibreHardwareMonitor asks.
             let status = create(adl_alloc, 1, &mut context);
             if status < 0 {
                 bail!("ADL2_Main_Control_Create failed ({status})");
             }
-            // Destroys the context on every way out from here.
-            let mut adl = AdlPower { _lib: lib, context, index: -1, query, destroy };
+            // Stops the logs and destroys the context on every way out from here.
+            let mut adl = AdlPower { lib, context, index: -1, destroy, sources: Vec::new() };
             let mut n = 0;
             let status = count(context, &mut n);
             if status < 0 || n <= 0 {
@@ -461,40 +662,174 @@ impl AdlPower {
             if status < 0 {
                 bail!("ADL2_Adapter_AdapterInfo_Get failed ({status})");
             }
-            let at = |a: &&AdlAdapterInfo| a.bus as u32 == address.BusNumber && a.device as u32 == address.DeviceNumber;
-            let mut why = None;
-            for a in list.iter().filter(at) {
-                adl.index = a.index;
-                match adl.log() {
-                    Ok(log) if pmlog_watts(&log).is_some() => return Ok(adl),
-                    Ok(_) => why = Some("ADL has neither board nor chip power for the card".to_string()),
-                    Err(status) => why = Some(format!("ADL2_New_QueryPMLogData_Get failed ({status})")),
+            let at: Vec<i32> = list
+                .iter()
+                .filter(|a| a.bus as u32 == address.BusNumber && a.device as u32 == address.DeviceNumber)
+                .map(|a| a.index)
+                .collect();
+            let Some(&first) = at.first() else {
+                bail!("ADL does not list the card (PCI bus {}, device {})", address.BusNumber, address.DeviceNumber);
+            };
+            // The first of the card's entries with power in a snapshot, as 0.5.0-beta.6
+            // picked it, else its first.
+            let has_power = |i: i32| query.is_some_and(|q| snapshot(q, context, i).is_ok_and(|l| pmlog_watts(&l).is_some()));
+            adl.index = at.iter().copied().find(|&i| has_power(i)).unwrap_or(first);
+            let snapshot_reader = match query {
+                None => Err("this AMD driver has no ADL2_New_QueryPMLogData_Get".to_string()),
+                Some(q) => match snapshot(q, context, adl.index) {
+                    Ok(log) if pmlog_watts(&log).is_some() => Ok(Reader::Snapshot(q)),
+                    Ok(_) => Err("ADL has neither board nor chip power for the card".to_string()),
+                    Err(status) => Err(format!("ADL2_New_QueryPMLogData_Get failed ({status})")),
+                },
+            };
+            adl.sources = vec![
+                Source::new("ADL2_Adapter_PMLog_Start", adl.start_log()),
+                Source::new("ADL2_New_QueryPMLogData_Get", snapshot_reader),
+                Source::new("ADL2_Overdrive8_PMLog_ShareMemory_Read", adl.start_shared()),
+            ];
+            let errors: Vec<&str> = adl.sources.iter().filter_map(|s| s.reader.as_ref().err().map(String::as_str)).collect();
+            if errors.len() == adl.sources.len() {
+                bail!(errors.join("; "));
+            }
+            Ok(adl)
+        }
+    }
+
+    fn symbol<T: Copy>(&self, name: &str) -> std::result::Result<T, String> {
+        unsafe { self.lib.get::<T>(format!("{name}\0").as_bytes()) }
+            .map(|f| *f)
+            .map_err(|_| format!("this AMD driver has no {name}"))
+    }
+
+    /// The D3DKMT device a log is kept for.
+    fn device(&self) -> std::result::Result<u32, String> {
+        let create: DeviceCreate = self.symbol("ADL2_Device_PMLog_Device_Create")?;
+        let mut device = 0;
+        adl_ok(unsafe { create(self.context, self.index, &mut device) }, "ADL2_Device_PMLog_Device_Create")?;
+        Ok(device)
+    }
+
+    fn drop_device(&self, device: u32) {
+        if let Ok(destroy) = self.symbol::<DeviceDestroy>("ADL2_Device_PMLog_Device_Destroy") {
+            unsafe { destroy(self.context, device) };
+        }
+    }
+
+    /// As LibreHardwareMonitor and AMD's PMLog sample start it: every sensor the
+    /// driver can log, once a second.
+    fn start_log(&self) -> std::result::Result<Reader, String> {
+        let support: LogSupport = self.symbol("ADL2_Adapter_PMLog_Support_Get")?;
+        let start: LogStart = self.symbol("ADL2_Adapter_PMLog_Start")?;
+        let stop: LogStop = self.symbol("ADL2_Adapter_PMLog_Stop")?;
+        let mut supported: AdlLogSupport = unsafe { std::mem::zeroed() };
+        adl_ok(unsafe { support(self.context, self.index, &mut supported) }, "ADL2_Adapter_PMLog_Support_Get")?;
+        let listed: Vec<usize> = supported.sensors.iter().take_while(|&&s| s != 0).map(|&s| s as usize).collect();
+        if !listed.contains(&ADL_PMLOG_BOARD_POWER) && !listed.contains(&ADL_PMLOG_ASIC_POWER) {
+            return Err("the driver logs neither board nor chip power".into());
+        }
+        let device = self.device()?;
+        let mut input = AdlLogStart { sensors: supported.sensors, sample_rate_ms: LOG_EVERY_MS, reserved: [0; 15] };
+        let mut out: AdlLogStarted = unsafe { std::mem::zeroed() };
+        let started = adl_ok(unsafe { start(self.context, self.index, &mut input, &mut out, device) }, "ADL2_Adapter_PMLog_Start")
+            .and_then(|()| {
+                if out.address.is_null() {
+                    unsafe { stop(self.context, self.index, device) };
+                    return Err("ADL2_Adapter_PMLog_Start gave no log".into());
                 }
-            }
-            match why {
-                Some(why) => bail!(why),
-                None => bail!("ADL does not list the card (PCI bus {}, device {})", address.BusNumber, address.DeviceNumber),
-            }
+                Ok(())
+            });
+        if let Err(e) = started {
+            self.drop_device(device);
+            return Err(e);
         }
+        Ok(Reader::Log { device, data: out.address, stop, seen: None })
     }
 
-    /// The Overdrive 8 log, or ADL's status when it gives none.
-    fn log(&self) -> std::result::Result<AdlPmLog, i32> {
-        let mut log: AdlPmLog = unsafe { std::mem::zeroed() };
-        let status = unsafe { (self.query)(self.context, self.index, &mut log) };
-        if status < 0 {
-            return Err(status);
+    /// As AMD's Overdrive 8 sample starts it, for ADL 18.1: every sensor, once a second.
+    fn start_shared(&self) -> std::result::Result<Reader, String> {
+        let support: ShareSupport = self.symbol("ADL2_Overdrive8_PMLog_ShareMemory_Support")?;
+        let list: ShareSensors = self.symbol("ADL2_Overdrive8_PMLogSenorType_Support_Get")?;
+        let start: ShareStart = self.symbol("ADL2_Overdrive8_PMLog_ShareMemory_Start")?;
+        let read: ShareRead = self.symbol("ADL2_Overdrive8_PMLog_ShareMemory_Read")?;
+        let stop: ShareStop = self.symbol("ADL2_Overdrive8_PMLog_ShareMemory_Stop")?;
+        let mut supported = 0;
+        adl_ok(unsafe { support(self.context, self.index, &mut supported, 0) }, "ADL2_Overdrive8_PMLog_ShareMemory_Support")?;
+        if supported == 0 {
+            return Err("the driver shares no log for the card".into());
         }
-        Ok(log)
+        let (mut n, mut p) = (0, std::ptr::null_mut());
+        let listed = adl_ok(unsafe { list(self.context, self.index, &mut n, &mut p) }, "ADL2_Overdrive8_PMLogSenorType_Support_Get");
+        let sensors = if p.is_null() || n <= 0 { Vec::new() } else { unsafe { std::slice::from_raw_parts(p, n as usize) }.to_vec() };
+        if !p.is_null() {
+            unsafe { free(p.cast()) };
+        }
+        listed?;
+        let mut device = self.device()?;
+        let mut memory = std::ptr::null_mut();
+        let started = adl_ok(
+            unsafe { start(self.context, self.index, LOG_EVERY_MS as i32, -1, std::ptr::null_mut(), &mut device, &mut memory, 0) },
+            "ADL2_Overdrive8_PMLog_ShareMemory_Start",
+        );
+        if let Err(e) = started {
+            self.drop_device(device);
+            return Err(e);
+        }
+        Ok(Reader::Shared { device, memory, sensors, read, stop })
     }
 
-    fn watts(&self) -> Option<f32> {
-        pmlog_watts(&self.log().ok()?)
+    /// Reads every source, so the report can set them side by side, and gives the
+    /// first one's watts.
+    fn watts(&mut self) -> Option<f32> {
+        let (context, index, now) = (self.context, self.index, Instant::now());
+        let mut shown = None;
+        for s in &mut self.sources {
+            let Ok(reader) = &mut s.reader else { continue };
+            let reading = reader.read(context, index);
+            s.window.expire(now);
+            s.shown = shown.is_none() && reading.is_some();
+            s.missed = if reading.is_some() { 0 } else { s.missed.saturating_add(1) };
+            if let Some((sensor, watts, every)) = reading {
+                s.window.push(now, watts);
+                s.detail = Some(match every {
+                    Some(ms) => format!("{}, filled every {ms} ms", sensor_name(sensor)),
+                    None => sensor_name(sensor).to_string(),
+                });
+                shown = shown.or(Some(watts));
+            }
+        }
+        shown
+    }
+
+    fn sources(&self) -> Vec<PowerSource> {
+        self.sources
+            .iter()
+            .map(|s| PowerSource {
+                name: s.name.into(),
+                detail: s.detail.clone(),
+                error: s.reader.as_ref().err().cloned(),
+                shown: s.shown,
+                missed: s.missed,
+                stats: s.window.stats(),
+            })
+            .collect()
     }
 }
 
 impl Drop for AdlPower {
     fn drop(&mut self) {
+        for s in std::mem::take(&mut self.sources) {
+            match s.reader {
+                Ok(Reader::Log { device, stop, .. }) => {
+                    unsafe { stop(self.context, self.index, device) };
+                    self.drop_device(device);
+                }
+                Ok(Reader::Shared { mut device, stop, .. }) => {
+                    unsafe { stop(self.context, self.index, &mut device) };
+                    self.drop_device(device);
+                }
+                _ => {}
+            }
+        }
         unsafe { (self.destroy)(self.context) };
     }
 }
@@ -526,11 +861,61 @@ mod tests {
         let mut log = AdlPmLog { size: 0, sensors: [[0; 2]; 256] };
         assert_eq!(pmlog_watts(&log), None);
         log.sensors[ADL_PMLOG_ASIC_POWER] = [1, 180];
-        assert_eq!(pmlog_watts(&log), Some(180.0));
+        assert_eq!(pmlog_watts(&log), Some((23, 180.0)));
         log.sensors[ADL_PMLOG_BOARD_POWER] = [1, 304];
-        assert_eq!(pmlog_watts(&log), Some(304.0));
+        assert_eq!(pmlog_watts(&log), Some((73, 304.0)));
         log.sensors[ADL_PMLOG_BOARD_POWER] = [1, -1];
         assert_eq!(pmlog_watts(&log), None);
+    }
+
+    #[test]
+    fn a_kept_log_is_read_up_to_sensor_0() {
+        let mut values = [[0u32; 2]; 256];
+        values[..4].copy_from_slice(&[[7, 2400], [23, 180], [73, 259], [17, 12]]);
+        assert_eq!(log_watts(&values), Some((73, 259.0)));
+        // Sensor 0 ends the list: what follows it is left over.
+        values[2] = [0, 0];
+        values[3] = [73, 300];
+        assert_eq!(log_watts(&values), Some((23, 180.0)));
+        values[1] = [23, u32::MAX];
+        assert_eq!(log_watts(&values), None, "-1 is no reading");
+        assert_eq!(log_watts(&[[0; 2]; 256]), None);
+    }
+
+    #[test]
+    fn a_log_the_driver_stopped_filling_reads_as_nothing() {
+        let t = Instant::now();
+        let mut seen = None;
+        assert!(!fresh(&mut seen, 0, t), "0: never filled");
+        assert!(fresh(&mut seen, 100, t));
+        assert!(fresh(&mut seen, 100, t + Duration::from_secs(4)));
+        assert!(!fresh(&mut seen, 100, t + Duration::from_secs(5)));
+        assert!(fresh(&mut seen, 101, t + Duration::from_secs(6)), "filled again");
+        assert!(fresh(&mut seen, 101, t + Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn a_window_keeps_the_last_minute() {
+        let t = Instant::now();
+        let at = |s: u64| t + Duration::from_secs(s);
+        let mut w = Window::default();
+        assert_eq!(w.stats(), None);
+        // The 60 W / 470 W jumps of #42, one a second, then a minute at a steady 250 W.
+        for i in 0..60 {
+            w.push(at(i), if i % 2 == 0 { 60.0 } else { 470.0 });
+        }
+        let s = w.stats().unwrap();
+        assert_eq!((s.last, s.mean, s.min, s.max, s.sd, s.readings), (470.0, 265.0, 60.0, 470.0, 205.0, 60));
+        for i in 60..121 {
+            w.push(at(i), 250.0);
+        }
+        let s = w.stats().unwrap();
+        assert_eq!((s.mean, s.min, s.max, s.sd, s.readings), (250.0, 250.0, 250.0, 0.0, 61));
+        // A source that stops reading empties within a minute.
+        w.expire(at(180));
+        assert_eq!(w.stats().unwrap().readings, 1);
+        w.expire(at(181));
+        assert_eq!(w.stats(), None);
     }
 
     #[test]
@@ -538,6 +923,14 @@ mod tests {
         // Two ints, a path, four ints, two paths, two ints, three paths and an int.
         assert_eq!(size_of::<AdlAdapterInfo>(), 4 * 9 + 256 * 6);
         assert_eq!(size_of::<AdlPmLog>(), 4 + 256 * 8);
+        // `adl_structures.h`: 256 sensors and 16 ints; the same, an unsigned long (4
+        // bytes on Windows) and 15 ints; a pointer and 14 ints; two unsigned ints, an
+        // unsigned long long, 256 pairs and 256 unsigned ints.
+        assert_eq!(size_of::<AdlLogSupport>(), 256 * 2 + 16 * 4);
+        assert_eq!(size_of::<AdlLogStart>(), 256 * 2 + 4 + 15 * 4);
+        assert_eq!(size_of::<AdlLogStarted>(), 8 + 14 * 4);
+        assert_eq!(size_of::<AdlLogData>(), 4 + 4 + 8 + 256 * 8 + 256 * 4);
+        assert_eq!(std::mem::offset_of!(AdlLogData, values), 16);
     }
 
     #[test]
