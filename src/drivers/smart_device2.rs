@@ -13,15 +13,24 @@
 //! build and parse. The rest is older: the fan reports start after `60 03` where the
 //! hub takes `66 01`, the firmware comes from `10 01`, and LED channels are bits,
 //! `1 << i`. The lights take the `28 03` layout (`SmartDevice2`), except on the RGB
-//! Controller, which takes `2A 04` with a fixed LED count (`Nzxt2023RgbController`).
+//! Controller and the 3+6 channel `2020`, which take `2A 04` with a fixed LED count
+//! (`Nzxt2023RgbController`).
 //!
 //! The 3+6 channel controllers `2011`, `2019` and `201f` get no lighting: they ignore
 //! `28 03`, and liquidctl disabled their lights for it (#541). Their fans work.
 //!
+//! The `2020` is in `SmartDevice2` with six LED channels, but one with firmware 1.7.0
+//! has no output report `28` in its report descriptor, and its lights did not change
+//! on `28 03` while its fans followed `62 01`. Its output reports are the RGB
+//! Controller's, `10 12 20 22 24 26 2a f2 fe e2 f4 2c 1c`, plus the fans' `60 62 66`,
+//! so it gets the RGB Controller's `2A 04`. That is not from a source yet: the
+//! owner of that `2020` tries it.
+//!
 //! Sources: liquidctl `smart_device.py` (`SmartDevice2`, `Nzxt2023RgbController`) with
 //! #541, which logged liquidctl's writes to a `2011` and its replies, and #690, the RGB
-//! Controller, run on one; and the Linux `nzxt-smart2` driver. Nexus drives none of
-//! them, so they are experimental. Not verified on hardware.
+//! Controller, run on one; the Linux `nzxt-smart2` driver; and the `camless report` of
+//! a `2020` (firmware 1.7.0) and a `2021` (1.5.0) on one PC. Nexus drives none of them,
+//! so they are experimental. Not verified on hardware.
 
 use super::control_hub::{self, duties_report, Status};
 use super::{hid, hue2, Driver, Found, Model, Reading, NZXT_VID};
@@ -55,7 +64,8 @@ pub const RGB_CONTROLLER_2021: Model = model(0x2021, "rgb-controller", "RGB Cont
 pub enum Layout {
     /// `28 03`, liquidctl's `SmartDevice2`.
     Hue2,
-    /// `2A 04` with 8 for the LED count, liquidctl's `Nzxt2023RgbController`.
+    /// `2A 04` with 8 for the LED count, liquidctl's `Nzxt2023RgbController`; also
+    /// the `2020`'s.
     Rgb2023,
 }
 
@@ -67,14 +77,14 @@ pub struct Channels {
     pub layout: Layout,
 }
 
-/// liquidctl's `_MATCHES`; `None` for another id.
+/// liquidctl's `_MATCHES`, but for the `2020`'s layout; `None` for another id.
 pub fn channels(pid: u16) -> Option<Channels> {
     let (fans, lights, layout) = match pid {
         0x2006 | 0x200d | 0x200f | 0x2009 | 0x200e | 0x2010 => (3, 2, Layout::Hue2),
         // Six on the board, but they ignore `28 03` (liquidctl#541).
         0x2011 | 0x2019 | 0x201f => (3, 0, Layout::Hue2),
-        // liquidctl: "Both RGB and fan control have been reported to work".
-        0x2020 => (3, 6, Layout::Hue2),
+        // Its descriptor has no report `28`, but the RGB Controller's `2a`.
+        0x2020 => (3, 6, Layout::Rgb2023),
         0x2001 => (0, 4, Layout::Hue2),
         0x2002 => (0, 2, Layout::Hue2),
         0x2012 | 0x2021 => (0, 3, Layout::Rgb2023),
@@ -227,6 +237,7 @@ mod tests {
     #[test]
     fn channels_follow_liquidctl() {
         for (pid, fans, lights, layout) in LIQUIDCTL {
+            let layout = if pid == 0x2020 { Layout::Rgb2023 } else { layout };
             assert_eq!(channels(pid), Some(Channels { fans, lights, layout }), "{pid:04x}");
             let m = MODELS.iter().find(|m| (m.vid, m.pid) == (NZXT_VID, pid)).expect("listed in MODELS");
             assert!(m.experimental && m.vendor.is_none(), "{pid:04x}");
@@ -319,5 +330,15 @@ mod tests {
     fn led_channels_are_bits() {
         // liquidctl: led1 is 1 << 0; led6 went out as 20 in liquidctl#541.
         assert_eq!((0..6).map(channel_bit).collect::<Vec<_>>(), [0x01, 0x02, 0x04, 0x08, 0x10, 0x20]);
+    }
+
+    #[test]
+    fn the_2020_lights_take_2a_04() {
+        let c = channels(0x2020).unwrap();
+        assert_eq!((c.fans, c.lights, c.layout), (3, 6, Layout::Rgb2023));
+        // led6 in red: channel 20 twice, fixed at speed 32 00, red as GRB, 8 LEDs.
+        let p = hue2::packet_2023(channel_bit(5), &Lighting::Fixed([0xff, 0x00, 0x00])).unwrap();
+        assert_eq!(&p[..10], &[0x2a, 0x04, 0x20, 0x20, 0x00, 0x32, 0x00, 0x00, 0xff, 0x00]);
+        assert_eq!(&p[p.len() - 5..], &[0x00, 0x01, 0x00, 0x08, 0x03]);
     }
 }
