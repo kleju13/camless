@@ -17,7 +17,7 @@ mod os;
 #[path = "sensors/windows.rs"]
 mod os;
 #[cfg(windows)]
-pub use os::{reg_dword, reg_string};
+pub use os::{pawnio_module_file, reg_dword, reg_string};
 pub use os::{cpu_name, NO_CPU_TEMP};
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -125,9 +125,9 @@ pub struct Sensors {
 }
 
 impl Sensors {
-    /// `pawnio_module` is the signed `AMDFamily17.bin`, or why it could not be read;
-    /// without it, or without admin rights, CPU temperature and power are absent on
-    /// Windows. Linux reads hwmon, which needs neither.
+    /// `pawnio_module` is the signed `IntelMSR.bin` or `AMDFamily17.bin`, or why it
+    /// could not be read; without it, or without admin rights, CPU temperature and
+    /// power are absent on Windows. Linux reads hwmon, which needs neither.
     pub fn open(pawnio_module: std::result::Result<Vec<u8>, String>) -> Sensors {
         let (gpu, gpu_error) = match Gpu::open() {
             Ok(gpu) => (Some(gpu), None),

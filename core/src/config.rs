@@ -30,8 +30,8 @@ pub struct Config {
     /// Without one they are in this file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    /// Signed PawnIO `AMDFamily17.bin` for CPU temperature and power. Defaults to
-    /// `AMDFamily17.bin` next to camless.exe.
+    /// Signed PawnIO module for CPU temperature and power. Defaults to `IntelMSR.bin`
+    /// on Intel and `AMDFamily17.bin` on AMD, next to camless.exe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pawnio_module: Option<PathBuf>,
     /// Which releases the app offers as updates.

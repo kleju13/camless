@@ -102,7 +102,7 @@ The app lists other NZXT devices as "no driver yet". If you have one, *Settings 
 
 The app checks for a new release each time it starts and shows *Update available* under the service in the sidebar. *Update* there, or in *Settings → About*, installs it. Uninstall camless from *Settings → Apps* in Windows. It keeps your settings in `%APPDATA%\camless` unless you choose to delete them.
 
-CPU temperature on AMD Zen also needs [PawnIO](https://pawnio.eu) and its signed `AMDFamily17.bin` in `%LOCALAPPDATA%\Programs\camless`. Without them, curves on CPU temperature hold the failsafe duty. The Kraken's liquid temperature needs none of this, so new curves use it by default.
+CPU temperature also needs [PawnIO](https://pawnio.eu) and its signed module for your CPU in `%LOCALAPPDATA%\Programs\camless`: `IntelMSR.bin` on Intel, `AMDFamily17.bin` on AMD Ryzen. Both are in the zip of the latest [PawnIO.Modules release](https://github.com/namazso/PawnIO.Modules/releases/latest). Without them, curves on CPU temperature hold the failsafe duty. The Kraken's liquid temperature needs none of this, so new curves use it by default.
 
 GPU temperature, load and power come from NVIDIA's driver (NVML) on an NVIDIA card. Any other card, such as AMD's or Intel's, gives the temperature and load that Task Manager shows, which Windows keeps for every card. An AMD card's power comes from AMD's driver (ADL), from the log the driver keeps, as LibreHardwareMonitor reads it, or else from a reading of the moment; an Intel card has none. If an AMD card shows no power, or power that jumps, `camless report` says which way it was read and what it read over the last minute.
 

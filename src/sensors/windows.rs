@@ -26,12 +26,44 @@ pub const NVML: &str = "nvml.dll";
 /// Without PawnIO and administrator rights there is no CPU temperature.
 pub const NO_CPU_TEMP: &str = "no CPU temperature (needs PawnIO and administrator rights)";
 
-/// CPU temperature and power, from the signed `AMDFamily17.bin`, or why there are none.
+/// CPU temperature and power, from the signed PawnIO module for this CPU, or why there
+/// are none.
 pub fn cpu(pawnio_module: std::result::Result<Vec<u8>, String>) -> std::result::Result<Cpu, String> {
-    pawnio_module.and_then(|m| AmdCpu::open(&m).map_err(|e| format!("{e:#}")))
+    pawnio_module.and_then(|m| PawnCpu::open(&m, maker()).map_err(|e| format!("{e:#}")))
 }
 
-pub type Cpu = AmdCpu;
+pub type Cpu = PawnCpu;
+
+/// The signed PawnIO module for this CPU, which camless reads next to camless.exe.
+/// Each refuses to load on the other maker's CPUs.
+pub fn pawnio_module_file() -> &'static str {
+    maker().module_file()
+}
+
+const CPU_KEY: &str = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0";
+
+#[derive(Clone, Copy)]
+enum Maker {
+    Amd,
+    Intel,
+}
+
+impl Maker {
+    fn module_file(self) -> &'static str {
+        match self {
+            Maker::Amd => "AMDFamily17.bin",
+            Maker::Intel => "IntelMSR.bin",
+        }
+    }
+}
+
+/// Any CPU but Intel's is taken for AMD's, which only `AMDFamily17.bin` reads.
+fn maker() -> Maker {
+    match reg_string(CPU_KEY, "VendorIdentifier").as_deref() {
+        Some("GenuineIntel") => Maker::Intel,
+        _ => Maker::Amd,
+    }
+}
 
 /// Idle time and all time, in 100 ns, since the PC started.
 pub fn cpu_times() -> Option<(u64, u64)> {
@@ -53,7 +85,7 @@ pub fn memory() -> Option<(u64, u64, f32)> {
 }
 
 pub fn cpu_name() -> Option<String> {
-    reg_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString")
+    reg_string(CPU_KEY, "ProcessorNameString")
 }
 
 /// A string value under HKEY_LOCAL_MACHINE.
@@ -88,9 +120,15 @@ fn ft(t: FILETIME) -> u64 {
     (t.dwHighDateTime as u64) << 32 | t.dwLowDateTime as u64
 }
 
+// AMD Zen, through AMDFamily17.bin.
 const SMN_THM_TCON_CUR_TMP: u64 = 0x0005_9800;
 const MSR_PWR_UNIT: u64 = 0xc001_0299;
 const MSR_PKG_ENERGY_STAT: u64 = 0xc001_029b;
+// Intel, through IntelMSR.bin, which reads these and a few more.
+const IA32_TEMPERATURE_TARGET: u64 = 0x1a2;
+const IA32_PACKAGE_THERM_STATUS: u64 = 0x1b1;
+const MSR_RAPL_POWER_UNIT: u64 = 0x606;
+const MSR_PKG_ENERGY_STATUS: u64 = 0x611;
 
 type PawnExecute = unsafe extern "system" fn(
     HANDLE,
@@ -102,20 +140,16 @@ type PawnExecute = unsafe extern "system" fn(
     *mut usize,
 ) -> i32;
 
-/// AMD Zen temperature (SMN) and package energy (RAPL MSRs) through PawnIO.
-pub struct AmdCpu {
+/// A signed module loaded into PawnIO.
+struct Pawn {
     _lib: Library,
     handle: HANDLE,
     execute: PawnExecute,
-    pci_mutex: HANDLE,
-    energy_unit_j: Option<f64>,
-    last_energy: Option<(u32, Instant)>,
 }
 
-unsafe impl Send for AmdCpu {}
-
-impl AmdCpu {
-    fn open(module: &[u8]) -> Result<AmdCpu> {
+impl Pawn {
+    /// `file` only names the module in errors.
+    fn load(module: &[u8], file: &str) -> Result<Pawn> {
         unsafe {
             let lib = Library::new(r"C:\Program Files\PawnIO\PawnIOLib.dll")
                 .context("PawnIO is not installed")?;
@@ -130,26 +164,9 @@ impl AmdCpu {
             }
             let hr = load(handle, module.as_ptr(), module.len());
             if hr < 0 {
-                bail!("pawnio_load of AMDFamily17 failed ({hr:#x})");
+                bail!("pawnio_load of {file} failed ({hr:#x})");
             }
-            // The PCI index/data pair is shared with HWiNFO, LHM and others; they all
-            // serialize on this named mutex.
-            let name: Vec<u16> = "Global\\Access_PCI\0".encode_utf16().collect();
-            let pci_mutex = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
-            let mut cpu = AmdCpu {
-                _lib: lib,
-                handle,
-                execute,
-                pci_mutex,
-                energy_unit_j: None,
-                last_energy: None,
-            };
-            cpu.energy_unit_j = cpu
-                .call("ioctl_read_msr", MSR_PWR_UNIT)
-                .ok()
-                .map(|v| 1.0 / (1u64 << ((v >> 8) & 0x1f)) as f64);
-            cpu.temperature()?;
-            Ok(cpu)
+            Ok(Pawn { _lib: lib, handle, execute })
         }
     }
 
@@ -165,28 +182,102 @@ impl AmdCpu {
         }
         Ok(out)
     }
+}
+
+/// How the CPU's temperature is read.
+enum Thermal {
+    /// AMD Zen's Tctl, over SMN. The PCI index/data pair is shared with HWiNFO, LHM
+    /// and others; they all serialize on the named mutex.
+    Amd { pci_mutex: HANDLE },
+    /// Intel's package sensor, which counts down from TjMax, as LibreHardwareMonitor
+    /// and Linux's coretemp read it.
+    Intel { tj_max: f32 },
+}
+
+/// CPU temperature and package energy (RAPL MSRs) through PawnIO.
+pub struct PawnCpu {
+    pawn: Pawn,
+    thermal: Thermal,
+    energy_msr: u64,
+    energy_unit_j: Option<f64>,
+    last_energy: Option<(u32, Instant)>,
+}
+
+unsafe impl Send for PawnCpu {}
+
+impl PawnCpu {
+    fn open(module: &[u8], maker: Maker) -> Result<PawnCpu> {
+        let pawn = Pawn::load(module, maker.module_file())?;
+        let (unit_msr, energy_msr, thermal) = match maker {
+            Maker::Amd => {
+                let name: Vec<u16> = "Global\\Access_PCI\0".encode_utf16().collect();
+                let pci_mutex = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+                (MSR_PWR_UNIT, MSR_PKG_ENERGY_STAT, Thermal::Amd { pci_mutex })
+            }
+            Maker::Intel => {
+                let target = pawn.call("ioctl_read_msr", IA32_TEMPERATURE_TARGET)?;
+                let tj_max = tj_max(target).context("the CPU reports no TjMax")?;
+                (MSR_RAPL_POWER_UNIT, MSR_PKG_ENERGY_STATUS, Thermal::Intel { tj_max })
+            }
+        };
+        let energy_unit_j = pawn.call("ioctl_read_msr", unit_msr).ok().map(energy_unit_j);
+        let cpu = PawnCpu { pawn, thermal, energy_msr, energy_unit_j, last_energy: None };
+        cpu.temperature()?;
+        Ok(cpu)
+    }
 
     pub fn temperature(&self) -> Result<f32> {
-        let locked = !self.pci_mutex.is_null()
-            && matches!(unsafe { WaitForSingleObject(self.pci_mutex, 20) }, WAIT_OBJECT_0 | WAIT_ABANDONED);
-        let raw = self.call("ioctl_read_smn", SMN_THM_TCON_CUR_TMP);
-        if locked {
-            unsafe { ReleaseMutex(self.pci_mutex) };
+        match self.thermal {
+            Thermal::Amd { pci_mutex } => {
+                let locked = !pci_mutex.is_null()
+                    && matches!(unsafe { WaitForSingleObject(pci_mutex, 20) }, WAIT_OBJECT_0 | WAIT_ABANDONED);
+                let raw = self.pawn.call("ioctl_read_smn", SMN_THM_TCON_CUR_TMP);
+                if locked {
+                    unsafe { ReleaseMutex(pci_mutex) };
+                }
+                Ok(amd_tctl(raw? as u32))
+            }
+            Thermal::Intel { tj_max } => {
+                let status = self.pawn.call("ioctl_read_msr", IA32_PACKAGE_THERM_STATUS)?;
+                intel_package(status, tj_max).context("the CPU package's temperature reading is not valid")
+            }
         }
-        let raw = raw? as u32;
-        // Bits 31:21 are the temperature in 1/8 °C; bit 19 selects the -49 °C range.
-        let offset = if raw & 0x8_0000 != 0 { -49.0 } else { 0.0 };
-        Ok((raw >> 21) as f32 * 0.125 + offset)
     }
 
     pub fn package_power_w(&mut self) -> Option<f32> {
         let unit = self.energy_unit_j?;
         let now = Instant::now();
-        let energy = self.call("ioctl_read_msr", MSR_PKG_ENERGY_STAT).ok()? as u32;
+        let energy = self.pawn.call("ioctl_read_msr", self.energy_msr).ok()? as u32;
         let prev = self.last_energy.replace((energy, now))?;
         let dt = now.duration_since(prev.1).as_secs_f64();
         (dt > 0.05).then(|| (energy.wrapping_sub(prev.0) as f64 * unit / dt) as f32)
     }
+}
+
+/// Tctl from THM_TCON_CUR_TMP: bits 31:21 are the temperature in 1/8 °C; bit 19
+/// selects the -49 °C range.
+fn amd_tctl(raw: u32) -> f32 {
+    let offset = if raw & 0x8_0000 != 0 { -49.0 } else { 0.0 };
+    (raw >> 21) as f32 * 0.125 + offset
+}
+
+/// TjMax in °C from IA32_TEMPERATURE_TARGET's bits 23:16, without the TCC offset in
+/// 29:24; None where they are 0.
+fn tj_max(target: u64) -> Option<f32> {
+    let t = (target >> 16) & 0xff;
+    (t != 0).then_some(t as f32)
+}
+
+/// The package's temperature from IA32_PACKAGE_THERM_STATUS: bits 22:16 are how many
+/// °C it is below TjMax, when bit 31 says the reading is valid.
+fn intel_package(status: u64, tj_max: f32) -> Option<f32> {
+    (status & 0x8000_0000 != 0).then(|| tj_max - ((status >> 16) & 0x7f) as f32)
+}
+
+/// Joules per count of the package's energy counter, from the RAPL power unit's bits
+/// 12:8, the same on AMD and Intel.
+fn energy_unit_j(unit: u64) -> f64 {
+    1.0 / (1u64 << ((unit >> 8) & 0x1f)) as f64
 }
 
 /// `D3DKMT_ADAPTERTYPE`'s bits (`d3dkmthk.h`).
@@ -810,6 +901,35 @@ impl Drop for WddmGpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Built from the registers' layouts in Intel's SDM and AMD's PPR, not read from a
+    // CPU.
+    #[test]
+    fn amd_tctl_is_in_eighths_of_a_degree() {
+        assert_eq!(amd_tctl(45 * 8 << 21), 45.0);
+        assert_eq!(amd_tctl(94 * 8 << 21 | 0x8_0000), 45.0);
+        assert_eq!(amd_tctl((45 * 8 + 4) << 21), 45.5);
+    }
+
+    #[test]
+    fn intel_package_counts_down_from_tj_max() {
+        // TjMax 100 °C, with a TCC offset of 10 °C that does not move it.
+        let tj = tj_max(0x0a64_0000).unwrap();
+        assert_eq!(tj, 100.0);
+        assert_eq!(tj_max(0x0a00_0000), None);
+        // 35 °C below it: 65 °C, with the reserved bit 23 left out.
+        assert_eq!(intel_package(0x8823_0000, tj), Some(65.0));
+        assert_eq!(intel_package(0x80a3_0000, tj), Some(65.0));
+        // Bit 31 clear: not a reading.
+        assert_eq!(intel_package(0x0823_0000, tj), None);
+    }
+
+    #[test]
+    fn energy_unit_is_a_power_of_two() {
+        // 14 on Intel's desktop CPUs, 16 on Zen.
+        assert_eq!(energy_unit_j(0x000a_0e03), 1.0 / 16384.0);
+        assert_eq!(energy_unit_j(0x000a_1003), 1.0 / 65536.0);
+    }
 
     #[test]
     fn picks_the_card_with_the_most_memory_of_its_own() {
