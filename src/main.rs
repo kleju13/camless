@@ -79,7 +79,8 @@ const PLATFORM_USAGE: [(&str, &str); 3] = [
         "{NOTES}",
         "The NZXT CAM app holds the devices exclusively; quit it first (CAM Service can
 keep running).
-CPU temperature needs PawnIO, AMDFamily17.bin and administrator rights.
+CPU temperature needs PawnIO, its IntelMSR.bin or AMDFamily17.bin, and administrator
+rights.
 ",
     ),
 ];
@@ -186,7 +187,7 @@ fn beside_exe(name: &str) -> PathBuf {
 
 #[cfg(windows)]
 fn pawnio_module(configured: Option<&PathBuf>) -> std::result::Result<Vec<u8>, String> {
-    let path = configured.cloned().unwrap_or_else(|| beside_exe("AMDFamily17.bin"));
+    let path = configured.cloned().unwrap_or_else(|| beside_exe(sensors::pawnio_module_file()));
     std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
