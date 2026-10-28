@@ -37,3 +37,17 @@ name = "Kraken Elite 2023"
 firmware = ["2.1.0"]
 checked = ["pump", "lcd"]
 source = "https://github.com/kleju13/camless/issues/42"
+
+[[device]]
+usb = "1e71:2020"
+name = "RGB & Fan Controller (3+6 channels)"
+firmware = ["1.7.0"]
+checked = ["fans", "lighting"]
+source = "its owner, on Reddit, on camless 0.5.1-beta.1 and beta.2"
+
+[[device]]
+usb = "1e71:2021"
+name = "RGB Controller (2023)"
+firmware = ["1.5.0"]
+checked = ["lighting"]
+source = "its owner, on Reddit, on camless 0.5.1-beta.1 and beta.2"

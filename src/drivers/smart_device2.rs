@@ -23,14 +23,16 @@
 //! has no output report `28` in its report descriptor, and its lights did not change
 //! on `28 03` while its fans followed `62 01`. Its output reports are the RGB
 //! Controller's, `10 12 20 22 24 26 2a f2 fe e2 f4 2c 1c`, plus the fans' `60 62 66`,
-//! so it gets the RGB Controller's `2A 04`. That is not from a source yet: the
-//! owner of that `2020` tries it.
+//! so it gets the RGB Controller's `2A 04`. No source has those bytes, but that
+//! `2020`'s lights took them.
 //!
 //! Sources: liquidctl `smart_device.py` (`SmartDevice2`, `Nzxt2023RgbController`) with
 //! #541, which logged liquidctl's writes to a `2011` and its replies, and #690, the RGB
 //! Controller, run on one; the Linux `nzxt-smart2` driver; and the `camless report` of
 //! a `2020` (firmware 1.7.0) and a `2021` (1.5.0) on one PC. Nexus drives none of them,
-//! so they are experimental. Not verified on hardware.
+//! so they are experimental. Verified on hardware only for that `2020`'s fans and
+//! lights and that `2021`'s lights, by their owner, on Reddit (camless 0.5.1-beta.1
+//! and beta.2). The rest is not verified.
 
 use super::control_hub::{self, duties_report, Status};
 use super::{hid, hue2, Driver, Found, Model, Reading, NZXT_VID};

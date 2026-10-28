@@ -39,6 +39,8 @@ camless is not affiliated with or endorsed by NZXT. NZXT, CAM and Kraken are tra
 | Control Hub, the one in the H9 Flow RGB+ | `1e71:2022` | fan duties, lighting | [@kleju13](https://github.com/kleju13) |
 | Kraken 2023 (Kraken Base) | `1e71:300e` | pump and fan curves; the LCD on firmware 2 is not tested yet | [@dominixik](https://github.com/dominixik) |
 | Kraken Elite 2023 | `1e71:300c` | pump curve, LCD on firmware 2.1.0; the fan header is not tested yet | [@djinn2526](https://github.com/djinn2526) |
+| RGB & Fan Controller (3+6 channels) | `1e71:2020` | fan duties, lighting, on firmware 1.7.0 | a user on Reddit |
+| RGB Controller (2023) | `1e71:2021` | lighting, on firmware 1.5.0 | a user on Reddit |
 
 These follow liquidctl, the Linux driver and Nexus, and nobody has run camless on them yet:
 
@@ -59,10 +61,9 @@ Experimental: Nexus leaves these out, so the driver follows liquidctl and the Li
 | Grid+ V3 | `1e71:1711` | duties and speeds on the six fan ports |
 | Smart Device V2 (H510 Elite, H510i, H710i, H210i) | `1e71:2006`, `200d`, `200f` | duties and speeds on the three fan ports, two LED channels |
 | RGB & Fan Controller | `1e71:2009`, `200e`, `2010` | duties and speeds on the three fan ports, two LED channels |
-| RGB & Fan Controller (3+6 channels) | `1e71:2020` | duties and speeds on the three fan ports, six LED channels |
 | RGB & Fan Controller (3+6 channels) | `1e71:2011`, `2019`, `201f` | duties and speeds on the three fan ports; not the lighting, which liquidctl found changed ([protocol notes](docs/protocol.md)) |
 | HUE 2, HUE 2 Ambient | `1e71:2001`, `2002` | four and two LED channels |
-| RGB Controller (2023) | `1e71:2012`, `2021` | three LED channels |
+| RGB Controller (2023) | `1e71:2012` | three LED channels |
 
 Other brands' fan hubs and LED controllers, off unless you turn on *Settings → Devices → Other brands*: camless never drives keyboards or mice, and leaves a hub alone while its brand's app runs ([how it works](docs/how-it-works.md#other-brands)). None of them has run with camless yet, so the app calls them experimental. Their lighting is off or one colour:
 
