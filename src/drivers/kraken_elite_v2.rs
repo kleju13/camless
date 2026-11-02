@@ -9,6 +9,7 @@
 //! Verified on hardware, the Elite only: pump and fan curves, lighting, LCD streaming.
 
 use super::{hid, hue2, usb, Driver, FanReading, Found, Lcd, Model, Reading};
+use crate::q565;
 use anyhow::{anyhow, bail, Context as _, Result};
 use camless_core::lighting::Lighting;
 use camless_core::status::{Device, FanChannel, LcdInfo, LightChannel, Unit};
@@ -140,6 +141,8 @@ pub struct KrakenEliteV2 {
     firmware: Option<String>,
     lights: Vec<Light>,
     lcd_size: (u16, u16),
+    /// Quarter turns for streamed frames, from the last `settings`.
+    turns: u8,
 }
 
 fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
@@ -184,7 +187,7 @@ fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
             accessories: channels.get(c).map(|a| a.names()).unwrap_or_default(),
         })
         .collect();
-    Ok(Box::new(KrakenEliteV2 { model: found.model, hid, usb: None, streaming: false, firmware, lights, lcd_size }))
+    Ok(Box::new(KrakenEliteV2 { model: found.model, hid, usb: None, streaming: false, firmware, lights, lcd_size, turns: 0 }))
 }
 
 impl KrakenEliteV2 {
@@ -304,6 +307,7 @@ impl Driver for KrakenEliteV2 {
 
 impl Lcd for KrakenEliteV2 {
     fn settings(&mut self, brightness: u8, quarter_turns: u8) -> Result<()> {
+        self.turns = quarter_turns & 3;
         hid::write(&self.hid, &[0x30, 0x02, 0x01, brightness.min(100), 0x00, 0x00, 0x01, quarter_turns & 3])
     }
 
@@ -320,7 +324,18 @@ impl Lcd for KrakenEliteV2 {
     /// Integration frame. The screen switches to the stream when a frame arrives.
     /// Unlike memory buckets this writes no flash and needs no bucket bookkeeping,
     /// which is what wedged coolers in liquidctl#774.
+    ///
+    /// The screen's own rotation setting turns only its built-in display, so the
+    /// frame is turned here first, as the 2023 models' driver does.
     fn frame(&mut self, q565: &[u8]) -> Result<()> {
+        let turned;
+        let q565 = match self.turns {
+            0 => q565,
+            turns => {
+                turned = q565::turn(q565, turns).context("not a Q565 frame")?;
+                &turned
+            }
+        };
         if self.usb.is_none() {
             self.usb = Some(open_lcd_interface(self.model)?);
         }
