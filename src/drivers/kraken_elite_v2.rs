@@ -6,7 +6,8 @@
 //! Sources: liquidctl `kraken3.py` and PRs #882, #927, #932, the Linux
 //! `nzxt-kraken3` driver, USB captures of NZXT CAM 4.76.6 on firmware 1.2.0, and for
 //! the Plus, Nexus (`KrakenModel.cs`, `KrakenProtocol.cs`, `KrakenHub.cs`).
-//! Verified on hardware, the Elite only: pump and fan curves, lighting, LCD streaming.
+//! Verified on hardware, the Elite only: pump and fan curves, lighting, LCD streaming,
+//! and the orientation of streamed frames.
 
 use super::{hid, hue2, usb, Driver, FanReading, Found, Lcd, Model, Reading};
 use crate::q565;
