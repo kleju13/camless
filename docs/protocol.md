@@ -34,6 +34,7 @@ Sources:
   - More than about 4 packets per 0.5 s are dropped, and so are packets sent during LCD transfers.
 - LCD:
   - Info: `30 01` → `31 01`, brightness at `[0x18]`, orientation at `[0x1A]`. Settings: `30 02 01 <brightness> 00 00 01 <quarter turns>`.
+  - The orientation in the settings turns only the cooler's own display, as on the 2023 models below. A user with a Kraken Elite set to 180° saw the liquid screen the right way up and KrakenDial's stream upside down ([krakendial#15](https://github.com/kleju13/krakendial/issues/15); whether theirs is the 2023 or the 2024 is not reported yet). So camless turns each frame itself before streaming it. Verified on the maintainer's Elite 2024 on firmware 1.2.0: on camless 0.5.0, 180° left KrakenDial's stream as it was at 0°; with the frames turned, 180° turns it over, and 90° turns it clockwise, the way the cooler turns its liquid screen at 90°.
   - Liquid screen: `38 01 02 00`.
   - Streaming, per frame, as captured from CAM 4.76.6 on firmware 1.2.0:
     1. `36 01 00 01 08`;

@@ -159,6 +159,28 @@ pub fn decode(data: &[u8]) -> Option<(u16, u16, Vec<u16>)> {
     (bytes.next().is_none() && out.len() == usize::from(width) * usize::from(height)).then_some((width, height, out))
 }
 
+/// A frame turned `turns` quarter turns clockwise, for screens whose own rotation
+/// setting turns only their built-in display. `None` if `data` is not Q565.
+pub fn turn(data: &[u8], turns: u8) -> Option<Vec<u8>> {
+    let (width, height, pixels) = decode(data)?;
+    let (w, h) = (usize::from(width), usize::from(height));
+    let turns = turns & 3;
+    let (tw, th) = if turns % 2 == 1 { (h, w) } else { (w, h) };
+    let mut out = Vec::with_capacity(pixels.len());
+    for y in 0..th {
+        for x in 0..tw {
+            let (sx, sy) = match turns {
+                1 => (y, h - 1 - x),
+                2 => (w - 1 - x, h - 1 - y),
+                3 => (w - 1 - y, x),
+                _ => (x, y),
+            };
+            out.push(pixels[sy * w + sx]);
+        }
+    }
+    Some(encode(tw as u16, th as u16, &out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +216,28 @@ mod tests {
         pixels.extend([0x07e0 ^ 0x0821, 0xf800]);
         let len = pixels.len() as u16;
         assert_eq!(decode(&encode(len, 1, &pixels)), Some((len, 1, pixels)));
+    }
+
+    #[test]
+    fn turns_clockwise_in_quarter_turns() {
+        // Red, green, blue / white, black, grey, three wide and two high.
+        let (r, g, b, w, k, y) = (0xf800, 0x07e0, 0x001f, 0xffff, 0x0000, 0x8410);
+        let frame = encode(3, 2, &[r, g, b, w, k, y]);
+        assert_eq!(decode(&turn(&frame, 0).unwrap()), Some((3, 2, vec![r, g, b, w, k, y])));
+        assert_eq!(decode(&turn(&frame, 1).unwrap()), Some((2, 3, vec![w, r, k, g, y, b])));
+        assert_eq!(decode(&turn(&frame, 2).unwrap()), Some((3, 2, vec![y, k, w, b, g, r])));
+        assert_eq!(decode(&turn(&frame, 3).unwrap()), Some((2, 3, vec![b, y, g, k, r, w])));
+        // Only the low two bits count, as in the screen's own setting.
+        assert_eq!(turn(&frame, 6), turn(&frame, 2));
+        assert_eq!(turn(b"not q565", 1), None);
+    }
+
+    #[test]
+    fn four_quarter_turns_give_back_a_cam_frame() {
+        let mut frame = CAM_FRAME.to_vec();
+        for _ in 0..4 {
+            frame = turn(&frame, 1).expect("turned frame decodes");
+        }
+        assert_eq!(frame, CAM_FRAME);
     }
 }
