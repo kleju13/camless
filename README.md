@@ -38,7 +38,7 @@ camless is not affiliated with or endorsed by NZXT. NZXT, CAM and Kraken are tra
 | Kraken Elite 2024 (Kraken Elite V2) | `1e71:3012` | pump and fan curves, lighting, LCD | [@kleju13](https://github.com/kleju13) |
 | Control Hub, the one in the H9 Flow RGB+ | `1e71:2022` | fan duties, lighting | [@kleju13](https://github.com/kleju13) |
 | Kraken 2023 (Kraken Base) | `1e71:300e` | pump and fan curves; the LCD on firmware 2 is not tested yet | [@dominixik](https://github.com/dominixik) |
-| Kraken Elite 2023 | `1e71:300c` | pump curve, LCD on firmware 2.1.0; the fan header is not tested yet | [@djinn2526](https://github.com/djinn2526) |
+| Kraken Elite 2023 | `1e71:300c` | pump and fan curves, LCD on firmware 2.1.0 | [@djinn2526](https://github.com/djinn2526) |
 | RGB & Fan Controller (3+6 channels) | `1e71:2020` | fan duties, lighting, on firmware 1.7.0 | a user on Reddit |
 | RGB Controller (2023) | `1e71:2021` | lighting, on firmware 1.5.0 | a user on Reddit |
 
