@@ -35,8 +35,8 @@ source = "https://github.com/kleju13/camless/issues/29"
 usb = "1e71:300c"
 name = "Kraken Elite 2023"
 firmware = ["2.1.0"]
-checked = ["pump", "lcd"]
-source = "https://github.com/kleju13/camless/issues/42"
+checked = ["pump", "fans", "lcd"]
+source = "https://github.com/kleju13/camless/issues/42 and https://github.com/kleju13/camless/issues/64"
 
 [[device]]
 usb = "1e71:2020"
