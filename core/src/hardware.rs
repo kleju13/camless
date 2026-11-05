@@ -73,6 +73,7 @@ mod tests {
         assert!(is_verified(0x1e71, 0x300c));
         assert!(is_verified(0x1e71, 0x2020));
         assert!(is_verified(0x1e71, 0x2021));
+        assert!(is_verified(0x1e71, 0x2002));
         assert!(!is_verified(0x1e71, 0x2007));
     }
 

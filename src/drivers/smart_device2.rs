@@ -32,7 +32,8 @@
 //! a `2020` (firmware 1.7.0) and a `2021` (1.5.0) on one PC. Nexus drives none of them,
 //! so they are experimental. Verified on hardware only for that `2020`'s fans and
 //! lights and that `2021`'s lights, by their owner, on Reddit (camless 0.5.1-beta.1
-//! and beta.2). The rest is not verified.
+//! and beta.2), and for a HUE 2 Ambient's lights on firmware 2.6.0 and another
+//! `2020`'s, by their owner (camless #68, 0.5.1). The rest is not verified.
 
 use super::control_hub::{self, duties_report, Status};
 use super::{hid, hue2, Driver, Found, Model, Reading, NZXT_VID};
