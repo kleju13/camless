@@ -1593,7 +1593,9 @@
     const opts = headOpts(dev, time, { shadow: o.shadow, shadowColor: 'rgba(0,0,0,.4)' });
     D.paint(cv, [o.orientation, opts], (ctx, w, hh) => {
       const r = Math.min(w, hh) / 2 / 1.42;
-      D.cached(ctx, `tubes|${r}|${o.orientation}`, w / 2, hh / 2, r * 1.45, (c, x, y) => drawTubes(c, x, y, r, o.orientation));
+      // With the picture held upright, the tubes are at the bottom at 0° and go the
+      // other way round from the picture's clockwise turn: see docs/protocol.md.
+      D.cached(ctx, `tubes|${r}|${o.orientation}`, w / 2, hh / 2, r * 1.45, (c, x, y) => drawTubes(c, x, y, r, 90 - o.orientation));
       D.head(ctx, w / 2, hh / 2, r, opts);
     });
   }
