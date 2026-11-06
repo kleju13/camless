@@ -35,6 +35,7 @@ Sources:
 - LCD:
   - Info: `30 01` → `31 01`, brightness at `[0x18]`, orientation at `[0x1A]`. Settings: `30 02 01 <brightness> 00 00 01 <quarter turns>`.
   - The orientation in the settings turns only the cooler's own display, as on the 2023 models below. A user with a Kraken Elite set to 180° saw the liquid screen the right way up and KrakenDial's stream upside down ([krakendial#15](https://github.com/kleju13/krakendial/issues/15); whether theirs is the 2023 or the 2024 is not reported yet). So camless turns each frame itself before streaming it. Verified on the maintainer's Elite 2024 on firmware 1.2.0: on camless 0.5.0, 180° left KrakenDial's stream as it was at 0°; with the frames turned, 180° turns it over, and 90° turns it clockwise, the way the cooler turns its liquid screen at 90°.
+  - Where the tubes are with the picture upright: at 0° at the bottom on the maintainer's Elite 2024, and at 90° on the right on a Kraken Base ([#68](https://github.com/kleju13/camless/issues/68)). That fits the picture turning clockwise: the tubes go the other way round, so 180° puts them at the top and 270° on the left. Those two angles are worked out, not measured, and the Z3 and Elite 2023 have not been measured at all. The rotation dialog draws the tubes from this; a model that differs gets a wrong drawing, not a wrong command.
   - Liquid screen: `38 01 02 00`.
   - Streaming, per frame, as captured from CAM 4.76.6 on firmware 1.2.0:
     1. `36 01 00 01 08`;

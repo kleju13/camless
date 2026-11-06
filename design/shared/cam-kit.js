@@ -1023,7 +1023,9 @@
     ctx.clearRect(0, 0, w, hh);
     const r = Math.min(w, hh) / 2 / 1.42;
     const cx = w / 2, cy = hh / 2;
-    drawTubes(ctx, cx, cy, r, o.orientation);
+    // With the picture held upright, the tubes are at the bottom at 0° and go the
+    // other way round from the picture's clockwise turn: see docs/protocol.md.
+    drawTubes(ctx, cx, cy, r, 90 - o.orientation);
     K.head(ctx, cx, cy, r, { leds: o.leds, liquid: C.state.liquid, lcd: Object.assign({}, C.config.lcd, { mode: o.mode || C.config.lcd.mode }), snapshot: C.snapshot(), font: FONT, rotation: 0, shadow: o.shadow, shadowColor: 'rgba(0,0,0,.4)' });
   }
 
