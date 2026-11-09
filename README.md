@@ -22,7 +22,7 @@ A light replacement for NZXT CAM. It handles fan and pump curves, lighting and t
 
 | Monitoring | Kraken curves |
 |---|---|
-| ![CPU, GPU, memory and Kraken gauges, and temperatures over ten minutes](docs/screenshots/monitoring.png) | ![The pump on a CPU curve, and the radiator fans on a liquid curve stored on the cooler, with the safety floor hatched](docs/screenshots/curves.png) |
+| ![CPU, GPU and liquid temperatures with their charts over ten minutes, and load, power, fan and frame rate charts](docs/screenshots/monitoring.png) | ![Editing a fan curve that follows the GPU, with the current temperature marked](docs/screenshots/curves.png) |
 | **Lighting** | **LCD** |
 | ![The Tai Chi effect on Control Hub fans](docs/screenshots/lighting.png) | ![The Kraken LCD showing a web page](docs/screenshots/lcd.png) |
 
@@ -156,4 +156,4 @@ Copyright (C) 2026 kleju13 and camless contributors.
 
 [GNU AGPL v3](LICENSE). Use it, change it and share it freely, at work too. If you pass on a changed version, or run one for other people over a network, you must publish its source under the same license.
 
-The Montserrat font in `gui/ui` is under the [SIL Open Font License](gui/ui/OFL.txt).
+The Archivo, Saira and Hanken Grotesk fonts in `gui/ui` are under the [SIL Open Font License](gui/ui/OFL.txt).

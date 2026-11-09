@@ -12,8 +12,10 @@
 
   const I = {
     monitoring: ic('<path d="M3 12.5h4l2.5-6 4 12 2.6-6H21"/>'),
+    panel: ic('<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/>'),
     games: ic('<path d="M7.6 7.5h8.8a4.6 4.6 0 0 1 4.5 5.6l-.7 3.2a2.2 2.2 0 0 1-3.9.9l-1.6-2.2H9.3l-1.6 2.2a2.2 2.2 0 0 1-3.9-.9l-.7-3.2a4.6 4.6 0 0 1 4.5-5.6z"/><path d="M8.5 10v3.4M6.8 11.7h3.4M15.3 11h.01M17.3 12.8h.01"/>'),
     specs: ic('<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 8h6M9 12h6M9 16h3"/>'),
+    // Hardware as you would sketch it: a 120 mm frame with its screw holes, and a pump head with its two tubes.
     cooling: ic('<circle cx="12" cy="12" r="1.8"/><path d="M12 10.2C11 6 12 3 15 3c2.2 0 3 2.4.8 4.4L13.6 9.6M13.8 12c4.2-1 7.2 0 7.2 3 0 2.2-2.4 3-4.4.8l-2.2-2.2M12 13.8c1 4.2 0 7.2-3 7.2-2.2 0-3-2.4-.8-4.4l2.2-2.2M10.2 12C6 13 3 12 3 9c0-2.2 2.4-3 4.4-.8l2.2 2.2"/>'),
     lighting: ic('<path d="M9.2 17.5h5.6M10 20.5h4M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.4 1.1 2.3v.4h5v-.4c0-.9.4-1.7 1.1-2.3A6 6 0 0 0 12 3z"/>'),
     lcd: ic('<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="5"/>'),
@@ -39,7 +41,7 @@
   };
   // c and a minus, for cam-less. tools/icon/make_icon.py draws the same mark for the exe and the tray.
   const LOGO = '<svg viewBox="0 0 64 64" aria-hidden="true"><path d="M35.607 42.607A15 15 0 1 1 35.607 21.393" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round"/><path d="M43 32H55" stroke="var(--orchid)" stroke-width="9" stroke-linecap="round"/></svg>';
-  const FONT = '"Montserrat", system-ui, sans-serif';
+  const FONT = '"Archivo", system-ui, sans-serif';
 
   /* ------------------------------------------------------------ prefs, bus */
 
@@ -95,8 +97,8 @@
   /* --------------------------------------------------------------- controls */
 
   function select(o) {
-    const el = h(`<div class="cam-select"><button type="button" class="cam-select-btn" aria-haspopup="listbox" aria-expanded="false"><span class="v"></span>${I.chevron}</button></div>`);
-    const btn = el.firstElementChild, vEl = btn.firstElementChild;
+    const el = h(`<div class="cam-select"><button type="button" class="cam-select-btn" aria-haspopup="listbox" aria-expanded="false">${o.prefix ? `<span class="pre">${o.prefix}</span>` : ''}<span class="v"></span>${I.chevron}</button></div>`);
+    const btn = el.firstElementChild, vEl = btn.querySelector('.v');
     let value = o.value, options = o.options, menu = null, active = 0;
     const lid = uid('ls');
     const paint = () => {
@@ -128,7 +130,7 @@
       if (o.label) menu.setAttribute('aria-label', o.label);
       options.forEach((x, i) => {
         const sel = x.value === value;
-        const li = h(`<li role="option" id="${lid}-${i}" aria-selected="${sel}"><span>${esc(x.label)}</span>${x.desc ? `<span class="d">${esc(x.desc)}</span>` : ''}${sel ? I.check : ''}</li>`);
+        const li = h(`<li role="option" id="${lid}-${i}" aria-selected="${sel}"${x.sep ? ' class="sep"' : ''}><span>${esc(x.label)}</span>${x.desc ? `<span class="d">${esc(x.desc)}</span>` : ''}${sel ? I.check : ''}</li>`);
         li.addEventListener('click', () => pick(x.value));
         li.addEventListener('pointermove', () => { if (active !== i) setActive(i); });
         menu.appendChild(li);
@@ -304,7 +306,7 @@
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     });
     overlays.push(close);
-    const first = body.querySelector('button, input, [tabindex="0"]') || dlg.querySelector('header button');
+    const first = (o.focusFooter && api.buttons[api.buttons.length - 1]) || body.querySelector('button, input, [tabindex="0"]') || dlg.querySelector('header button');
     first.focus({ preventScroll: true });
     return api;
   }
@@ -333,6 +335,8 @@
     for (const it of items) {
       const b = h(`<button type="button" role="tab" data-id="${esc(it.id)}"></button>`);
       b.textContent = it.label;
+      if (it.muted) b.classList.add('muted');
+      if (it.title) b.title = it.title;
       b.addEventListener('click', () => { set(it.id); onPick(it.id); });
       el.appendChild(b);
     }
