@@ -455,6 +455,7 @@
     else if (needsAdmin(status.service)) {
       out.push({
         kind: 'warn',
+        id: 'admin',
         html: '<b>The service runs without administrator rights, so CPU temperature and power are off.</b> Curves on CPU temperature hold the failsafe speed. Restart it and answer Yes when Windows asks.',
         button: sv.can_start ? { label: 'Restart as administrator', onClick: () => act('service/restart', {}) } : null,
       });
@@ -477,11 +478,17 @@
     }
     const fs = status.fans.filter((f) => f.failsafe);
     if (fs.length) {
-      const names = listText(fs.map((f) => fanLabel(f.channel)));
-      out.push({ kind: 'warn', html: `<b>${esc(names)} ${fs.length > 1 ? 'run' : 'runs'} at the failsafe ${failsafe()}%.</b> ${fs.length > 1 ? 'Their curves have' : 'Its curve has'} no sensor reading.` });
+      const labels = fs.map((f) => fanLabel(f.channel)), brief = labels.map((l) => l.replace(/\s*\(.*\)$/, ''));
+      const names = listText(new Set(brief).size === brief.length ? brief : labels);
+      // Without administrator rights, a curve on the CPU has no reading: that restart is its fix.
+      const onCpu = fs.some((f) => { const c = S.fanCfg(f.channel), cv = c && S.curve(c.curve); return cv && cv.sensor && cv.sensor.startsWith('cpu.'); });
+      out.push({ kind: 'warn', first: true, fixedBy: onCpu ? 'admin' : null, html: `<b>${esc(names)} ${fs.length > 1 ? 'run' : 'runs'} at the failsafe ${failsafe()}%.</b> ${fs.length > 1 ? 'Their curves have' : 'Its curve has'} no sensor reading.` });
     }
     return out;
   }
+
+  // Whether the warnings are listed one by one.
+  let alertsOpen = false;
 
   function alerts(host) {
     const box = h('<div class="cam-alerts"></div>');
@@ -489,15 +496,32 @@
     let last = '';
     const upd = () => {
       const list = currentAlerts();
-      const key = JSON.stringify(list.map((a) => [a.kind, a.html, !!a.button]));
+      const key = JSON.stringify([alertsOpen, list.map((a) => [a.kind, a.html, !!a.button])]);
       if (key === last) return;
       last = key;
       box.textContent = '';
-      for (const a of list) {
+      const show = (a) => {
         const el = h(`<div class="cam-alert${a.kind === 'warn' ? ' warn' : a.kind === 'info' ? ' info' : ''}" role="${a.kind === 'error' ? 'alert' : 'status'}">${a.kind === 'info' ? I.info : I.warn}<div class="txt">${a.html}</div></div>`);
         if (a.button) el.appendChild(button(a.button.label, { small: true, onClick: a.button.onClick }));
         box.appendChild(el);
+        return el;
+      };
+      // Errors always show in full; two or more warnings share one line until opened.
+      // A fan held at failsafe comes first: it is what changes now.
+      const rest = list.filter((a) => a.kind !== 'error').sort((a, b) => !!b.first - !!a.first);
+      list.filter((a) => a.kind === 'error').forEach(show);
+      if (rest.length < 2 || alertsOpen) {
+        rest.forEach(show);
+        if (rest.length > 1) { const l = h('<button type="button" class="cam-link">Show fewer</button>'); l.addEventListener('click', () => { alertsOpen = false; upd(); }); box.appendChild(l); }
+        return;
       }
+      const el = show(rest[0]);
+      el.querySelector('.txt').classList.add('one');
+      const fix = rest[0].fixedBy && rest.find((a) => a.id === rest[0].fixedBy);
+      if (fix && fix.button) el.appendChild(button(fix.button.label, { small: true, onClick: fix.button.onClick }));
+      const more = h(`<button type="button" class="cam-link">+${rest.length - 1} more</button>`);
+      more.addEventListener('click', () => { alertsOpen = true; upd(); });
+      el.appendChild(more);
     };
     track(S.on('state', upd));
     track(S.on('saved', upd));
@@ -861,17 +885,25 @@
       model: () => {
         const c = cur(), f = fanId ? S.fan(fanId) : null;
         const minDuty = f ? f.minDuty : 0;
-        if (c && c.kind === 'fixed') return { kind: 'fixed', duty: c.duty, range: [20, 100], minDuty };
+        // On a channel's card the slider above sets it; the line only shows it.
+        if (c && c.kind === 'fixed') return { kind: 'fixed', duty: c.duty, range: [20, 100], minDuty, disabled: !!fanId };
         if (!c || c.kind !== 'graph') return { kind: 'fixed', duty: 0, range: [20, 100], disabled: true };
         // The cooler's own floor applies to what it stores, by its liquid temperature.
         const floor = !!f && f.onDeviceCurves && c.sensor === `${f.dev}.liquid`;
         return { kind: 'graph', points: c.points, range: S.range(c.sensor, c.points), minDuty, floor };
       },
       set: (patch, final) => editCurve(nameOf(), patch, final),
-      live: () => { const v = S.curveValue(nameOf()); return v && v.duty != null ? { x: v.input, y: v.duty } : null; },
+      // A fixed curve's handle already shows its speed.
+      // A curve without a reading has no place on its own line either.
+      live: () => {
+        const fv = fanId && S.fanValue(fanId);
+        if (fv && fv.failsafe) return { x: null, y: failsafe(), hold: true };
+        const c = S.curve(nameOf()), v = S.curveValue(nameOf());
+        return c && c.kind !== 'fixed' && v && v.duty != null && !(c.kind === 'graph' && v.input == null) ? { x: v.input, y: v.duty } : null;
+      },
       // A fixed curve has no sensor, so its axis has no values.
       xLabel: (t) => { const c = cur(); return c && c.sensor ? axisText(c.sensor, t) : ''; },
-      liveLabel: (x, y) => (x == null || !cur() ? `${Math.round(y)}%` : `${S.sourceLabel(cur().sensor)}: ${reading(cur().sensor, x)}`),
+      liveLabel: (x, y) => (fanId && (S.fanValue(fanId) || {}).failsafe ? `Failsafe ${Math.round(y)}%` : x == null || !cur() ? `${Math.round(y)}%` : `${S.sourceLabel(cur().sensor)}: ${reading(cur().sensor, x)}`),
       onFrame: (fn) => S.on('frame', fn),
     };
   }
@@ -886,12 +918,13 @@
         <div class="cam-ch-live"><span class="rpm"><b class="num">--</b> RPM</span><span class="duty num"><b>--</b><small>%</small></span></div>
         <button type="button" class="cam-iconbtn" data-a="more">${I.more}</button></div>
       <div class="presets"></div>
-      <div class="cam-ch-src"><span>Source:</span></div>
+      <div class="cam-ch-src"><span>Source</span><p class="cam-ch-floor" hidden><i aria-hidden="true"></i><span></span></p></div>
       <p class="cam-ch-note" hidden>${I.warn}<span></span></p>
       <p class="cam-ch-share" hidden></p>
+      <div class="cam-ch-fixed" hidden><span>Speed</span></div>
       <div class="cam-ch-curve"></div>
       <p class="cam-ch-off" hidden></p>
-      <div class="cam-ch-foot"><button type="button" class="cam-link" data-a="apply">Apply this curve to other channels</button><span class="grow"></span><span class="cam-where" tabindex="0"></span></div>
+      <div class="cam-ch-foot"><button type="button" class="cam-link" data-a="apply">Apply to other channels</button><span class="grow"></span><span class="cam-where" tabindex="0"></span></div>
     </section>`);
     const $ = (s) => el.querySelector(s);
     const name = $('.cam-ch-name'), sub = $('.cam-ch-sub'), more = $('[data-a=more]');
@@ -900,11 +933,16 @@
     const pc = choice({ options: PRESET_OPTS, value: S.preset(id), label: 'Preset', onChange: (p) => S.setPreset(id, p) });
     $('.presets').appendChild(pc);
     const src = select({ options: sourceOptions(), value: null, label: 'Source', onChange: (s) => S.setSource(id, s) });
-    $('.cam-ch-src').appendChild(src);
+    $('.cam-ch-src').insertBefore(src, $('.cam-ch-floor'));
     const box = $('.cam-ch-curve');
     const ed = new window.CurveEditor(box, curveOpts(nameOf, id));
     track(() => ed.destroy());
     const note = $('.cam-ch-note'), share = $('.cam-ch-share'), off = $('.cam-ch-off'), where = $('.cam-where'), apply = $('[data-a=apply]');
+    const floorNote = $('.cam-ch-floor'), fixedBox = $('.cam-ch-fixed');
+    const fixedSlider = slider({ min: 0, max: 100, value: 0, label: 'Fixed speed', format: (v) => `${v}%`,
+      onInput: (v) => { const f = S.fan(id); editCurve(nameOf(), { duty: Math.max(v, (f && f.minDuty) || 0) }, false); },
+      onChange: (v) => { const f = S.fan(id); editCurve(nameOf(), { duty: Math.max(v, (f && f.minDuty) || 0) }, true); } });
+    fixedBox.appendChild(fixedSlider);
     const rpmB = $('.rpm b'), dutyB = $('.duty b');
     more.addEventListener('click', () => fanSettings(id));
     apply.addEventListener('click', () => applyDialog(id));
@@ -932,9 +970,16 @@
       sub.title = sub.textContent;
       pc.set(p);
       const shown = p !== 'none' && p !== 'advanced';
-      $('.cam-ch-src').hidden = !shown;
+      const fixed = shown && c.kind === 'fixed';
+      $('.cam-ch-src').hidden = !shown || fixed;
       box.hidden = !shown;
+      el.classList.toggle('is-fixed', fixed);
+      fixedBox.hidden = !fixed;
+      if (fixed) fixedSlider.set(c.duty);
       off.hidden = shown;
+      const floors = shown && !fixed && !!f.onDeviceCurves && c.kind === 'graph' && c.sensor === `${f.dev}.liquid`;
+      floorNote.hidden = !floors;
+      if (floors) { floorNote.lastElementChild.textContent = `Safety floor from ${K.temp(45, 0)}`; floorNote.title = `The cooler speeds up on its own from ${K.temp(45, 0)}, whatever the curve says.`; }
       apply.hidden = !c;
       if (p === 'none') off.innerHTML = 'Not managed by camless: the device keeps its last setting. Pick a preset to control it.';
       else if (p === 'advanced') off.innerHTML = `Follows <b>${esc(c.name)}</b>, a ${c.kind} curve: ${esc(describeCurve(c))}. <button type="button" class="cam-link" data-a="edit">Edit curve</button>`;
@@ -962,6 +1007,7 @@
       dutyB.textContent = duty == null ? '--' : Math.round(duty);
       const failing = !!(v && v.failsafe);
       note.hidden = !failing;
+      el.classList.toggle('failsafe', failing);
       if (failing) {
         const what = c && c.kind === 'graph' ? `No reading from ${S.sourceLabel(c.sensor)}.` : 'This curve has no reading.';
         note.lastElementChild.textContent = `${what} Holding ${failsafe()}% until it comes back.`;
@@ -1078,27 +1124,27 @@
     });
   }
 
-  // CAM's summary row: temperatures, then each fan's speed.
+  // The summary row: each card below has its own fan's speed.
   function tiles(host) {
     const el = h('<div class="cam-tiles"></div>');
     const items = [];
-    const add = (k, v, hot) => {
+    const add = (k, v, id) => {
       const t = h('<div class="cam-panel cam-tile"><div class="k"></div><div class="v"></div></div>');
       t.firstElementChild.textContent = k;
       t.title = k;
       el.appendChild(t);
-      items.push({ t, v, hot });
+      items.push({ t, v, id });
     };
     const tval = (id) => { const v = S.value(id); return v == null ? 'N/A' : `${K.tnum(v)}<small>${K.deg()}</small>`; };
-    for (const s of S.sensors().filter((x) => S.isLiquid(x.id))) add(S.sourceLabel(s.id), () => tval(s.id), () => S.value(s.id) >= 55);
-    add('CPU', () => tval('cpu.temp'));
-    add('GPU', () => tval('gpu.temp'));
-    for (const f of S.fans()) if (!(f.hw && f.hw.connected === false)) add(fanLabel(f.id), () => `${K.rpm(f.hw ? rpmOf(f.id) : null)}<small>RPM</small>`);
+    for (const s of S.sensors().filter((x) => S.isLiquid(x.id))) add(S.sourceLabel(s.id), () => tval(s.id), s.id);
+    add('CPU', () => tval('cpu.temp'), 'cpu.temp');
+    add('GPU', () => tval('gpu.temp'), 'gpu.temp');
     const upd = () => {
-      for (const { t, v, hot } of items) {
-        const html = v();
+      for (const { t, v, id } of items) {
+        const html = v(), level = tempLevel(id, S.value(id));
         if (t.lastElementChild.innerHTML !== html) t.lastElementChild.innerHTML = html;
-        t.classList.toggle('hot', !!(hot && hot()));
+        t.classList.toggle('warn', level === 1);
+        t.classList.toggle('hot', level === 2);
         t.classList.toggle('na', html === 'N/A');
       }
     };
@@ -1121,6 +1167,9 @@
     return el;
   }
 
+  // Channels with no fan that were opened anyway, for as long as the window is open.
+  const setUpAnyway = new Set();
+
   function cooling(host) {
     K.pageHead(host, 'Cooling', S.config ? profileControls() : null);
     if (!S.config) { emptyState(host, 'Cooling can be changed again once the config file loads.'); return; }
@@ -1135,15 +1184,16 @@
       const grid = h('<div class="cam-grid2 collapse"></div>');
       const idle = [];
       for (const f of fans.filter((x) => x.dev === dev)) {
-        if (f.hw && f.hw.connected === false && !S.fanCfg(f.id)) idle.push(f);
+        if (f.hw && f.hw.connected === false && !setUpAnyway.has(f.id)) idle.push(f);
         else grid.appendChild(coolingCard(f.id));
       }
       s.appendChild(grid);
       if (idle.length) {
-        const list = h('<div class="cam-idle"><h3 class="cam-h3">Inactive</h3></div>');
+        const list = h('<div class="cam-idle"></div>');
         for (const f of idle) {
-          const r = h(`<div class="cam-panel cam-inactive">${I.cooling}<b></b><span class="grow"></span><span>No fan detected</span></div>`);
+          const r = h(`<div class="cam-panel cam-inactive">${I.cooling}<b></b><span>No fan detected</span><span class="grow"></span><button type="button" class="cam-link">Set it up anyway</button></div>`);
           r.querySelector('b').textContent = S.fanName(f.id);
+          r.querySelector('button').addEventListener('click', () => { setUpAnyway.add(f.id); go(); });
           list.appendChild(r);
         }
         s.appendChild(list);
@@ -1276,11 +1326,14 @@
           rows.appendChild(h('<p class="cam-hint cam-pad-x">Drag a point to move it, double-click to add one, right-click or Delete to remove one.</p>'));
           const unit = () => (S.unitOf(c().sensor) === 'celsius' ? '°C' : S.UNIT[S.unitOf(c().sensor)]);
           const hy = numField({ get: () => c().hysteresis || 0, set: (v) => change((x) => setResp(x, 'hysteresis', v, 0)), min: 0, max: 50, unit: unit(), label: 'Hysteresis' });
-          rows.append(
-            row('Hysteresis', 'The sensor must move this far before the speed follows.', hy),
-            row('Rise', 'Seconds to cover about two thirds of a rise; 0 follows at once.', numField({ get: () => c().response_up ?? 2, set: (v) => change((x) => setResp(x, 'response_up', v, 2)), min: 0, max: 600, unit: 's', label: 'Rise' })),
-            row('Fall', 'The same for a fall, slower so a short dip does not make the fans surge and settle.', numField({ get: () => c().response_down ?? 10, set: (v) => change((x) => setResp(x, 'response_down', v, 10)), min: 0, max: 600, unit: 's', label: 'Fall' })),
+          const cell = (title, hint, field) => { const d = h('<div><b></b><p></p></div>'); d.firstElementChild.textContent = title; d.lastElementChild.textContent = hint; d.insertBefore(field, d.lastElementChild); return d; };
+          const resp = h('<div class="cam-resp"></div>');
+          resp.append(
+            cell('Hysteresis', 'How far the sensor must move before the speed follows.', hy),
+            cell('Rise', 'Seconds for about two thirds of a rise; 0 follows at once.', numField({ get: () => c().response_up ?? 2, set: (v) => change((x) => setResp(x, 'response_up', v, 2)), min: 0, max: 600, unit: 's', label: 'Rise' })),
+            cell('Fall', 'The same for a fall, slower so a short dip does not make the fans surge.', numField({ get: () => c().response_down ?? 10, set: (v) => change((x) => setResp(x, 'response_down', v, 10)), min: 0, max: 600, unit: 's', label: 'Fall' })),
           );
+          rows.appendChild(resp);
           track(S.on('config', () => { if (c()) hy.lastElementChild.textContent = unit(); }));
         } else if (c0.kind === 'fixed') {
           rows.appendChild(row('Speed', null, slider({ min: 0, max: 100, value: c0.duty, label: 'Speed', format: (v) => v + '%', onInput: (v) => S.edit((cf) => { const x = cf.curve.find((k) => k.name === name); if (x) x.duty = v; }, { live: true, what: 'curve' }), onChange: () => S.save() })));
@@ -1656,7 +1709,7 @@
         : l.mode === 'liquid'
         ? 'The cooler draws this screen itself, so it stays on when camless is closed.'
         : l.mode === 'web'
-          ? `camless shows the page the way CAM’s Web Integration does, so pages made for CAM work. It runs in a hidden ${linux() ? 'Chrome, Chromium, Edge or Brave' : 'Edge'} window, which takes memory and CPU; the other modes need none.${dialHint(dev)}`
+          ? `Pages made for CAM work here. They run in a hidden ${linux() ? 'Chrome, Chromium, Edge or Brave' : 'Edge'} window, which takes memory and CPU.${dialHint(dev)}`
           : `A program on this PC posts frames to <code>http://${esc(api.listen)}/v1/lcd/frame</code>. When they stop, the screen goes back to the cooler’s own display.${api.enabled === false ? ' <b>Turn on Local API in Settings first.</b>' : ''}`);
       cap1.textContent = l.mode === 'liquid' ? 'Liquid temperature, drawn by the cooler' : l.mode === 'web' ? 'A web page' : 'Frames from a program';
       cv.setAttribute('aria-label', `Screen preview: ${cap1.textContent}, ${l.brightness}% brightness, rotated ${l.orientation}°`);
@@ -1782,22 +1835,61 @@
 
   /* ------------------------------------------------------------ monitoring */
 
-  const SERIES_COLORS = [['#be9fff', '#640a92'], ['#21d373', '#0f8a4c'], ['#4cc2ff', '#0a6fd6'], ['#ffb547', '#b86e00'], ['#ff6b8a', '#c2183d'], ['#2dd4bf', '#0f766e'], ['#e879f9', '#a21caf'], ['#a3e635', '#4d7c0f']];
+  const SERIES_COLORS = [['#be9fff', '#640a92'], ['#21d373', '#0f8a4c'], ['#4cc2ff', '#0a6fd6'], ['#ffb547', '#b86e00'], ['#ff6b8a', '#c2183d'], ['#2dd4bf', '#0f766e'], ['#e879f9', '#a21caf'], ['#a3e635', '#4d7c0f'], ['#c8ccd4', '#4b5563'], ['#f9a8d4', '#be185d'], ['#818cf8', '#4338ca']];
   const seriesColor = (i) => SERIES_COLORS[i % SERIES_COLORS.length][K.prefs.theme === 'light' ? 1 : 0];
+  // A CPU, GPU, liquid or pump has the same color on every chart; fans take what is left.
+  // Fan lines keep off the hues that mean CPU, GPU, the liquid or a warning.
+  const FAN_SLOTS = [7, 9, 2, 8, 10, 6];
+  // Pumps have their own color, so they don't use up a fan's.
+  const fanIndex = (series, s) => series.filter((x) => !x.id.includes('/pump')).indexOf(s);
+  const seriesSlot = (id, i) => (id.startsWith('cpu.') ? 0 : id.startsWith('gpu.') ? 1 : id.startsWith('ram.') ? 2 : id === 'fps' ? 6 : id.endsWith('.liquid') ? 5 : id.includes('/pump') ? 5 : FAN_SLOTS[i % FAN_SLOTS.length]);
 
   function gauge(label) {
     const R = 50, Ci = TAU * R, Lr = Ci * 0.75;
-    const el = h(`<div class="cam-gauge" role="img"><svg viewBox="0 0 124 124" aria-hidden="true"><g transform="rotate(135 62 62)"><circle class="track" cx="62" cy="62" r="${R}" fill="none" stroke-width="8" stroke-linecap="round" stroke-dasharray="${Lr} ${Ci}"/><circle class="val" cx="62" cy="62" r="${R}" fill="none" stroke-width="8" stroke-linecap="round" stroke-dasharray="0 ${Ci}"/></g><text class="big" x="62" y="66" text-anchor="middle">--</text><text class="unit" x="62" y="84" text-anchor="middle"></text></svg><span></span></div>`);
+    const el = h(`<div class="cam-gauge" role="img"><svg viewBox="0 0 124 124" aria-hidden="true"><g transform="rotate(135 62 62)"><circle class="track" cx="62" cy="62" r="${R}" fill="none" stroke-width="8" stroke-linecap="round" stroke-dasharray="${Lr} ${Ci}"/><circle class="val" cx="62" cy="62" r="${R}" fill="none" stroke-width="8" stroke-linecap="round" stroke-dasharray="0 ${Ci}"/></g><text x="62" y="71" text-anchor="middle"><tspan class="big">--</tspan><tspan class="unit" dx="2"></tspan></text></svg><span></span></div>`);
     el.lastElementChild.textContent = label;
     const val = el.querySelector('.val'), big = el.querySelector('.big'), unit = el.querySelector('.unit');
-    el.set = (frac, text, u, hot) => {
+    el.set = (frac, text, u, level, color) => {
       val.setAttribute('stroke-dasharray', `${Math.max(0.01, Lr * clamp(frac || 0, 0, 1))} ${Ci}`);
       big.textContent = text;
       unit.textContent = u;
-      el.classList.toggle('hot', !!hot);
+      if (color) el.style.setProperty('--g', color); else el.style.removeProperty('--g');
+      el.classList.toggle('muted', u === '%');
+      el.classList.toggle('warn', level === 1);
+      el.classList.toggle('hot', level === 2);
       el.setAttribute('aria-label', `${label} ${text}${u}`);
     };
     return el;
+  }
+
+  // Warm and hot, for a temperature's color: liquid at the cooler's own limits, and the
+  // chips where they start throttling soon.
+  function tempLevel(id, v) {
+    if (v == null) return 0;
+    const [warm, hot] = S.isLiquid(id) ? [45, 55] : id === 'cpu.temp' ? [85, 95] : id === 'gpu.temp' ? [80, 90] : [Infinity, Infinity];
+    return v >= hot ? 2 : v >= warm ? 1 : 0;
+  }
+
+  // A line above the numbers: whether anything needs attention.
+  function healthStrip(host) {
+    const el = h('<div class="cam-panel cam-health" role="status"><span class="dot"></span><span><b></b><small></small></span><button type="button" class="cam-link" hidden>Review cooling</button></div>');
+    el.querySelector('button').addEventListener('click', () => { location.hash = 'cooling'; });
+    const upd = () => {
+      const list = currentAlerts();
+      const bad = list.some((a) => a.kind === 'error'), n = list.length;
+      // The warmest thing past its warm mark, when nothing is wrong otherwise.
+      const temps = S.sensors().filter((s) => s.unit === 'celsius').map((s) => ({ s, lv: tempLevel(s.id, S.value(s.id)) })).filter((x) => x.lv).sort((a, b) => b.lv - a.lv);
+      const warm = S.status && !n ? temps[0] : null;
+      el.dataset.tone = !S.status ? 'off' : bad ? 'bad' : n || warm ? 'warn' : 'ok';
+      el.querySelector('b').textContent = !S.status ? 'Service not running' : n ? `${n} ${n === 1 ? 'thing needs' : 'things need'} attention`
+        : warm ? `${S.sourceLabel(warm.s.id)} is ${warm.lv === 2 ? 'hot' : 'running warm'}: ${K.temp(S.value(warm.s.id), 0)}` : 'Running normally';
+      el.querySelector('small').textContent = !S.status || n || warm ? '' : 'No warnings from the service, sensors or devices.';
+      el.querySelector('button').hidden = !warm;
+    };
+    track(S.on('state', upd));
+    track(S.on('config', upd));
+    upd();
+    host.appendChild(el);
   }
 
   // [fraction of the dial, number, unit] for a sensor.
@@ -1812,9 +1904,11 @@
 
   function monitoring(host) {
     K.pageHead(host, 'PC Monitoring');
-    host.appendChild(h('<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="cam-gauge-grad" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#7416e6"/><stop offset="1" stop-color="#bf4cbf"/></linearGradient></defs></svg>'));
+    healthStrip(host);
+    host.appendChild(h('<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="cam-gauge-grad" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#7c3aed"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs></svg>'));
     const grid = h('<div class="cam-mon"></div>');
-    const sens = (id) => () => { const v = S.value(id); return dial(id, v).concat([S.isLiquid(id) && v >= 55]); };
+    // A temperature's dial has the color of its chart.
+    const sens = (id) => () => { const v = S.value(id); return dial(id, v).concat([tempLevel(id, v), id.endsWith('.temp') || S.isLiquid(id) ? seriesColor(seriesSlot(id, 0)) : null]); };
     const stat = (id) => () => reading(id, S.value(id));
     const cards = [
       { title: 'CPU', g: [['Load', sens('cpu.load')], ['Temperature', sens('cpu.temp')]], stats: [['Power', stat('cpu.power')]] },
@@ -1828,17 +1922,17 @@
       const stats = [];
       if (pump) stats.push(['Pump', () => `${K.rpm(rpmOf(`${d.id}/${pump.id}`))} RPM`]);
       for (const f of fans) stats.push([fans.length > 1 ? f.name.trim() : 'Fan', () => `${K.rpm(rpmOf(`${d.id}/${f.id}`))} RPM`]);
-      cards.push({ title: d.name, sub: d.firmware ? `Firmware ${d.firmware}` : '', g, stats });
+      cards.push({ title: d.name, tip: d.firmware ? `Firmware ${d.firmware}` : '', g, stats });
     }
     const upd = [];
     for (const c of cards) {
-      const el = h('<section class="cam-panel cam-moncard"><header><h3></h3><span></span></header><div class="cam-gauges"></div><div class="cam-monstats"></div></section>');
+      const el = h(`<section class="cam-panel cam-moncard${c.g.length < 2 ? ' single' : ''}"><header><h3></h3></header><div class="cam-gauges"></div><div class="cam-monstats"></div></section>`);
       el.querySelector('h3').textContent = c.title;
-      el.querySelector('header span').textContent = c.sub || '';
+      if (c.tip) el.querySelector('h3').title = c.tip;
       const gs = c.g.map(([label, f]) => { const g = gauge(label); el.querySelector('.cam-gauges').appendChild(g); return [g, f]; });
       const ss = c.stats.map(([label, f]) => { const s = h('<span></span>'); s.textContent = label; const b = h('<b></b>'); s.appendChild(b); el.querySelector('.cam-monstats').appendChild(s); return [b, f]; });
       if (!ss.length) el.querySelector('.cam-monstats').remove();
-      upd.push(() => { for (const [g, f] of gs) { const [fr, t, u, hot] = f(); g.set(fr, t, u, hot); } for (const [b, f] of ss) b.textContent = f(); });
+      upd.push(() => { for (const [g, f] of gs) { const [fr, t, u, hot, color] = f(); g.set(fr, t, u, hot, color); } for (const [b, f] of ss) b.textContent = f(); });
       grid.appendChild(el);
     }
     host.appendChild(grid);
@@ -2034,13 +2128,13 @@
         const box = h(`<section class="${win ? `cam-strip k-${p.id}` : 'cam-panel cam-hpanel'}"><header><div class="cam-hhead"><h3></h3><button type="button" class="cam-iconbtn cam-hbig"></button></div><div class="cam-hlegend"></div></header><div class="cam-chart-plot"><canvas role="img"></canvas><div class="cam-chart-tip" hidden></div><p class="cam-chart-note" hidden>No readings in this range.</p></div></section>`);
         box.querySelector('h3').textContent = p.title;
         const cv = box.querySelector('canvas'), grow = box.querySelector('.cam-hbig');
-        // A strip leaves out what is in brackets, the device, while the names stay apart.
+        // A legend leaves out what is in brackets, the device, while the names stay apart.
         const short = (l) => l.replace(/\s*\(.*\)$/, '');
-        const shorten = win && new Set(p.series.map((s) => short(s.label))).size === p.series.length;
+        const shorten = new Set(p.series.map((s) => short(s.label))).size === p.series.length;
         const items = p.series.map((s, i) => {
           const b = h('<button type="button" class="cam-legend"><i></i><span></span><b class="num"></b><small class="num"></small></button>');
           b.children[1].textContent = shorten ? short(s.label) : s.label;
-          b.firstElementChild.style.setProperty('--c', seriesColor(i));
+          b.firstElementChild.style.setProperty('--c', seriesColor(seriesSlot(s.id, fanIndex(p.series, s))));
           b.setAttribute('aria-pressed', String(!hidden.has(s.id)));
           b.addEventListener('click', () => {
             if (hidden.has(s.id)) hidden.delete(s.id); else hidden.add(s.id);
@@ -2179,7 +2273,7 @@
       if (!cv.isConnected) return;
       const conv = histConv(p.kind);
       const shown = p.series.filter((s) => !hidden.has(s.id));
-      const color = (s) => seriesColor(p.series.indexOf(s));
+      const color = (s) => seriesColor(seriesSlot(s.id, fanIndex(p.series, s)));
       // Per series over the game, or the part zoomed in on: lowest and mean of the
       // averages, highest of the peaks. The axis takes in the whole range, of the shown
       // series only; `has` is any series, for the note.
@@ -2372,10 +2466,20 @@
             ctx.lineTo(r[r.length - 1][0], bottom); ctx.lineTo(r[0][0], bottom); ctx.closePath();
             ctx.fillStyle = g; ctx.fill();
           }
-          ctx.strokeStyle = c; ctx.lineWidth = 1.8; ctx.lineJoin = 'round';
-          ctx.beginPath();
-          r.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-          ctx.stroke();
+          ctx.strokeStyle = c; ctx.lineJoin = 'round';
+          // More readings than a line can show: their mean over about 3 px, in a band of
+          // their spread, so the trend reads. The pointer still gets the readings.
+          const per = r.length * 3 / (w - pl - pr), wide = Math.round(per);
+          const trace = (list) => { ctx.beginPath(); list.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); };
+          if (wide >= 2) {
+            let sum = 0;
+            const span = r.map(([x, y], i) => { sum += y; if (i >= wide) sum -= r[i - wide][1]; const w_ = r.slice(Math.max(0, i - wide + 1), i + 1).map((q) => q[1]); return [x, sum / Math.min(i + 1, wide), Math.min(...w_), Math.max(...w_)]; });
+            ctx.beginPath();
+            span.forEach(([x, , lo], i) => (i ? ctx.lineTo(x, lo) : ctx.moveTo(x, lo)));
+            for (let i = span.length - 1; i >= 0; i--) ctx.lineTo(span[i][0], span[i][3]);
+            ctx.closePath(); ctx.globalAlpha = 0.2; ctx.fillStyle = c; ctx.fill(); ctx.globalAlpha = 1;
+            ctx.lineWidth = 1.7; trace(span);
+          } else { ctx.lineWidth = 1.8; trace(r); }
           if (r.length === 1) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(r[0][0], r[0][1], 2, 0, TAU); ctx.fill(); }
         }
       }
@@ -2869,7 +2973,7 @@
       if (cmp) return delta(fps, cmp.fps, '', true);
       if (fps == null || usual == null) return ['', ''];
       const d = Math.round(((fps - usual) / usual) * 100);
-      return [d === 0 ? 'as usual for this game' : `${d > 0 ? '+' : ''}${d}% vs its other sessions`, ''];
+      return [d === 0 ? 'as usual for this game' : `${d > 0 ? '+' : ''}${d}% vs usual`, ''];
     };
     const around = K.prefs.sessionAround !== false;
     const tools = choice({ options: [{ value: 'around', label: '30 min around' }, { value: 'game', label: 'Game only' }], value: around ? 'around' : 'game', label: 'Charts', onChange: (v) => { K.setPref('sessionAround', v === 'around'); again(); } });
@@ -2951,9 +3055,9 @@
       warmBox.appendChild(table([
         { label: 'Sensor', value: ([label]) => label },
         { label: 'Before', num: true, value: ([, w, , , , cut]) => (w.before != null ? K.temp(w.before, 0) : cut ? 'Right after a game' : 'No readings') },
-        { label: 'In game', num: true, value: ([, w]) => `${K.temp(w.game, 0)}${w.before == null ? '' : ` (${deg(w.rise)})`}` },
+        { label: 'In game', num: true, value: ([, w]) => `${K.temp(w.game, 0)}${w.before == null ? '' : Math.abs(w.rise) < 0.5 ? '' : ` (${deg(w.rise)})`}` },
         { label: 'Highest', num: true, value: ([, w]) => K.temp(w.top, 0) },
-        { label: 'Warmed up in', num: true, value: ([, w]) => (w.before == null ? '' : w.rise < 2 ? 'Hardly warmed' : w.warm == null ? 'Kept rising' : minutes(w.warm)) },
+        { label: 'Warmed up in', num: true, value: ([, w]) => (w.before == null ? '—' : w.rise < 2 ? 'Hardly warmed' : w.warm == null ? 'Kept rising' : minutes(w.warm)) },
         { label: 'Cooled down in', num: true, value: ([, w, playing, e]) => {
           if (playing) return 'Still playing';
           if (w.cool != null) return minutes(w.cool);
@@ -2962,7 +3066,7 @@
             if (w.after == null) return w.next != null ? 'Next game right after' : 'No readings after';
             return degrees(w.fell) >= 1 ? `Fell ${degrees(w.fell)}° in ${minutes(w.after)}` : `No cooler in ${minutes(w.after)}`;
           }
-          if (w.before == null || w.rise < 2) return '';
+          if (w.before == null || w.rise < 2) return '—';
           if (w.still == null) return Date.now() - e < 2 * 60e3 ? 'Just ended' : 'No readings after';
           return Date.now() - e < SESSION_AROUND ? `${deg(w.still)} so far` : `${deg(w.still)} after ${minutes(w.after)}`;
         } },
@@ -3055,7 +3159,7 @@
 
     function list(el) {
       const off = h('<div class="cam-panel cam-gamenote" hidden></div>');
-      const now = h('<section class="cam-panel cam-moncard cam-game"><header><h3></h3><span></span><span class="grow"></span></header><div class="cam-monstats"></div><p class="cam-muted"></p></section>');
+      const now = h('<section class="cam-panel cam-moncard cam-game"><header><h3></h3><span></span><span class="live" hidden>Playing now</span><span class="grow"></span></header><div class="cam-monstats"></div><p class="cam-muted"></p></section>');
       el.append(off, now);
       const head = now.querySelector('header'), stats = now.querySelector('.cam-monstats'), idle = now.querySelector('p');
       const stat = (label) => { const x = h('<span></span>'); x.textContent = label; const b = h('<b></b>'); x.appendChild(b); stats.appendChild(x); return b; };
@@ -3080,6 +3184,7 @@
           : `No frame rates: ${why}. Play time and temperatures are still recorded.`;
         now.querySelector('h3').textContent = g ? g.name : 'Now playing';
         head.children[1].textContent = g ? (g.in_front ? g.exe : `${g.exe}, in the background`) : '';
+        head.querySelector('.live').hidden = !g;
         charts.hidden = !g;
         const want = g ? `${g.name}|${g.steam || steamOf(g.name) || ''}` : '';
         if ((art ? art.dataset.key : '') !== want) {

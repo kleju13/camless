@@ -17,7 +17,8 @@
     /**
      * opts.model(): { kind: 'graph' | 'fixed', points, duty, range: [lo, hi], minDuty, floor, unit }
      * opts.set(patch, final): patch is { points } or { duty }; final once a drag ends
-     * opts.live(): { x, y }, the input the curve acts on and its duty, either may be null
+     * opts.live(): { x, y, hold }, the input the curve acts on and its duty, either may be
+     *   null; hold marks a speed held whatever the input, drawn as a line across the plot
      * opts.xLabel(x): axis and tooltip text for a sensor value
      * opts.liveLabel(x, y): text next to the live dot
      * opts.onFrame(fn): subscribes to the animation clock, returns the unsubscribe
@@ -40,10 +41,13 @@
       this.area = el('path', { class: 'ce-area', fill: `url(#${this.ids.grad})` }, this.svg);
       this.line = el('path', { class: 'ce-line', fill: 'none', stroke: 'var(--ce-line, #4c8dff)', 'stroke-width': 'var(--ce-line-w, 2.25)', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, this.svg);
       this.liveV = el('line', { class: 'ce-live-v', stroke: 'var(--ce-live, #fff)', 'stroke-width': 1, 'stroke-dasharray': '2 3', opacity: 0.6 }, this.svg);
+      this.liveH = el('line', { class: 'ce-live-h', stroke: 'var(--ce-hold, #f5a524)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }, this.svg);
+      this.liveH.style.display = 'none';
       this.liveDot = el('circle', { class: 'ce-live-dot', r: 5, fill: 'var(--ce-live, #fff)' }, this.svg);
       this.liveHalo = el('circle', { class: 'ce-live-halo', r: 11, fill: 'var(--ce-live, #fff)', opacity: 0.18 }, this.svg);
-      this.liveText = el('text', { class: 'ce-live-text', 'font-size': 11, fill: 'var(--ce-live-text, var(--ce-text, #ccc))' }, this.svg);
       this.gPts = el('g', { class: 'ce-points' }, this.svg);
+      this.liveBg = el('rect', { class: 'ce-live-bg', rx: 4, height: 20, fill: 'var(--ce-pill, rgba(0,0,0,.7))', stroke: 'var(--ce-grid, rgba(255,255,255,.12))', 'pointer-events': 'none' }, this.svg);
+      this.liveText = el('text', { class: 'ce-live-text', 'font-size': 11, fill: 'var(--ce-live-text, var(--ce-text, #ccc))', 'pointer-events': 'none' }, this.svg);
       this.tip = el('g', { class: 'ce-tip', opacity: 0 }, this.svg);
       this.tipBg = el('rect', { rx: 6, fill: 'var(--ce-tip-bg, rgba(0,0,0,.8))' }, this.tip);
       this.tipText = el('text', { 'font-size': 11.5, fill: 'var(--ce-tip-fg, #fff)', 'font-weight': 600 }, this.tip);
@@ -150,10 +154,14 @@
       const [a, b] = this.range;
       const show = !!live && live.y != null;
       const hasX = show && live.x != null && m.kind !== 'fixed';
-      const vis = `${show}${hasX}`;
+      const hold = show && !!live.hold;
+      const vis = `${show}${hasX}${hold}`;
       if (now === true || vis !== this.liveVis) {
         this.liveVis = vis;
-        this.liveDot.style.display = this.liveHalo.style.display = this.liveText.style.display = show ? '' : 'none';
+        this.liveDot.style.display = this.liveHalo.style.display = show && !hold ? '' : 'none';
+        this.liveText.style.display = this.liveBg.style.display = show ? '' : 'none';
+        this.liveH.style.display = hold ? '' : 'none';
+        this.host.classList.toggle('ce-hold', hold);
         this.liveV.style.display = hasX ? '' : 'none';
         this.liveAt = null;
       }
@@ -172,10 +180,18 @@
       this.liveHalo.setAttribute('cx', x); this.liveHalo.setAttribute('cy', y);
       this.liveV.setAttribute('x1', x); this.liveV.setAttribute('x2', x);
       this.liveV.setAttribute('y1', this.y(0)); this.liveV.setAttribute('y2', y);
-      const right = x > this.w - 110;
-      this.liveText.setAttribute('x', right ? x - 9 : x + 9);
-      this.liveText.setAttribute('y', y - 9);
-      this.liveText.setAttribute('text-anchor', right ? 'end' : 'start');
+      if (hold) { this.liveH.setAttribute('x1', this.x(a)); this.liveH.setAttribute('x2', this.x(b)); this.liveH.setAttribute('y1', y); this.liveH.setAttribute('y2', y); }
+      // The label sits in a pill on the side of the dot where it covers no point.
+      const p = this.opts.pad, tw = text.length * 6.3 + 14, th = 20;
+      const pts = m.kind === 'fixed' ? [] : m.points;
+      const fits = ([rx, ry]) => rx >= p.l + 2 && rx + tw <= this.w - p.r - 2 && ry >= 2 && ry + th <= this.y(0) + 2
+        && !pts.some(([t, d]) => { const px = this.x(t), py = this.y(d); return px > rx - 9 && px < rx + tw + 9 && py > ry - 9 && py < ry + th + 9; });
+      const end = this.w - p.r - tw - 2;
+      const tries = hold ? [[end, y - th - 6], [end, y + 6], [p.l + 2, y - th - 6], [p.l + 2, y + 6]] : [[x + 12, y - th - 8], [x - tw - 12, y - th - 8], [x + 12, y - th / 2], [x - tw - 12, y - th / 2], [x + 12, y + 8], [x - tw - 12, y + 8], [x + 12, 2], [x - tw - 12, 2], [x - tw / 2, 2]];
+      const [rx, ry] = tries.find(fits) || [clamp(x - tw / 2, p.l + 2, this.w - p.r - tw - 2), Math.max(2, y - th - 10)];
+      this.liveBg.setAttribute('x', rx); this.liveBg.setAttribute('y', ry); this.liveBg.setAttribute('width', tw);
+      this.liveText.setAttribute('x', rx + 7);
+      this.liveText.setAttribute('y', ry + 14);
       if (this.liveText.textContent !== text) this.liveText.textContent = text;
     }
 
