@@ -1024,11 +1024,11 @@
       if (fixed) fixedSlider.set(c.duty);
       off.hidden = shown;
       const floors = shown && !fixed && !!f.onDeviceCurves && c.kind === 'graph' && c.sensor === `${f.dev}.liquid`;
-      const least = shown && !fixed && !floors && f.minDuty ? f.minDuty : 0;
+      const least = shown && !fixed && f.minDuty ? f.minDuty : 0;
       floorNote.hidden = !floors && !least;
       floorNote.classList.toggle('least', !!least);
       if (least) { floorNote.lastElementChild.textContent = `Never below ${least}%`; floorNote.title = 'This device does not run slower than this.'; }
-      if (floors) { floorNote.lastElementChild.textContent = `Cooler takes over at ${K.temp(45, 0)}`; floorNote.title = `The cooler runs this curve itself, so it keeps working when camless is closed. It speeds up on its own from ${K.temp(45, 0)}, whatever the curve says.`; }
+      if (floors) { floorNote.lastElementChild.textContent = `${least ? `Never below ${least}%, cooler` : 'Cooler'} takes over at ${K.temp(45, 0)}`; floorNote.title = `The cooler runs this curve itself, so it keeps working when camless is closed. It speeds up on its own from ${K.temp(45, 0)}, whatever the curve says.`; }
       if (p === 'none') off.innerHTML = 'Not managed by camless: the device keeps its last setting. Pick a preset to control it.';
       else if (p === 'advanced') off.innerHTML = `Follows <b>${esc(c.name)}</b>, a ${c.kind} curve: ${esc(describeCurve(c))}. <button type="button" class="cam-link" data-a="edit">Edit curve</button>`;
       if (shown) {

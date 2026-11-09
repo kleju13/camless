@@ -114,7 +114,8 @@
       ruler(this.x(a), this.y(0), this.x(b), this.y(0));
       const warm = this.opts.warmFrom ? this.opts.warmFrom() : null;
       if (warm != null && warm < b) {
-        el('text', { class: 'ce-redline-label', x: this.x(b), y: 12, 'text-anchor': 'end' }, this.gGrid).textContent = `Warm from ${this.label(warm)}`;
+        this.warmLabel = el('text', { class: 'ce-redline-label', x: this.x(b), y: 12, 'text-anchor': 'end' }, this.gGrid);
+        this.warmLabel.textContent = `Warm from ${this.label(warm)}`;
       }
       for (let d = 0; d <= 100; d += yStep) {
         if (d && (!quiet || d === 50)) el('line', { x1: this.x(a), x2: this.x(b), y1: this.y(d), y2: this.y(d), stroke: 'var(--ce-grid, rgba(255,255,255,.07))' }, this.gGrid);
@@ -128,7 +129,7 @@
         this.floorPath.setAttribute('d', dd);
       } else this.floorPath.setAttribute('d', '');
       // A channel's own minimum, on the cards where the plot is all there is.
-      if (quiet && m.minDuty && !fixed && !m.floor && !((this.opts.live && this.opts.live()) || {}).hold) el('path', { d: `M${this.x(a)},${this.y(0)}V${this.y(m.minDuty)}H${this.x(b)}V${this.y(0)}Z`, fill: `url(#${this.ids.hatch})` }, this.gGrid);
+      if (quiet && m.minDuty && !fixed && !((this.opts.live && this.opts.live()) || {}).hold) el('path', { d: `M${this.x(a)},${this.y(0)}V${this.y(m.minDuty)}H${this.x(b)}V${this.y(0)}Z`, fill: `url(#${this.ids.hatch})` }, this.gGrid);
 
       const pts = fixed ? [[a, m.duty], [b, m.duty]] : m.points;
       let line = `M${this.x(a)},${this.y(CV.dutyAtExact(pts, a))}`;
@@ -225,7 +226,9 @@
       // One place for the reading, so it never sits on a point or on the curve.
       // Above the plot, over the needle when there is one, and always inside the chart.
       const half = text.length * 3.3;
-      this.liveText.setAttribute('x', hasX ? clamp(x - half, this.opts.pad.l, Math.max(this.opts.pad.l, this.w - this.opts.pad.r - half * 2)) : this.opts.pad.l);
+      // Keeps clear of the "Warm from" label at the right end of the same line.
+      const warmRoom = this.warmLabel && this.warmLabel.isConnected ? this.warmLabel.getComputedTextLength() + 16 : 0;
+      this.liveText.setAttribute('x', hasX ? clamp(x - half, this.opts.pad.l, Math.max(this.opts.pad.l, this.w - this.opts.pad.r - half * 2 - warmRoom)) : this.opts.pad.l);
       this.liveText.setAttribute('y', 12);
       const target = this.opts.liveEl || this.liveText;
       if (target.textContent !== text) target.textContent = text;

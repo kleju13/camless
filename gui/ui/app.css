@@ -510,7 +510,7 @@ body.light { background: #f7f6fa; }
 .cam-hhead { display: flex; align-items: flex-start; gap: 8px; }
 .cam-hhead h3 { flex: 1; min-width: 0; }
 .cam-hhead .cam-hbig { flex: none; width: 26px; height: 26px; margin: -4px -6px -4px 0; opacity: 0; }
-.cam-hpanel:hover .cam-hbig, .cam-hpanel.big .cam-hbig, .cam-hbig:focus-visible { opacity: 1; }
+.cam-hpanel:hover .cam-hbig, .cam-hpanel.big .cam-hbig, .cam-hero:hover .cam-hbig, .cam-hero.big .cam-hbig, .cam-hbig:focus-visible { opacity: 1; }
 .cam-hhead .cam-hbig svg.i { width: 16px; height: 16px; }
 .cam-hhead .cam-hbig[aria-pressed=true] { color: var(--accent); }
 .cam-hpanel > header { margin-bottom: 4px; }
@@ -830,10 +830,13 @@ body.light { background: #f7f6fa; }
 @container area (max-width: 719px) {
   .cam-grid2.collapse { grid-template-columns: minmax(0, 1fr); }
 }
-@container area (max-width: 759px) {
+/* Below this the page's padding leaves too little room for all five readings. */
+@container area (max-width: 847px) {
   .cam-srow { grid-template-columns: 64px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
   .cam-shead { grid-template-columns: 64px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
   .cam-srow .st.temp, .cam-shead .st.temp { display: none; }
+}
+@container area (max-width: 759px) {
   .cam-shero { grid-template-columns: minmax(0, 1fr); }
   .cam-shero > .cam-cover { max-width: 340px; }
 }
