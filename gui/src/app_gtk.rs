@@ -59,7 +59,11 @@ struct App {
     ui_dir: Option<PathBuf>,
     exiting: bool,
     closes: u64,
-    context: WebContext,
+    /// Only while there is a window: it keeps WebKit's network process running and
+    /// the page's backend, which polls the service, alive. Each window needs its own
+    /// anyway: wry registers the page's scheme on the context, and a second window on
+    /// the same one fails with "Duplicate custom protocol".
+    context: Option<WebContext>,
 }
 
 thread_local! {
@@ -96,9 +100,7 @@ pub fn run(launches: Launches, show: bool, ui_dir: Option<PathBuf>) -> Result<()
     });
     // Without an icon there would be no way back to a closed window.
     let show = show || tray.is_none();
-    // WebKitGTK keeps its cache and storage here.
-    let data = camless_core::config::xdg_dir("XDG_DATA_HOME", ".local/share").join("camless").join("webkit");
-    let app = App { tray, open: None, ui_dir, exiting: false, closes: 0, context: WebContext::new(Some(data)) };
+    let app = App { tray, open: None, ui_dir, exiting: false, closes: 0, context: None };
     APP.with(|a| *a.borrow_mut() = Some(app));
     if show {
         send(UserEvent::Launch);
@@ -202,7 +204,11 @@ impl App {
         let saved: Box<dyn Fn() + Send + Sync> = Box::new(|| send(UserEvent::Saved));
         let options = Options { config: None, ui_dir: self.ui_dir.clone(), sandbox: false };
         let backend = Arc::new(Backend::new(options, Some(saved)));
-        let webview = WebViewBuilder::new_with_web_context(&mut self.context)
+        // WebKitGTK keeps its cache and storage here.
+        let context = self.context.get_or_insert_with(|| {
+            WebContext::new(Some(camless_core::config::xdg_dir("XDG_DATA_HOME", ".local/share").join("camless").join("webkit")))
+        });
+        let webview = WebViewBuilder::new_with_web_context(context)
             .with_custom_protocol("camless".into(), move |_, req| respond(&backend, req))
             .with_url(ORIGIN)
             .with_background_color(BACKGROUND)
@@ -250,6 +256,7 @@ impl App {
             drop(webview);
             // SAFETY: nothing else holds the window; it was ours alone.
             unsafe { window.destroy() };
+            self.context = None;
         }
         if self.exiting {
             // The icon goes at once, not when the process has wound down.
