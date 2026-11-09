@@ -257,6 +257,10 @@ impl App {
             // SAFETY: nothing else holds the window; it was ours alone.
             unsafe { window.destroy() };
             self.context = None;
+            // What the window used is free now; give the pages back to the system.
+            #[cfg(target_env = "gnu")]
+            // SAFETY: takes no pointers and only touches the allocator's own state.
+            unsafe { libc::malloc_trim(0) };
         }
         if self.exiting {
             // The icon goes at once, not when the process has wound down.
