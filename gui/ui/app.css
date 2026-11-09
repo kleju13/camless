@@ -831,7 +831,7 @@ body.light { background: #f7f6fa; }
   .cam-grid2.collapse { grid-template-columns: minmax(0, 1fr); }
 }
 /* Below this the page's padding leaves too little room for all five readings. */
-@container area (max-width: 847px) {
+@container area (max-width: 867px) {
   .cam-srow { grid-template-columns: 64px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
   .cam-shead { grid-template-columns: 64px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
   .cam-srow .st.temp, .cam-shead .st.temp { display: none; }
