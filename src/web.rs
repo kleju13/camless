@@ -363,16 +363,15 @@ pub fn q565_from_png(png_bytes: &[u8], w: u16, h: u16) -> Result<Vec<u8>> {
 pub fn rgb565_from_png(png_bytes: &[u8], w: u16, h: u16) -> Result<Vec<u16>> {
     let (buf, fw, fh, channels) = decode_png(png_bytes)?;
     let (w, h) = (w as usize, h as usize);
-    let mut rgba = vec![0u8; w * h * 4];
+    let mut out = vec![0u16; w * h];
+    let shown = fw.min(w);
     for y in 0..fh.min(h) {
-        for x in 0..fw.min(w) {
-            let i = (y * fw + x) * channels;
-            let px = &buf[i..i + channels];
-            let (r, g, b) = if channels >= 3 { (px[0], px[1], px[2]) } else { (px[0], px[0], px[0]) };
-            rgba[(y * w + x) * 4..][..3].copy_from_slice(&[r, g, b]);
+        let row = buf[y * fw * channels..][..shown * channels].chunks_exact(channels);
+        for (to, px) in out[y * w..][..shown].iter_mut().zip(row) {
+            *to = if channels >= 3 { q565::rgb565(px[0], px[1], px[2]) } else { q565::rgb565(px[0], px[0], px[0]) };
         }
     }
-    Ok(q565::rgb565_from_rgba(&rgba))
+    Ok(out)
 }
 
 /// Wider or higher than any screen. A page hands frames over, so a PNG is checked
@@ -981,6 +980,25 @@ mod tests {
         assert_eq!(rgb565_from_png(&png_bytes, 3, 2).unwrap(), vec![0xf800, 0x001f, 0, 0, 0, 0]);
         let q = q565_from_png(&png_bytes, 3, 2).unwrap();
         assert_eq!(q565::decode(&q).unwrap(), (3, 2, vec![0xf800, 0x001f, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn frames_of_other_sizes_and_colour_types_fit_the_screen() {
+        let png_of = |w, h, color, data: &[u8]| {
+            let mut bytes = Vec::new();
+            let mut enc = png::Encoder::new(&mut bytes, w, h);
+            enc.set_color(color);
+            enc.write_header().unwrap().write_image_data(data).unwrap();
+            bytes
+        };
+        // Wider and taller than a 1×1 screen: only its first pixel shows.
+        let rgb = png_of(2, 2, png::ColorType::Rgb, &[255, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0]);
+        assert_eq!(rgb565_from_png(&rgb, 1, 1).unwrap(), vec![0xffff]);
+        // Grayscale, with and without alpha, is the same value on each channel.
+        let gray = png_of(2, 1, png::ColorType::Grayscale, &[0xff, 0x80]);
+        assert_eq!(rgb565_from_png(&gray, 2, 2).unwrap(), vec![0xffff, q565::rgb565(0x80, 0x80, 0x80), 0, 0]);
+        let gray_alpha = png_of(1, 1, png::ColorType::GrayscaleAlpha, &[0x40, 0x00]);
+        assert_eq!(rgb565_from_png(&gray_alpha, 1, 1).unwrap(), vec![q565::rgb565(0x40, 0x40, 0x40)]);
     }
 
     #[test]
