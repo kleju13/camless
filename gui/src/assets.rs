@@ -15,7 +15,9 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("kraken-draw.js", JS, include_bytes!("../ui/kraken-draw.js")),
     ("curve-editor.js", JS, include_bytes!("../ui/curve-editor.js")),
     ("app.js", JS, include_bytes!("../ui/app.js")),
-    ("montserrat.woff2", "font/woff2", include_bytes!("../ui/montserrat.woff2")),
+    ("archivo.woff2", "font/woff2", include_bytes!("../ui/archivo.woff2")),
+    ("saira-num.woff2", "font/woff2", include_bytes!("../ui/saira-num.woff2")),
+    ("amp.woff2", "font/woff2", include_bytes!("../ui/amp.woff2")),
 ];
 
 /// The file for a request path, and its content type.

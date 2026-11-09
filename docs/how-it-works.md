@@ -151,6 +151,18 @@ Each call returns a promise that resolves once camless has taken the message, or
 
 It listens on `127.0.0.1:30641` by default and binds to loopback only. It rejects foreign `Host` headers, so web pages cannot reach it through DNS rebinding.
 
+## The app's look
+
+Purple is the accent: the logo, primary buttons, active tabs, switches, sliders and links.
+
+Temperature has its own colors on the Cooling curves: blue when cool, nearly white in the normal range, amber when warm and red when hot. On a card the color stops at the current reading and the rest of the curve stays grey.
+
+Readings elsewhere stay neutral, so a GPU at 83 °C does not look like a fault. A number turns red only past its hot limit: 90 °C for the GPU, 95 °C for the CPU and 55 °C for the liquid. Past the warm limit (80 °C, 85 °C and 45 °C) a sentence at the top of Monitoring says so and links to Cooling. The corner of the menu reports only the service.
+
+*Collapse menu* narrows the menu to its icons. The choice stays on this PC with the app's other preferences, not in `camless.toml`. Under 1000 px wide the menu is always narrow.
+
+The fonts are in `gui/ui`: Archivo for text, Saira for digits, and one glyph from Hanken Grotesk, the `&`, because Archivo's reads like an 8 in "RGB & Fan Controller". A new file in `gui/ui` also needs an entry in `gui/src/assets.rs`, or the app does not serve it.
+
 ## Installs and updates
 
 `camless-setup.exe` (Inno Setup, `installer/camless.iss`) installs both exes for the current user in `%LOCALAPPDATA%\Programs\camless`. Run over an installed camless, it closes the app, stops the service through `POST /v1/stop`, replaces both exes and opens the app again, which starts the service.

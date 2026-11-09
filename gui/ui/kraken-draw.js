@@ -310,7 +310,7 @@
     const ext = r * (shadow ? 1.5 : 1.02);
     cached(ctx, JSON.stringify(['bezel', r, o.bezel, o.rimTop, shadow && (o.shadowColor || '')]), cx, cy, ext,
       (c, x, y) => bezel(c, x, y, r, o));
-    if (o.leds) ledRing(ctx, cx, cy, r * 0.9, o.leds, r * 0.07, o.glow ?? 1);
+    if (o.leds) ledRing(ctx, cx, cy, r * 0.9, o.leds, r * 0.07, o.glow ?? 0);
     // The screen covers the ring's glow inside it, so it goes on top.
     const sr = r * 0.78;
     const lcd = o.lcd || { mode: 'liquid', brightness: 100, orientation: 0 };
@@ -331,7 +331,7 @@
     ctx.fill();
     ctx.fillStyle = o.well || '#0c0d10';
     ctx.beginPath(); ctx.arc(cx, cy, r * 0.96, 0, TAU); ctx.fill();
-    if (o.leds) ledRing(ctx, cx, cy, r * 0.9, o.leds, r * 0.07, o.glow ?? 0.8);
+    if (o.leds) ledRing(ctx, cx, cy, r * 0.9, o.leds, r * 0.07, o.glow ?? 0);
     // Blades.
     ctx.translate(cx, cy);
     ctx.rotate(angle);
