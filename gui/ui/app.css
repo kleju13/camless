@@ -129,7 +129,13 @@ body.light { background: #f7f6fa; }
 .cam-logo i { font-style: normal; font-weight: 500; opacity: .6; }
 
 /* ------------------------------------------------------------------ main */
-.cam-main { container: area / inline-size; position: relative; overflow-y: auto; overflow-x: hidden; min-width: 0; scrollbar-color: var(--sep) transparent; }
+/* Without this Windows draws its own scrollbar with arrow buttons. scrollbar-color would turn these rules off. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; }
+::-webkit-scrollbar-thumb { background: var(--track); background-clip: padding-box; border: 3px solid transparent; border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--t4); background-clip: padding-box; border: 3px solid transparent; }
+.cam-main { container: area / inline-size; position: relative; overflow-y: scroll; scrollbar-gutter: stable; overflow-x: hidden; min-width: 0; }
 .cam-content { max-width: 1064px; margin: 0 auto; padding: 24px 32px 20px; }
 .cam-h1 { margin: 0; font-size: 22px; line-height: 1.25; font-weight: 600; letter-spacing: -.01em; }
 .cam-pagehead { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 22px; }
@@ -217,20 +223,20 @@ body.light { background: #f7f6fa; }
 .cam-menu li .d + svg.i { margin-left: 8px; }
 
 .cam-slider { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.cam-slider input { -webkit-appearance: none; appearance: none; flex: 1; min-width: 80px; height: 22px; margin: 0; cursor: pointer; background: repeating-linear-gradient(90deg, var(--tick-major) 0 1.5px, transparent 1.5px calc((100% - 1.5px) / 4)) 2.75px 100% / calc(100% - 5.5px) 5px no-repeat; }
+.cam-slider input { -webkit-appearance: none; appearance: none; flex: 1; min-width: 80px; height: 22px; margin: 0; cursor: pointer; background: repeating-linear-gradient(90deg, var(--tick-major) 0 1.5px, transparent 1.5px calc((100% - 1.5px) / 4)) 6.25px 100% / calc(100% - 12.5px) 5px no-repeat; }
 .cam-slider input::-webkit-slider-runnable-track { height: 3px; border-radius: 1.5px; background: linear-gradient(90deg, var(--orchid) 0 var(--p, 50%), var(--track) var(--p, 50%)); }
 .cam-slider input::-moz-range-track { height: 3px; border-radius: 1.5px; background: var(--track); }
 .cam-slider input::-moz-range-progress { height: 3px; border-radius: 1.5px; background: var(--orchid); }
-.cam-slider input::-webkit-slider-thumb { -webkit-appearance: none; width: 7px; height: 17px; margin-top: -7px; border-radius: 2px; background: var(--ink); border: 0; }
-.cam-slider input::-moz-range-thumb { width: 7px; height: 17px; border-radius: 2px; background: var(--ink); border: 0; }
+.cam-slider input::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5.5px; border-radius: 50%; background: var(--ink); border: 0; }
+.cam-slider input::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--ink); border: 0; }
 .cam-slider input:focus-visible { outline: none; }
 .cam-slider input:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cam-slider output { min-width: 56px; text-align: right; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .cam-slider .ends { display: none; }
 
-.cam-toggle { all: unset; position: relative; flex: none; width: 36px; height: 20px; border-radius: 3px; background: transparent; border: 1px solid var(--t4); cursor: pointer; transition: background .15s; }
-.cam-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 2px; background: var(--t3); transition: transform .15s; }
-.cam-toggle[aria-checked=true] { background: var(--toggle-on); border-color: var(--toggle-on); }
+.cam-toggle { all: unset; position: relative; flex: none; width: 36px; height: 20px; border-radius: 10px; background: var(--track); cursor: pointer; transition: background .15s; }
+.cam-toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--t3); transition: transform .15s; }
+.cam-toggle[aria-checked=true] { background: var(--toggle-on); }
 .cam-toggle[aria-checked=true]::after { transform: translateX(16px); background: var(--on-primary); }
 .cam-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
@@ -285,7 +291,8 @@ body.light { background: #f7f6fa; }
 .cam-risk svg.i { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--amber); }
 .cam-risk span { margin: 0 !important; }
 .cam-row > .txt { flex: 1; min-width: 0; }
-.cam-row > .txt b { display: block; font-size: 13px; font-weight: 600; }
+.cam-row > .txt > b { display: block; font-size: 13px; font-weight: 600; }
+.cam-row > .txt span b { font-weight: 600; color: var(--t2); }
 .cam-row > .txt span { display: block; margin-top: 2px; font-size: 12px; line-height: 1.5; color: var(--t3); max-width: 92ch; text-wrap: pretty; }
 .cam-row > .txt span:empty { display: none; }
 .cam-row > .ctl { flex: none; display: flex; align-items: center; gap: 10px; }
@@ -474,15 +481,17 @@ body.light { background: #f7f6fa; }
 .cam-hist > header .cam-choice { margin-left: auto; }
 .cam-hist-note { margin: -4px 0 12px; }
 .cam-hgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.cam-hist:not(.win) > .cam-hgrid { gap: 0; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
-.cam-hist:not(.win) > .cam-hgrid > .cam-hpanel { border: 0; border-radius: 0; background: none; border-left: 1px solid var(--sep); padding: 14px 18px 4px; }
-.cam-hist:not(.win) > .cam-hgrid > .cam-hpanel:nth-child(2) { border-left: 0; padding-left: 0; }
+/* Panels share out each row, so an enlarged one leaves no hole. The grid sticks out by the
+   panels' padding and clips the first border in a row, so text lines up wherever a panel lands. */
+.cam-hist:not(.win) > .cam-hgrid { display: flex; flex-wrap: wrap; gap: 0; margin-inline: -18px; overflow-x: clip; }
+.cam-hist:not(.win) > .cam-hgrid > .cam-hpanel { flex: 1 1 210px; margin-left: -1px; border: 0; border-radius: 0; background: none; border-left: 1px solid var(--sep); padding: 14px 18px 4px; }
+.cam-hist:not(.win) > .cam-hgrid > .cam-hpanel.big, .cam-hero.big { order: 1; flex: 0 0 calc(100% - 36px); margin-inline: 18px; padding-inline: 0; border-left: 0; border-top: 1px solid var(--sep); }
 /* The readings that matter, large, each over its own history. */
-.cam-heroes { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); border-block: 1px solid var(--sep); }
-.cam-hero { display: flex; flex-direction: column; min-width: 0; padding: 12px 18px 6px; border-left: 1px solid var(--sep); }
-.cam-hero:first-child { border-left: 0; padding-left: 0; }
-.cam-hero:last-child { padding-right: 0; }
-.cam-hero.big { grid-column: 1 / -1; border-left: 0; padding-left: 0; }
+.cam-heroes { position: relative; flex: 0 0 100%; display: flex; flex-wrap: wrap; overflow-x: clip; }
+.cam-heroes::before, .cam-heroes::after { content: ""; position: absolute; inset-inline: 18px; height: 1px; background: var(--sep); }
+.cam-heroes::before { top: 0; }
+.cam-heroes::after { bottom: 0; }
+.cam-hero { flex: 1 1 230px; display: flex; flex-direction: column; min-width: 0; margin-left: -1px; padding: 12px 18px 6px; border-left: 1px solid var(--sep); }
 .cam-hero .cam-hhead { align-items: center; }
 .cam-hero h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .cam-hero h3 small { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--t3); }
@@ -590,24 +599,27 @@ body.light { background: #f7f6fa; }
 .cam-table tr.dim td.name { font-weight: 500; color: var(--t3); }
 
 /* Games: covers, a card for each game, the sessions, and one session. */
-.cam-cover { position: relative; overflow: hidden; display: grid; place-items: center; aspect-ratio: 460 / 215; border-radius: calc(var(--radius) - 1px); background: hsl(var(--hue) 18% 22%); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); color: rgba(255, 255, 255, .88); font-size: 24px; font-weight: 700; letter-spacing: .04em; user-select: none; }
+.cam-cover { position: relative; overflow: hidden; display: grid; place-items: center; aspect-ratio: 460 / 215; border-radius: calc(var(--radius) - 1px); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--panel-line); color: var(--t4); }
+.cam-cover > svg.i { width: auto; height: 42%; min-height: 16px; }
 .cam-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.cam-cover.art > span { visibility: hidden; }
-.cam-cover.small { flex: none; width: 92px; font-size: 13px; }
-.cam-srow .cam-cover.small { width: 64px; font-size: 12px; }
-.cam-cover.big { width: 100%; font-size: 44px; }
-.cam-cover.icon { background: #0d0f12; }
+.cam-cover.art > svg.i { visibility: hidden; }
+@keyframes cam-art { from { opacity: 0; } }
+.cam-cover.fresh img { animation: cam-art .25s ease-out; }
+@media (prefers-reduced-motion: reduce) { .cam-cover.fresh img { animation: none; } }
+.cam-cover.small { flex: none; width: 92px; }
+.cam-srow .cam-cover.small { width: 84px; }
+.cam-cover.big { width: 100%; }
+.cam-cover.icon { background: var(--panel-2); }
 .cam-cover.icon img { inset: 14%; width: 72%; height: 72%; object-fit: contain; filter: drop-shadow(0 6px 16px rgba(0, 0, 0, .55)); }
-.cam-cover.icon img.blur { inset: -20%; width: 140%; height: 140%; object-fit: cover; filter: blur(22px) saturate(1.4); opacity: .55; }
+.cam-cover.icon img.blur { inset: -20%; width: 140%; height: 140%; object-fit: cover; filter: blur(22px) saturate(1.4); opacity: .35; }
 .cam-shero .cam-cover.icon { aspect-ratio: 460 / 215; }
 .cam-game.has-art { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: 16px; align-items: start; }
 .cam-game.has-art > .cam-cover { grid-row: span 3; width: 112px; }
 .cam-game > header .cam-btn { align-self: center; }
-.cam-gcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
-.cam-gcards > :only-child { max-width: 460px; }
-.cam-gcard { display: flex; align-items: center; min-width: 0; padding: 0; overflow: hidden; font: inherit; color: inherit; text-align: left; cursor: pointer; }
-.cam-gcard > .cam-cover { flex: none; width: 56px; height: 56px; margin-left: 12px; aspect-ratio: auto; font-size: 15px; }
-.cam-gcard .body { flex: 1; padding: 9px 14px 10px 12px; min-width: 0; }
+.cam-gcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.cam-gcard { display: flex; flex-direction: column; align-items: stretch; min-width: 0; padding: 0; overflow: hidden; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.cam-gcard > .cam-cover { width: 100%; border-radius: 0; box-shadow: none; border-bottom: 1px solid var(--panel-line); }
+.cam-gcard .body { padding: 10px 14px 12px; min-width: 0; }
 .cam-gcard h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--t1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cam-gcard p { margin: 0; font-size: 12px; color: var(--t3); }
 .cam-gcard .fps { display: flex; align-items: baseline; gap: 6px; margin: 3px 0 2px; min-height: 22px; }
@@ -618,13 +630,13 @@ body.light { background: #f7f6fa; }
 .cam-gcard[aria-pressed=true] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .cam-gcard:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cam-sbox > .cam-srow:first-child { border-top: 0; }
-.cam-shead { display: grid; grid-template-columns: 64px minmax(120px, 1fr) 84px repeat(5, 76px) 18px; align-items: end; gap: 14px; padding: 8px 12px 6px 12px; font-size: 12px; color: var(--t3); }
+.cam-shead { display: grid; grid-template-columns: 84px minmax(120px, 1fr) 84px repeat(5, 76px) 18px; align-items: end; gap: 14px; padding: 8px 12px 6px 12px; font-size: 12px; color: var(--t3); }
 .cam-shead > :first-child { grid-column: 1 / 3; }
 .cam-shead .st { text-align: right; }
 .cam-warm-lead { margin: 0 0 10px; font-size: 13px; color: var(--t2); }
 .cam-dlg-left { margin-right: auto; }
 .cam-sbox { overflow: hidden; }
-.cam-srow { display: grid; grid-template-columns: 64px minmax(120px, 1fr) 84px repeat(5, 76px) 18px; align-items: center; gap: 14px; width: 100%; padding: 6px 12px 6px 12px; border: 0; border-top: 1px solid var(--panel-line); background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.cam-srow { display: grid; grid-template-columns: 84px minmax(120px, 1fr) 84px repeat(5, 76px) 18px; align-items: center; gap: 14px; width: 100%; padding: 6px 12px 6px 12px; border: 0; border-top: 1px solid var(--panel-line); background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .cam-srow:hover { background: var(--accent-soft); }
 .cam-srow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .cam-srow .what { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -671,7 +683,6 @@ body.light { background: #f7f6fa; }
 .cam-sbandkey i { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; }
 @container app (max-width: 760px) { .cam-swhat { grid-template-columns: minmax(0, 1fr); } }
 .cam-shero { display: grid; grid-template-columns: 124px minmax(0, 1fr); gap: 20px; padding: 16px; align-items: start; }
-.cam-shero .cam-cover.big { font-size: 20px; }
 .cam-shero h2 { margin: 2px 0 4px; font-size: 20px; font-weight: 650; }
 .cam-shero .when { margin: 0 0 14px; font-size: 13px; color: var(--t3); }
 .cam-shero .verdict { margin: -8px 0 14px; font-size: 14px; font-weight: 600; color: var(--t1); }
@@ -679,7 +690,7 @@ body.light { background: #f7f6fa; }
 .cam-stiles > div { flex: none; display: grid; grid-template-columns: max-content max-content; align-items: baseline; align-content: start; gap: 2px 6px; }
 .cam-stiles small { grid-column: 1 / -1; font-size: 12px; color: var(--t3); }
 .cam-stiles b { white-space: nowrap; font: 600 22px/30px var(--num); color: var(--t1); }
-.cam-stiles > div:nth-child(2) b, .cam-stiles > div:nth-child(3) b { font-size: 32px; }
+.cam-stiles > div:nth-child(2) b, .cam-stiles > div:nth-child(3) b, .cam-stiles > div:nth-child(4) b { font-size: 32px; }
 .cam-stiles b small.u { font: 500 13px var(--font); color: var(--t3); margin-left: 2px; }
 .cam-stiles span { font-size: 12px; line-height: 1.3; color: var(--t3); }
 .cam-stiles span:empty { display: none; }
@@ -831,9 +842,9 @@ body.light { background: #f7f6fa; }
   .cam-grid2.collapse { grid-template-columns: minmax(0, 1fr); }
 }
 /* Below this the page's padding leaves too little room for all five readings. */
-@container area (max-width: 867px) {
-  .cam-srow { grid-template-columns: 64px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
-  .cam-shead { grid-template-columns: 64px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
+@container area (max-width: 887px) {
+  .cam-srow { grid-template-columns: 84px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
+  .cam-shead { grid-template-columns: 84px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
   .cam-srow .st.temp, .cam-shead .st.temp { display: none; }
 }
 @container area (max-width: 759px) {

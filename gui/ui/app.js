@@ -2497,6 +2497,8 @@
       const lowest = Math.ceil(ax.lo / ax.step - 1e-9), highest = Math.floor(ax.hi / ax.step + 1e-9);
       const mid = Math.round((lowest + highest) / 2);
       const rule = css.getPropertyValue('--tick-major').trim();
+      // A warm mark names its own value on the axis; a value right next to it gives way.
+      const markY = p.markWarm && p.mark != null && conv(p.mark) >= ax.lo && conv(p.mark) <= ax.hi ? Y(p.mark) : null;
       for (let i = lowest; i * ax.step <= ax.hi + 1e-9; i++) {
         const v = i * ax.step + 0;
         const y = Math.round(pt + (1 - (v - ax.lo) / (ax.hi - ax.lo)) * (bottom - pt)) + 0.5;
@@ -2506,7 +2508,7 @@
         const edge = win ? w - pr : pl, out = win ? 1 : -1;
         ctx.strokeStyle = rule;
         ctx.beginPath(); ctx.moveTo(edge, y); ctx.lineTo(edge + out * 5, y); ctx.stroke();
-        if ((i - lowest) % every) continue;
+        if ((i - lowest) % every || (markY != null && Math.abs(y - markY) < 16)) continue;
         // The chart's title carries the unit.
         ctx.fillStyle = text; ctx.fillText(ax.label(v).replace(/[^\d.,k]+$/, ''), win ? w - pr + 8 : pl - 8, y + 3.5);
       }
@@ -2643,33 +2645,39 @@
         const c = color(s);
         const rs = runs(s);
         for (const r of rs) {
+          // More readings than a line can show: their mean over about 3 px, so the trend
+          // reads, and the highest of them for the shade. A run is as dense as its own
+          // width says, however much of the chart the gaps around it take. The pointer
+          // still gets the readings.
+          const reach = Math.round((r.length * 3) / Math.max(1, r[r.length - 1][0] - r[0][0])) >> 1;
+          const trend = !reach ? r : r.map(([x], i) => {
+            const near = r.slice(Math.max(0, i - reach), i + reach + 1);
+            return [x, near.reduce((a, q) => a + q[1], 0) / near.length, Math.min(...near.map((q) => q[2]))];
+          });
+          // The shade's top is the highest reading near each point, evened out so it reads as one edge.
+          const edge = !reach ? trend : trend.map(([x, y], i) => { const near = trend.slice(Math.max(0, i - reach), i + reach + 1); return [x, y, near.reduce((a, q) => a + q[2], 0) / near.length]; });
           if (p.hero) {
             ctx.beginPath();
-            r.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+            trend.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
             ctx.lineTo(r[r.length - 1][0], bottom); ctx.lineTo(r[0][0], bottom); ctx.closePath();
-            ctx.globalAlpha = 0.14; ctx.fillStyle = c; ctx.fill(); ctx.globalAlpha = 1;
+            const [cr, cg, cb] = hexRgb(c), fade = ctx.createLinearGradient(0, pt, 0, bottom);
+            fade.addColorStop(0, `rgba(${cr},${cg},${cb},.22)`); fade.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+            ctx.fillStyle = fade; ctx.fill();
           }
           // How high the readings went within each point, over several minutes a point.
           if (data && data.step >= 60 && !win) {
             ctx.beginPath();
-            r.forEach(([x, , ym], i) => (i ? ctx.lineTo(x, ym) : ctx.moveTo(x, ym)));
-            for (let i = r.length - 1; i >= 0; i--) ctx.lineTo(r[i][0], r[i][1]);
+            edge.forEach(([x, , ym], i) => (i ? ctx.lineTo(x, ym) : ctx.moveTo(x, ym)));
+            for (let i = edge.length - 1; i >= 0; i--) ctx.lineTo(edge[i][0], edge[i][1]);
             ctx.closePath();
-            ctx.globalAlpha = shown.length === 1 ? 0.22 : 0.1; ctx.fillStyle = c; ctx.fill(); ctx.globalAlpha = 1;
+            ctx.globalAlpha = shown.length === 1 ? 0.18 : 0.08; ctx.fillStyle = c; ctx.fill(); ctx.globalAlpha = 1;
           }
           ctx.strokeStyle = c; ctx.lineJoin = 'round';
-          // More readings than a line can show: their mean over about 3 px, so the trend
-          // reads. The pointer still gets the readings.
-          const per = r.length * 3 / (w - pl - pr), wide = Math.round(per);
-          const trace = (list) => { ctx.beginPath(); list.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); };
-          if (wide >= 2) {
-            let sum = 0;
-            const span = r.map(([x, y], i) => { sum += y; if (i >= wide) sum -= r[i - wide][1]; const w_ = r.slice(Math.max(0, i - wide + 1), i + 1).map((q) => q[1]); return [x, sum / Math.min(i + 1, wide), Math.min(...w_), Math.max(...w_)]; });
-            ctx.lineWidth = 1.7; trace(span);
-          } else { ctx.lineWidth = 1.8; trace(r); }
+          ctx.lineWidth = reach ? 1.7 : 1.8;
+          ctx.beginPath(); trend.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
           if (r.length === 1) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(r[0][0], r[0][1], 2, 0, TAU); ctx.fill(); }
           // Where the line is now.
-          if (p.hero && !zoom && r === rs[rs.length - 1]) { const [x, y] = r[r.length - 1]; ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x - 1, y, 3, 0, TAU); ctx.fill(); }
+          if (p.hero && !zoom && r === rs[rs.length - 1]) { const [x, y] = trend[trend.length - 1]; ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x - 1, y, 3, 0, TAU); ctx.fill(); }
         }
       }
       ctx.restore();
@@ -2964,27 +2972,35 @@
   }
   const avgFps = (g) => (g.secs ? g.frames / g.secs : null);
 
-  // A game's initials on a colour of its own, under its cover from Steam's cache on
-  // this PC when there is one, or the icon of its program over a blur of it. Nothing
-  // is downloaded.
+  // A game's cover from Steam's cache on this PC when there is one, or the icon of its
+  // program over a blur of it, and a plain gamepad without either. Nothing is downloaded.
+  // A picture that is not wide, such as Steam's tall capsule, is shown whole like an icon.
+  // Pages redraw their lists, so a picture seen before goes in at once, with no flash.
+  const coverSeen = new Map();
   function cover(name, steam, cls, icon) {
-    const el = h(`<div class="cam-cover${cls ? ` ${cls}` : ''}" aria-hidden="true"><span></span></div>`);
-    let hash = 7;
-    for (const c of name) hash = (hash * 31 + c.codePointAt(0)) >>> 0;
-    el.style.setProperty('--hue', String(hash % 360));
-    el.firstElementChild.textContent = name.split(/[\s:_\-–.]+/).filter(Boolean).slice(0, 2).map((w) => [...w][0]).join('').toUpperCase();
-    if (steam) {
-      const img = new Image();
-      img.alt = '';
-      img.addEventListener('load', () => { el.classList.add('art'); el.appendChild(img); });
-      img.src = `/api/game-art?steam=${encodeURIComponent(steam)}`;
-    } else if (icon) {
-      const img = new Image(), blur = new Image();
-      img.alt = blur.alt = '';
+    const el = h(`<div class="cam-cover${cls ? ` ${cls}` : ''}" aria-hidden="true">${I.games}</div>`);
+    const src = steam ? `/api/game-art?steam=${encodeURIComponent(steam)}` : icon;
+    if (!src) return el;
+    const img = new Image();
+    img.alt = '';
+    const place = (wide) => {
+      el.classList.add('art');
+      if (wide) { el.appendChild(img); return; }
+      const blur = new Image();
+      blur.alt = '';
       blur.className = 'blur';
-      img.addEventListener('load', () => { el.classList.add('art', 'icon'); el.append(blur, img); });
-      img.src = blur.src = icon;
-    }
+      blur.src = src;
+      el.classList.add('icon');
+      el.append(blur, img);
+    };
+    if (coverSeen.has(src)) place(coverSeen.get(src));
+    else img.addEventListener('load', () => {
+      const wide = !!steam && img.naturalWidth / img.naturalHeight > 1.5;
+      coverSeen.set(src, wide);
+      el.classList.add('fresh');
+      place(wide);
+    });
+    img.src = src;
     return el;
   }
 
