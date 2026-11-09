@@ -27,7 +27,7 @@ const ORIGIN: &str = "camless://localhost/";
 const SAVE_WAIT: Duration = Duration::from_secs(2);
 
 /// The window's background until the page draws, the page's own.
-const BACKGROUND: (u8, u8, u8, u8) = (0x1a, 0x1c, 0x1e, 0xff);
+const BACKGROUND: (u8, u8, u8, u8) = (0, 0, 0, 0xff);
 
 enum UserEvent {
     Menu(MenuEvent),

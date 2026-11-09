@@ -326,10 +326,19 @@
     const navItems = () => nav.querySelectorAll('a[data-id]').forEach((a) => { a.hidden = !navShown(a.dataset.id); });
     S.on('config', navItems);
     navItems();
+    // On Windows the app colors its window's title bar to match the page. A browser and
+    // the Linux window keep the title bar they have.
+    const titleBar = () => {
+      if (location.hostname !== 'camless.localhost') return;
+      const css = getComputedStyle(root), ink = (v) => css.getPropertyValue(v).trim();
+      fetch('/api/window/theme', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ light: K.prefs.theme === 'light', bg: ink('--title-bg'), fg: ink('--title-fg') }) }).catch(() => {});
+    };
+    titleBar();
     K.on('prefs', (k) => {
       if (k !== 'theme') return;
       root.dataset.theme = K.prefs.theme;
       document.body.classList.toggle('light', K.prefs.theme === 'light');
+      titleBar();
     });
     const maybe = () => { if (layoutKey() !== built && !busy()) go(); };
     S.on('state', maybe);
@@ -2664,13 +2673,24 @@
             fade.addColorStop(0, `rgba(${cr},${cg},${cb},.22)`); fade.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
             ctx.fillStyle = fade; ctx.fill();
           }
-          // How high the readings went within each point, over several minutes a point.
-          if (data && data.step >= 60 && !win) {
+          // How high the readings went within each point, over several minutes a point:
+          // a faint band, and on a chart of one line a hairline along its top. Several
+          // lines get the band alone, so their bands do not add up to a block. A day
+          // among thirty is too narrow for a hairline to read as an edge, so its band
+          // is a little stronger instead; a few minutes among days get no band at all.
+          const across = r[r.length - 1][0] - r[0][0];
+          if (data && data.step >= 60 && !win && across >= 4) {
+            const solo = shown.length === 1, wide = across >= 14;
             ctx.beginPath();
             edge.forEach(([x, , ym], i) => (i ? ctx.lineTo(x, ym) : ctx.moveTo(x, ym)));
             for (let i = edge.length - 1; i >= 0; i--) ctx.lineTo(edge[i][0], edge[i][1]);
             ctx.closePath();
-            ctx.globalAlpha = shown.length === 1 ? 0.18 : 0.08; ctx.fillStyle = c; ctx.fill(); ctx.globalAlpha = 1;
+            ctx.globalAlpha = !solo ? 0.05 : wide ? 0.1 : 0.13; ctx.fillStyle = c; ctx.fill();
+            if (solo && wide) {
+              ctx.globalAlpha = 0.38; ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.lineJoin = 'round';
+              ctx.beginPath(); edge.forEach(([x, , ym], i) => (i ? ctx.lineTo(x, ym) : ctx.moveTo(x, ym))); ctx.stroke();
+            }
+            ctx.globalAlpha = 1;
           }
           ctx.strokeStyle = c; ctx.lineJoin = 'round';
           ctx.lineWidth = reach ? 1.7 : 1.8;
