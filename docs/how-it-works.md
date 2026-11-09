@@ -161,6 +161,8 @@ Readings elsewhere stay neutral, so a GPU at 83 °C does not look like a fault. 
 
 *Collapse menu* narrows the menu to its icons. The choice stays on this PC with the app's other preferences, not in `camless.toml`. Under 1000 px wide the menu is always narrow.
 
+![Cooling with the menu collapsed to its icons, and the curves wider](screenshots/collapsed-menu.png)
+
 The fonts are in `gui/ui`: Archivo for text, Saira for digits, and one glyph from Hanken Grotesk, the `&`, because Archivo's reads like an 8 in "RGB & Fan Controller". A new file in `gui/ui` also needs an entry in `gui/src/assets.rs`, or the app does not serve it.
 
 ## Installs and updates
