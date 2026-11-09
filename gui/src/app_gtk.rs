@@ -105,11 +105,22 @@ pub fn run(launches: Launches, show: bool, ui_dir: Option<PathBuf>) -> Result<()
     if show {
         send(UserEvent::Launch);
     }
+    give_back_freed_memory();
     gtk::main();
     // The page has saved; the icon goes with the app.
     APP.with(|a| a.borrow_mut().take());
     crate::update::run_ready();
     Ok(())
+}
+
+/// Hands what glibc keeps from freed allocations back to the system, after startup
+/// and after a window is gone: the tray app otherwise stays at its largest size.
+fn give_back_freed_memory() {
+    #[cfg(target_env = "gnu")]
+    // SAFETY: takes no pointers and only touches the allocator's own state.
+    unsafe {
+        libc::malloc_trim(0);
+    }
 }
 
 /// The page is a few panels and small canvases, which WebKit draws on the CPU for
@@ -257,10 +268,7 @@ impl App {
             // SAFETY: nothing else holds the window; it was ours alone.
             unsafe { window.destroy() };
             self.context = None;
-            // What the window used is free now; give the pages back to the system.
-            #[cfg(target_env = "gnu")]
-            // SAFETY: takes no pointers and only touches the allocator's own state.
-            unsafe { libc::malloc_trim(0) };
+            give_back_freed_memory();
         }
         if self.exiting {
             // The icon goes at once, not when the process has wound down.
