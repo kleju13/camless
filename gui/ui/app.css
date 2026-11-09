@@ -1,7 +1,7 @@
 /* camless's window, laid out like NZXT CAM 4 so people find their way: a 180 px
    navigation, panels and CAM's names. One accent marks what is selected or can be
    acted on; data has its own colors. The logo, icons and device pictures are drawn
-   for camless. Windows draws the title bar. */
+   for camless. Windows draws the title bar, in the colors of --title-bg and --title-fg. */
 
 @font-face {
   font-family: "Archivo";
@@ -34,7 +34,8 @@ body.light { background: #f7f6fa; }
 .cam {
   font-variant-numeric: tabular-nums;
   --font: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif; --num: "Saira Num", "Archivo", system-ui, sans-serif;
-  --title-bg: #000; --title-fg: #fff; --title-dim: rgba(255, 255, 255, .62); --title-hover: rgba(255, 255, 255, .1);
+  /* The window's title bar on Windows: the app sets these on it, as six-digit hex. */
+  --title-bg: #000000; --title-fg: #ffffff;
   --nav-bg: #000; --nav-fg: rgba(255, 255, 255, .58); --nav-hover: rgba(255, 255, 255, .85); --nav-on: #fff; --nav-on-bg: rgba(157, 92, 255, .14);
   --bg: #000; --sep: #1f1e25;
   --t1: #f4f3f7; --t2: #dcdbe2; --t3: #a6a5b0; --t4: #8e8d99; --cool: #9fa9b2;
@@ -58,7 +59,7 @@ body.light { background: #f7f6fa; }
   -webkit-font-smoothing: antialiased; color-scheme: dark;
 }
 .cam[data-theme=light] {
-  --title-bg: #ebebf0; --title-fg: #000; --title-dim: rgba(0, 0, 0, .55); --title-hover: rgba(0, 0, 0, .07);
+  --title-bg: #ecebf2; --title-fg: #15141a;
   --nav-bg: #ecebf2; --nav-fg: rgba(0, 0, 0, .6); --nav-hover: rgba(0, 0, 0, .85); --nav-on: #15141a; --nav-on-bg: #fff;
   --bg: #f7f6fa; --sep: #dedce6;
   --t1: #15141a; --t2: #3d3b45; --t3: #5c5a66; --t4: #6f6d7a; --cool: #5f707f;
@@ -582,7 +583,7 @@ body.light { background: #f7f6fa; }
 .cam-game .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--green); white-space: nowrap; }
 .cam-game .live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 .cam-game > header .grow { flex: 1; }
-.cam-game .cam-monstats { justify-content: flex-start; gap: 6px 32px; margin-top: 6px; font-size: 13px; }
+.cam-game .cam-monstats { justify-content: flex-start; align-items: baseline; gap: 6px 32px; margin-top: 6px; font-size: 13px; }
 .cam-game .cam-monstats b { font: 600 24px/1 var(--num); }
 .cam-game .cam-monstats span:first-child b { font-size: 34px; }
 .cam-game > p { margin: 4px 0 0; font-size: 13px; }
@@ -613,8 +614,8 @@ body.light { background: #f7f6fa; }
 .cam-cover.icon img { inset: 14%; width: 72%; height: 72%; object-fit: contain; filter: drop-shadow(0 6px 16px rgba(0, 0, 0, .55)); }
 .cam-cover.icon img.blur { inset: -20%; width: 140%; height: 140%; object-fit: cover; filter: blur(22px) saturate(1.4); opacity: .35; }
 .cam-shero .cam-cover.icon { aspect-ratio: 460 / 215; }
-.cam-game.has-art { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: 16px; align-items: start; }
-.cam-game.has-art > .cam-cover { grid-row: span 3; width: 112px; }
+.cam-game.has-art { display: grid; grid-template-columns: 164px minmax(0, 1fr); column-gap: 16px; align-items: start; }
+.cam-game.has-art > .cam-cover { grid-row: span 3; width: 164px; }
 .cam-game > header .cam-btn { align-self: center; }
 .cam-gcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
 .cam-gcard { display: flex; flex-direction: column; align-items: stretch; min-width: 0; padding: 0; overflow: hidden; font: inherit; color: inherit; text-align: left; cursor: pointer; }
@@ -645,6 +646,7 @@ body.light { background: #f7f6fa; }
 .cam-srow .st { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .cam-srow .st b { font: 600 14px/1.25 var(--font); color: var(--t2); }
 .cam-srow .st:nth-of-type(3) b { color: var(--t1); }
+.cam-srow .go { display: grid; place-items: center; }
 .cam-srow .go svg { width: 16px; height: 16px; transform: rotate(-90deg); color: var(--t4); }
 .cam-sback { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .cam-stiles > div > span.good { color: var(--green); }
@@ -682,15 +684,16 @@ body.light { background: #f7f6fa; }
 .cam-sbands > div .cam-sband:not(.dim) { margin: 6px 0; }
 .cam-sbandkey i { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; }
 @container app (max-width: 760px) { .cam-swhat { grid-template-columns: minmax(0, 1fr); } }
-.cam-shero { display: grid; grid-template-columns: 124px minmax(0, 1fr); gap: 20px; padding: 16px; align-items: start; }
+.cam-shero { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 20px; padding: 16px; align-items: start; }
 .cam-shero h2 { margin: 2px 0 4px; font-size: 20px; font-weight: 650; }
 .cam-shero .when { margin: 0 0 14px; font-size: 13px; color: var(--t3); }
 .cam-shero .verdict { margin: -8px 0 14px; font-size: 14px; font-weight: 600; color: var(--t1); }
-.cam-stiles { display: flex; flex-wrap: wrap; gap: 12px 32px; }
+.cam-stiles { display: flex; flex-wrap: wrap; gap: 12px clamp(16px, 2.6cqw, 32px); }
 .cam-stiles > div { flex: none; display: grid; grid-template-columns: max-content max-content; align-items: baseline; align-content: start; gap: 2px 6px; }
 .cam-stiles small { grid-column: 1 / -1; font-size: 12px; color: var(--t3); }
 .cam-stiles b { white-space: nowrap; font: 600 22px/30px var(--num); color: var(--t1); }
 .cam-stiles > div:nth-child(2) b, .cam-stiles > div:nth-child(3) b, .cam-stiles > div:nth-child(4) b { font-size: 32px; }
+.cam-stiles b::before { content: ""; font-size: 32px; }
 .cam-stiles b small.u { font: 500 13px var(--font); color: var(--t3); margin-left: 2px; }
 .cam-stiles span { font-size: 12px; line-height: 1.3; color: var(--t3); }
 .cam-stiles span:empty { display: none; }
@@ -831,6 +834,13 @@ body.light { background: #f7f6fa; }
   .cam-modal > .body .cam-box:last-child { margin-bottom: -14px; }
   .cam-modal > footer { padding: 12px 18px 14px; }
 }
+/* A short window: smaller readings leave their charts more of the height. */
+@container app (max-height: 659px) {
+  .cam-hero-num { font-size: 60px; }
+  .cam-hero-num small { font-size: 16px; vertical-align: 28px; }
+  .cam-hero-num.na { font-size: 32px; line-height: 59px; }
+  .cam-hist:not(.win) .cam-hpanel:not(.big) .cam-chart-plot, .cam-hero:not(.big) .cam-chart-plot { height: clamp(104px, calc((100vh - 310px) * .5), 320px); }
+}
 @container app (max-height: 579px) {
   .cam-ch-curve, .cam-ch-curve.short { height: 124px; }
   .cam-light-prev canvas { max-width: 168px; }
@@ -846,6 +856,10 @@ body.light { background: #f7f6fa; }
   .cam-srow { grid-template-columns: 84px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
   .cam-shead { grid-template-columns: 84px minmax(120px, 1fr) 84px repeat(2, 64px) 18px; }
   .cam-srow .st.temp, .cam-shead .st.temp { display: none; }
+}
+/* A smaller cover while the seven readings beside it would otherwise wrap. */
+@container area (max-width: 959px) {
+  .cam-shero { grid-template-columns: 124px minmax(0, 1fr); }
 }
 @container area (max-width: 759px) {
   .cam-shero { grid-template-columns: minmax(0, 1fr); }

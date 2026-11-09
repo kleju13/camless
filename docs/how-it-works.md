@@ -159,6 +159,8 @@ Temperature has its own colors on the Cooling curves: blue when cool, nearly whi
 
 Readings elsewhere stay neutral, so a GPU at 83 °C does not look like a fault. A number turns red only past its hot limit: 90 °C for the GPU, 95 °C for the CPU and 55 °C for the liquid. Past the warm limit (80 °C, 85 °C and 45 °C) a sentence at the top of Monitoring says so and links to Cooling. The corner of the menu reports only the service.
 
+On Windows 11 the window's title bar has the page's colors, black in the dark theme. The page sends them from `--title-bg` and `--title-fg` in `app.css`, and the app sets them on the window. Windows 10 colors no title bars, so there the bar is only dark or light. On Linux the desktop draws the bar.
+
 *Collapse menu* narrows the menu to its icons. The choice stays on this PC with the app's other preferences, not in `camless.toml`. Under 1000 px wide the menu is always narrow.
 
 ![Cooling with the menu collapsed to its icons, and the curves wider](screenshots/collapsed-menu.png)
