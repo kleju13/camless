@@ -15,6 +15,7 @@ use crate::games::Session;
 use crate::history::{self, History};
 use crate::q565;
 use anyhow::{anyhow, bail, Context, Result};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -71,7 +72,7 @@ fn handle(
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     match (req.method(), path) {
         (Method::Get, "/v1/monitoring") => respond_json(req, &monitoring(&snapshot())),
-        (Method::Get, "/v1/status") => respond_json(req, &serde_json::to_value(&snapshot().status)?),
+        (Method::Get, "/v1/status") => respond_json(req, &snapshot().status),
         (Method::Get, "/v1/history") => {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
             let (from, to, ids) = match history_query(query, now) {
@@ -79,7 +80,7 @@ fn handle(
                 Err(msg) => return Ok(req.respond(Response::from_string(msg).with_status_code(400))?),
             };
             let range = history::query(history, now, from, to, ids.as_deref());
-            respond_json(req, &serde_json::to_value(&range)?)
+            respond_json(req, &range)
         }
         (Method::Get, "/v1/games") => {
             let sessions: Vec<Session> = games.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().cloned().collect();
@@ -190,8 +191,8 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn respond_json(req: Request, v: &Value) -> Result<()> {
-    let res = Response::from_string(v.to_string())
+fn respond_json<T: Serialize>(req: Request, v: &T) -> Result<()> {
+    let res = Response::from_string(serde_json::to_string(v)?)
         .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
         .with_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
     Ok(req.respond(res)?)

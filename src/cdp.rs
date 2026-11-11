@@ -220,11 +220,15 @@ impl Cdp {
 fn read_piped(from: &mut std::fs::File, buf: &mut Vec<u8>, chunk: &mut [u8], timeout: Duration) -> Result<Option<Value>> {
     use std::os::fd::AsRawFd;
     let deadline = Instant::now() + timeout;
+    // A frame arrives over many reads: each looks for the end in what it added.
+    let mut searched = 0;
     loop {
-        if let Some(end) = buf.iter().position(|&b| b == 0) {
+        if let Some(i) = buf[searched..].iter().position(|&b| b == 0) {
+            let end = searched + i;
             let msg: Vec<u8> = buf.drain(..=end).take(end).collect();
             return Ok(Some(serde_json::from_slice(&msg).context("a DevTools message that is not JSON")?));
         }
+        searched = buf.len();
         if buf.len() > MAX_MESSAGE {
             bail!("a DevTools message over {} MB", MAX_MESSAGE >> 20);
         }
@@ -359,6 +363,25 @@ mod tests {
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert!(base64_decode("a$b").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn piped_messages_split_over_reads_come_out_whole_and_in_order() {
+        use std::os::fd::FromRawFd;
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        let (mut from, mut to) = unsafe { (std::fs::File::from_raw_fd(fds[0]), std::fs::File::from_raw_fd(fds[1])) };
+        let mut buf = Vec::new();
+        let mut chunk = vec![0; 7];
+        to.write_all(b"{\"id\":1,\"a\":\"long enough for many reads\"}\0{\"id\":2}\0{\"id\"").unwrap();
+        let first = read_piped(&mut from, &mut buf, &mut chunk, Duration::from_secs(5)).unwrap().unwrap();
+        assert_eq!(first["id"], 1);
+        assert_eq!(read_piped(&mut from, &mut buf, &mut chunk, Duration::from_secs(5)).unwrap().unwrap()["id"], 2);
+        assert_eq!(read_piped(&mut from, &mut buf, &mut chunk, Duration::from_millis(1)).unwrap(), None);
+        to.write_all(b":3}\0").unwrap();
+        assert_eq!(read_piped(&mut from, &mut buf, &mut chunk, Duration::from_secs(5)).unwrap().unwrap()["id"], 3);
+        assert!(buf.is_empty());
     }
 
     #[test]

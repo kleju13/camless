@@ -65,3 +65,11 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
+
+# Decoding a browser's frames for an LCD is most of what the service does while it
+# streams. The rest of the program stays small.
+[profile.release.package.png]
+opt-level = 3
+
+[profile.release.package.fdeflate]
+opt-level = 3

@@ -97,14 +97,14 @@ pub fn encode(width: u16, height: u16, pixels: &[u16]) -> Vec<u8> {
     out
 }
 
-/// RGBA bytes to RGB565, dropping the low bits of each channel.
+/// One pixel as RGB565, dropping the low bits of each channel.
+pub fn rgb565(r: u8, g: u8, b: u8) -> u16 {
+    ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3)
+}
+
+/// RGBA bytes to RGB565.
 pub fn rgb565_from_rgba(rgba: &[u8]) -> Vec<u16> {
-    rgba.chunks_exact(4)
-        .map(|px| {
-            let (r, g, b) = (px[0] as u16, px[1] as u16, px[2] as u16);
-            ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
-        })
-        .collect()
+    rgba.chunks_exact(4).map(|px| rgb565(px[0], px[1], px[2])).collect()
 }
 
 /// The inverse of `encode`, for checking what a screen will show.
