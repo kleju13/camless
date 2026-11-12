@@ -34,6 +34,17 @@ pub fn cpu(pawnio_module: std::result::Result<Vec<u8>, String>) -> std::result::
 
 pub type Cpu = PawnCpu;
 
+/// Where PawnIO's setup puts the library camless loads it through.
+pub const PAWNIO_LIB: &str = r"C:\Program Files\PawnIO\PawnIOLib.dll";
+
+/// "Intel" or "AMD": the maker whose module [`pawnio_module_file`] names.
+pub fn cpu_maker() -> &'static str {
+    match maker() {
+        Maker::Intel => "Intel",
+        Maker::Amd => "AMD",
+    }
+}
+
 /// The signed PawnIO module for this CPU, which camless reads next to camless.exe.
 /// Each refuses to load on the other maker's CPUs.
 pub fn pawnio_module_file() -> &'static str {
@@ -151,8 +162,7 @@ impl Pawn {
     /// `file` only names the module in errors.
     fn load(module: &[u8], file: &str) -> Result<Pawn> {
         unsafe {
-            let lib = Library::new(r"C:\Program Files\PawnIO\PawnIOLib.dll")
-                .context("PawnIO is not installed")?;
+            let lib = Library::new(PAWNIO_LIB).context("PawnIO is not installed")?;
             let open: unsafe extern "system" fn(*mut HANDLE) -> i32 = *lib.get(b"pawnio_open\0")?;
             let load: unsafe extern "system" fn(HANDLE, *const u8, usize) -> i32 =
                 *lib.get(b"pawnio_load\0")?;

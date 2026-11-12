@@ -135,7 +135,7 @@ impl Backend {
             ("POST", "update/check") => update::check(update::channel(&self.path())).map(|_| json!({})).map_err(Refused::from),
             ("POST", "update/install") => self.install_update(),
             ("POST", "update/notes") => self.release_notes(),
-            ("POST", "open-folder") => self.open_folder(),
+            ("POST", "open-folder") => self.open_folder(body),
             ("POST", "report") => report::start(&self.path()).map(|_| json!(report::state())).map_err(Refused::from),
             ("GET", "report") => Ok(json!(report::state())),
             ("POST", "report/issue") => self.report_issue(body),
@@ -212,6 +212,8 @@ impl Backend {
             "admin_task_error": task.error,
             "update": update::state(),
             "sandbox": self.sandbox,
+            // The service lists what it needs; these are the app's own.
+            "requirements": app_requirements(),
         })
     }
 
@@ -447,18 +449,39 @@ impl Backend {
         Ok(json!({}))
     }
 
-    fn open_folder(&self) -> Answer {
+    /// The config's folder, or with `{"app": true}` camless's own, where PawnIO's
+    /// module goes.
+    fn open_folder(&self, body: &[u8]) -> Answer {
+        #[derive(Deserialize)]
+        struct Which {
+            #[serde(default)]
+            app: bool,
+        }
+        let Which { app } = parse(body)?;
         if self.sandbox {
             bail_refused("the sandbox does not open Explorer")?;
         }
-        let path = self.path();
-        let dir = path.parent().filter(|d| d.exists()).ok_or_else(|| anyhow!("{} has no folder yet", path.display()))?;
+        let dir = if app {
+            let exe = std::env::current_exe().context("finding camless's folder")?;
+            exe.parent().map(Path::to_path_buf).ok_or_else(|| anyhow!("{} has no folder", exe.display()))?
+        } else {
+            let path = self.path();
+            path.parent().filter(|d| d.exists()).map(Path::to_path_buf).ok_or_else(|| anyhow!("{} has no folder yet", path.display()))?
+        };
         #[cfg(windows)]
-        std::process::Command::new("explorer.exe").arg(dir).spawn().context("starting Explorer")?;
+        std::process::Command::new("explorer.exe").arg(&dir).spawn().context("starting Explorer")?;
         #[cfg(not(windows))]
         report::open_url(&dir.to_string_lossy())?;
         Ok(json!({}))
     }
+}
+
+/// What the app itself needs from elsewhere: curl for updates, on Linux.
+fn app_requirements() -> Vec<camless_core::status::Requirement> {
+    #[cfg(target_os = "linux")]
+    return vec![crate::http::requirement()];
+    #[cfg(not(target_os = "linux"))]
+    Vec::new()
 }
 
 #[derive(Deserialize)]
@@ -470,6 +493,9 @@ struct Name {
 fn link(name: &str) -> Option<&'static str> {
     Some(match name {
         "krakendial" => "https://github.com/kleju13/krakendial",
+        // What the service lists as missing names these.
+        "pawnio" => "https://pawnio.eu",
+        "pawnio-modules" => "https://github.com/namazso/PawnIO.Modules/releases/latest",
         _ => return None,
     })
 }
@@ -658,6 +684,11 @@ mod tests {
         let (b, _) = fixture("camless-gui-links");
         assert_eq!(call(&b, "POST", "/api/open-link", json!({ "name": "https://example.com" })).0, 400);
         assert_eq!(call(&b, "POST", "/api/open-link", json!({ "name": "krakendial" })).0, 409, "the sandbox opens no browser");
+        // src/requirements.rs links to these.
+        for name in ["pawnio", "pawnio-modules"] {
+            assert!(link(name).is_some_and(|u| u.starts_with("https://")), "{name}");
+        }
+        assert_eq!(call(&b, "POST", "/api/open-folder", json!({ "app": true })).0, 409, "the sandbox opens no folder");
     }
 
     #[test]

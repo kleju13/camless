@@ -8,6 +8,16 @@ The app starts the service if it is not running. On Windows, it asks for adminis
 
 *Settings → Service → Start as administrator without asking* stops the prompts. It is off until you turn it on, and Windows asks once then. The app sets up a scheduled task, `camless (<your user name>)`, that runs `camless-gui.exe --start-service` with your full rights, and from then on starts the service through it, also at logon with *Start with Windows*. The task has no trigger of its own. You may run and delete it without administrator rights, so turning the switch off and uninstalling need none. The trade-off: camless sits in a folder you can write to, so any program you run could replace it and use the task to get administrator rights without a prompt. On a standard account the switch refuses: a task that runs as you could not give the service administrator rights.
 
+## Software from elsewhere
+
+Some of what camless does needs software that Windows or a Linux desktop may not come with. The service checks for it every 5 seconds and lists it in its status. *Settings → Software from elsewhere* shows each one, what it is for, and whether this PC needs and has it:
+- **PawnIO**, on Windows: the driver that lets a program read the CPU's sensors. FanControl and LibreHardwareMonitor install the same one. Found at `C:\Program Files\PawnIO\PawnIOLib.dll`.
+- **`IntelMSR.bin` or `AMDFamily17.bin`**, on Windows: PawnIO's signed module for this CPU's maker, which the service reads from its own folder (or `pawnio_module` in `camless.toml`). The CPU's maker comes from the registry, so the app says which file this PC needs.
+- **A Chromium browser**, needed only while an LCD shows a [web page](#web-pages-on-the-lcd).
+- **curl**, on Linux, for [updates](#installs-and-updates). The app checks this one itself.
+
+When something this PC needs is missing, the app opens a dialog once each time it starts, with what camless found that needs it and how to get it. *Don't ask again* stops the dialog for that item; Settings still lists it. When CPU temperature is off and the list changes, the service tries PawnIO again every 5 seconds for 30 seconds, while the setup starts the driver, so CPU temperature starts once PawnIO and its module are in place, without a restart. Administrator rights are still needed on top. `camless report` names what is missing, without the folders.
+
 ## Fan control
 
 - **Curves a device can run by itself are stored on it.** This means a fixed duty, or a graph on the device's own sensor (a Kraken's liquid temperature). The Kraken keeps running them if camless stops. The fan's offset and limits are folded in. Smoothing and hysteresis are host-only.

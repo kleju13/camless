@@ -418,6 +418,11 @@ const NO_BROWSER: &str = "rendering a web page needs Microsoft Edge or Google Ch
 #[cfg(not(windows))]
 const NO_BROWSER: &str = "rendering a web page needs Google Chrome, Chromium, Microsoft Edge or Brave, and none is installed";
 
+/// The browser a web page on the LCD would render in, if one is installed.
+pub fn browser_name() -> Option<&'static str> {
+    find_browser().map(|b| b.name)
+}
+
 /// `%LOCALAPPDATA%\camless\browser`.
 #[cfg(windows)]
 fn find_browser() -> Option<Installed> {

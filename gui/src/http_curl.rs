@@ -12,6 +12,21 @@ const AGENT: &str = concat!("camless/", env!("CARGO_PKG_VERSION"));
 /// Larger answers are not a release of camless.
 const MAX_BODY: usize = 64 << 20;
 
+/// curl, which not every desktop comes with, and whether it is on the PATH.
+pub fn requirement() -> camless_core::status::Requirement {
+    let installed = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("curl").is_file()));
+    camless_core::status::Requirement {
+        id: "curl".into(),
+        name: "curl".into(),
+        used_for: "Updates".into(),
+        needed_because: Some("The app checks GitHub for a new camless and downloads it with curl".into()),
+        installed,
+        how: "Install the curl package from your distribution, such as sudo apt install curl.".into(),
+        link: None,
+        in_app_folder: false,
+    }
+}
+
 /// The body of `url`, which must be https, if it answers 200.
 pub fn get(url: &str) -> Result<Vec<u8>> {
     let rest = url.strip_prefix("https://").with_context(|| format!("{url} is not an https URL"))?;

@@ -43,6 +43,39 @@ pub struct ServiceInfo {
     /// Why games have no frame rates, when they have none.
     #[serde(default)]
     pub fps_error: Option<String>,
+    /// Software camless uses that Windows or the Linux desktop may not come with,
+    /// and whether this PC has it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requirements: Vec<Requirement>,
+}
+
+/// A program or file camless needs from elsewhere for one thing it does.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct Requirement {
+    /// Stable, for the app to remember that it asked about it: `pawnio`.
+    pub id: String,
+    pub name: String,
+    /// What camless does with it: "CPU temperature and power".
+    pub used_for: String,
+    /// What camless found that needs it, such as the CPU's maker; none when nothing
+    /// on this PC needs it now.
+    pub needed_because: Option<String>,
+    pub installed: bool,
+    /// How to get it, in a sentence or two.
+    pub how: String,
+    /// A page the app opens for it, by a name the app knows: `pawnio`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// The file goes in camless's own folder, which the app can open.
+    #[serde(default)]
+    pub in_app_folder: bool,
+}
+
+impl Requirement {
+    /// Needed on this PC, and not there.
+    pub fn missing(&self) -> bool {
+        self.needed_because.is_some() && !self.installed
+    }
 }
 
 /// One way of reading the GPU's power, and what it read over the last minute.
