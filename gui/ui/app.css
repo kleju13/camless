@@ -156,6 +156,7 @@ body.light { background: #f7f6fa; }
 .cam-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--t3); }
 .cam-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 .cam-status.off::before { background: var(--t4); }
+.cam-status.warn::before { background: var(--amber); }
 
 .cam-alert { position: sticky; top: 0; z-index: 5; display: flex; align-items: flex-start; gap: 10px; margin: 0 0 14px; padding: 9px 12px; border-radius: var(--radius); background: var(--alert-bg); border: 1px solid rgba(255, 2, 45, .45); color: var(--t1); font-size: 13px; backdrop-filter: blur(10px); }
 .cam-alert svg.i { color: var(--alert); width: 18px; height: 18px; margin-top: 1px; }

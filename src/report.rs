@@ -369,6 +369,11 @@ fn render(f: &Facts) -> String {
                 }
             }
             let _ = writeln!(s, "{}", parts.join(", "));
+            // Names only: how to get them names folders with the user's name.
+            let missing: Vec<String> = st.service.iter().flat_map(|sv| &sv.requirements).filter(|r| r.missing()).map(|r| format!("{} ({})", r.name, r.used_for)).collect();
+            if !missing.is_empty() {
+                let _ = writeln!(s, "Missing: {}", missing.join(", "));
+            }
             if let Some(sv) = st.service.as_ref().filter(|sv| !sv.gpu_power_sources.is_empty()) {
                 let _ = writeln!(s, "\n**GPU power sources** (the last minute, in watts)");
                 for p in &sv.gpu_power_sources {
@@ -628,6 +633,7 @@ fn scrub_facts(f: &mut Facts) {
             if let Some(sv) = &mut st.service {
                 sv.cpu_sensor_error.iter_mut().chain(sv.gpu_sensor_error.iter_mut()).chain(sv.gpu_power_error.iter_mut()).for_each(clean);
                 sv.gpu_power_sources.iter_mut().flat_map(|p| p.error.iter_mut().chain(p.detail.iter_mut())).for_each(clean);
+                sv.requirements.iter_mut().flat_map(|r| [&mut r.name, &mut r.used_for]).for_each(clean);
             }
         }
         Err(e) => clean(e),
@@ -937,6 +943,26 @@ about the table"
         assert!(text.contains("**NZXT devices without a driver**\nNone found.\n"));
         assert!(text.contains("No NZXT or Asetek USB device.\n"));
         assert_eq!(title(&f), "Hardware: Kraken Elite (2024)");
+    }
+
+    #[test]
+    fn names_what_is_missing_without_where_it_goes() {
+        let mut f = facts();
+        assert!(!render(&f).contains("Missing:"));
+        let Ok(st) = &mut f.service else { unreachable!() };
+        let req = |name: &str, needed: bool, installed| camless_core::status::Requirement {
+            id: name.into(),
+            name: name.into(),
+            used_for: "CPU temperature and power".into(),
+            needed_because: needed.then(|| "camless found an Intel CPU".into()),
+            installed,
+            how: r"Copy it into C:\Users\Example\AppData\Local\Programs\camless.".into(),
+            ..Default::default()
+        };
+        st.service.as_mut().unwrap().requirements = vec![req("PawnIO", true, true), req("IntelMSR.bin", true, false), req("Chromium", false, false)];
+        let text = render(&f);
+        assert!(text.contains("\nMissing: IntelMSR.bin (CPU temperature and power)\n"), "{text}");
+        assert!(!text.contains("AppData"));
     }
 
     #[test]

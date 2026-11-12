@@ -17,8 +17,34 @@ mod os;
 #[path = "sensors/windows.rs"]
 mod os;
 #[cfg(windows)]
-pub use os::{pawnio_module_file, reg_dword, reg_string};
+pub use os::{cpu_maker, pawnio_module_file, reg_dword, reg_string, PAWNIO_LIB};
 pub use os::{cpu_name, NO_CPU_TEMP};
+
+/// Where camless reads the signed PawnIO module from: the config's path, or the
+/// module for this CPU next to camless.exe.
+#[cfg(windows)]
+pub fn pawnio_module_path(configured: Option<&std::path::PathBuf>) -> std::path::PathBuf {
+    configured.cloned().unwrap_or_else(|| {
+        let file = pawnio_module_file();
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(file)))
+            .unwrap_or_else(|| file.into())
+    })
+}
+
+/// The signed PawnIO module's bytes, or why there are none.
+#[cfg(windows)]
+pub fn pawnio_module(configured: Option<&std::path::PathBuf>) -> std::result::Result<Vec<u8>, String> {
+    let path = pawnio_module_path(configured);
+    std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// PawnIO is Windows only; Linux reads CPU temperature from hwmon.
+#[cfg(not(windows))]
+pub fn pawnio_module(_configured: Option<&std::path::PathBuf>) -> std::result::Result<Vec<u8>, String> {
+    Err("PawnIO is for Windows".into())
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Readings {
@@ -158,6 +184,25 @@ impl Sensors {
             #[cfg(windows)]
             Some(Gpu::Wddm(w)) => w.power_sources(),
             _ => Vec::new(),
+        }
+    }
+
+    /// Opens CPU temperature again, after what it needs was installed. Keeps it if it
+    /// already reads.
+    pub fn retry_cpu(&mut self, pawnio_module: std::result::Result<Vec<u8>, String>) -> bool {
+        if self.cpu.is_some() {
+            return true;
+        }
+        match os::cpu(pawnio_module) {
+            Ok(cpu) => {
+                self.cpu = Some(cpu);
+                self.cpu_error = None;
+                true
+            }
+            Err(e) => {
+                self.cpu_error = Some(e);
+                false
+            }
         }
     }
 

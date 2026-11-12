@@ -323,6 +323,7 @@
     nav.appendChild(serviceBadge());
     nav.appendChild(updateBadge());
     nav.appendChild(verifyBadge());
+    S.on('state', askRequirements);
     const navItems = () => nav.querySelectorAll('a[data-id]').forEach((a) => { a.hidden = !navShown(a.dataset.id); });
     S.on('config', navItems);
     navItems();
@@ -425,6 +426,90 @@
     K.on('prefs', upd);
     upd();
     return el;
+  }
+
+  /* Software from elsewhere that camless needs: PawnIO and the module for this CPU for
+     CPU temperature on Windows, a browser for web pages on the LCD, curl for updates on
+     Linux. The service lists its own and checks again every few seconds; the app adds
+     what it needs itself. */
+  const requirements = () => [].concat((S.status && S.status.service && S.status.service.requirements) || [], (S.server && S.server.requirements) || []);
+  const missing = (r) => !!r.needed_because && !r.installed;
+  const askKey = (r) => `${r.id}:${r.name}`;
+  const lowerFirst = (t) => (/^[A-Z][a-z]/.test(t) ? t[0].toLowerCase() + t.slice(1) : t);
+  let askedRequirements = false;
+
+  function requirementStatus(r) {
+    const [text, tone] = r.installed ? ['Installed', ''] : r.needed_because ? ['Missing', ' warn'] : ['Not installed', ' off'];
+    return h(`<span class="cam-status${tone}">${text}</span>`);
+  }
+
+  // Get it opens the page the service names, through the app's own list of links.
+  function requirementButtons(r) {
+    const out = [];
+    if (r.installed) return out;
+    if (r.link) out.push(button('Get it', { small: true, onClick: () => act('open-link', { name: r.link }) }));
+    if (r.in_app_folder && !S.server.sandbox) out.push(button('Open folder', { small: true, onClick: () => act('open-folder', { app: true }) }));
+    return out;
+  }
+
+  function requirementHint(r) {
+    const why = r.needed_because ? `${esc(sentence(r.needed_because))}` : 'Nothing on this PC needs it now.';
+    return `For ${esc(lowerFirst(r.used_for))}. ${why}${r.installed ? '' : ` ${esc(r.how)}`}`;
+  }
+
+  const cpuNote = (list) => (list.some((r) => r.id.startsWith('pawnio'))
+    ? `Until then, curves on CPU temperature hold the failsafe speed, ${failsafe()}%. The Kraken’s liquid temperature needs none of this. camless looks again every few seconds and starts reading the CPU once everything is in place, without a restart.`
+    : 'camless looks again every few seconds, so there is nothing to restart.');
+
+  // Once each time the app starts, while something this PC needs is missing, unless the
+  // person said not to ask about it again.
+  function requirementsDialog(list) {
+    modal({
+      title: list.length > 1 ? 'camless needs software from elsewhere' : `camless needs ${list[0].name}`,
+      render(body) {
+        body.appendChild(h(`<p class="cam-lead"><b>camless found something on this PC that needs ${list.length > 1 ? 'these, and they are' : 'this, and it is'} not installed.</b></p>`));
+        const rows = h('<div class="cam-rows cam-box"></div>');
+        for (const r of list) rows.appendChild(row(r.name, requirementHint(r), requirementButtons(r)));
+        body.appendChild(rows);
+        body.appendChild(Object.assign(h('<p class="cam-hint"></p>'), { textContent: `${cpuNote(list)} Settings lists all of it under Software from elsewhere.` }));
+      },
+      actions: [
+        { label: 'Don’t ask again', onClick: () => { K.setPref('requirementsAsked', [...new Set([...(K.prefs.requirementsAsked || []), ...list.map(askKey)])]); toast('camless will not ask about it again. Settings still lists it.'); } },
+        { label: 'Later', primary: true },
+      ],
+    });
+  }
+
+  // Only once the service answers, so the dialog has the whole list.
+  function askRequirements() {
+    if (askedRequirements || !S.status || busy()) return;
+    const done = K.prefs.requirementsAsked || [];
+    const list = requirements().filter((r) => missing(r) && !done.includes(askKey(r)));
+    if (!list.length) return;
+    askedRequirements = true;
+    requirementsDialog(list);
+  }
+
+  // The Settings panel: every program and file camless uses from elsewhere, read again
+  // with each state.
+  function requirementsPanel(host) {
+    const s = K.section(host, 'Software from elsewhere');
+    const p = h('<div class="cam-panel cam-rows"></div>');
+    s.appendChild(p);
+    s.appendChild(Object.assign(h('<p class="cam-hint cam-under"></p>'), { textContent: 'What camless uses that Windows or a Linux desktop may not come with. camless looks again every few seconds.' }));
+    let key = null;
+    const upd = () => {
+      const list = requirements();
+      const k = JSON.stringify([list, !!S.status]);
+      if (k === key) return;
+      key = k;
+      p.replaceChildren();
+      for (const r of list) p.appendChild(row(r.name, requirementHint(r), [...requirementButtons(r), requirementStatus(r)]));
+      if (!S.status) p.appendChild(row('The service is not running', 'Start it to see what it needs, such as PawnIO for CPU temperature on Windows.', null));
+    };
+    track(S.on('state', upd));
+    upd();
+    return s;
   }
 
   function go() {
@@ -3566,6 +3651,7 @@
     track(S.on('state', () => { if (!autoT.dataset.busy) autoT.set(S.server.autostart); autoRow.hint(autoHint()); }));
 
     panel('Service', [serviceRow(), autoRow, linux() ? null : adminRow()]);
+    requirementsPanel(host);
 
     const general = panel('General', [
       row('Temperature display', null, choice({ options: [{ value: 'c', label: 'Celsius' }, { value: 'f', label: 'Fahrenheit' }], value: K.prefs.unit, label: 'Temperature display', onChange: (v) => K.setPref('unit', v) })),

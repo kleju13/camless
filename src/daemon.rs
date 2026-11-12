@@ -16,7 +16,7 @@ use crate::web;
 use camless_core::config::{self, Config, Lcd, LcdMode};
 use camless_core::curve::{DeviceCurve, Duty, Engine};
 use camless_core::lighting::Light;
-use camless_core::status::{CurveValue, Device, FanValue, Sensor, ServiceInfo, Status, Unit, Unsupported, WebState};
+use camless_core::status::{CurveValue, Device, FanValue, Requirement, Sensor, ServiceInfo, Status, Unit, Unsupported, WebState};
 use hidapi::HidApi;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -26,6 +26,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const RESCAN_EVERY: Duration = Duration::from_secs(5);
+/// How often the service looks for software from elsewhere it needs: a few file
+/// checks.
+const REQUIREMENTS_EVERY: Duration = Duration::from_secs(5);
+/// Tries at CPU temperature after the list changed, one per check: 30 s.
+const CPU_RETRIES: u8 = 6;
 /// Duties are sent again now and then, in case a device reset without a USB event.
 const RESEND_EVERY: Duration = Duration::from_secs(60);
 /// An LCD in frames or web mode goes back to its own screen when frames stop for
@@ -155,6 +160,11 @@ pub struct Daemon {
     history: Arc<Mutex<History>>,
     /// The game in front and its frame rate.
     games: Games,
+    /// Software from elsewhere this PC needs, as last checked.
+    requirements: Vec<Requirement>,
+    next_requirements: Instant,
+    /// Tries at CPU temperature left since the list last changed.
+    cpu_retries: u8,
 }
 
 struct Rendering {
@@ -199,6 +209,9 @@ impl Daemon {
             pages: HashMap::new(),
             history,
             games,
+            requirements: Vec::new(),
+            next_requirements: Instant::now(),
+            cpu_retries: 0,
         };
         let mut daemon = daemon;
         daemon.warn_missing_sensors();
@@ -261,6 +274,7 @@ impl Daemon {
         let dt = self.last_tick.map_or(interval, |t| now.duration_since(t).as_secs_f32()).min(5.0);
         self.last_tick = Some(now);
         self.reload();
+        self.check_requirements();
         self.scan();
         self.open_devices();
         for i in 0..self.slots.len() {
@@ -297,6 +311,42 @@ impl Daemon {
         }
         self.record(&sensors, fps);
         self.publish(readings, sensors);
+    }
+
+    /// Looks again for what camless needs from elsewhere. When something changed and
+    /// CPU temperature is off, it tries PawnIO again for a while: the setup may still be
+    /// starting the driver when its files appear.
+    fn check_requirements(&mut self) {
+        let now = Instant::now();
+        if now < self.next_requirements {
+            return;
+        }
+        self.next_requirements = now + REQUIREMENTS_EVERY;
+        let found = crate::requirements::check(&self.cfg);
+        if found != self.requirements {
+            let first = self.requirements.is_empty();
+            self.requirements = found;
+            for r in self.requirements.iter().filter(|r| r.missing()) {
+                self.log(&format!("missing {}, for {}", r.name, r.used_for));
+            }
+            if !first {
+                self.cpu_retries = CPU_RETRIES;
+            }
+        }
+        if self.cpu_retries == 0 || self.sensors.has_cpu_temp() {
+            self.cpu_retries = 0;
+            return;
+        }
+        self.cpu_retries -= 1;
+        if self.sensors.retry_cpu(crate::sensors::pawnio_module(self.cfg.pawnio_module.as_ref())) {
+            self.cpu_retries = 0;
+            self.log("cpu temperature on");
+            self.warn_missing_sensors();
+        } else if self.cpu_retries == 0 {
+            if let Some(e) = &self.sensors.cpu_error {
+                self.log(&format!("cpu temperature still off: {e}"));
+            }
+        }
     }
 
     /// Every sensor, the speed and duty of every fan on a device that answers, and the
@@ -822,6 +872,7 @@ impl Daemon {
                 gpu_power_error: self.sensors.gpu_power_error.clone(),
                 gpu_power_sources: self.sensors.gpu_power_sources(),
                 fps_error: if self.cfg.games.enabled { self.games.error() } else { None },
+                requirements: self.requirements.clone(),
             }),
             game: self.games.now(),
         };

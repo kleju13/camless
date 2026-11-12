@@ -9,6 +9,7 @@ mod history;
 mod mcp;
 mod q565;
 mod report;
+mod requirements;
 mod sensors;
 mod web;
 
@@ -177,28 +178,8 @@ fn main() -> Result<()> {
     }
 }
 
-#[cfg(windows)]
-fn beside_exe(name: &str) -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join(name)))
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
-#[cfg(windows)]
-fn pawnio_module(configured: Option<&PathBuf>) -> std::result::Result<Vec<u8>, String> {
-    let path = configured.cloned().unwrap_or_else(|| beside_exe(sensors::pawnio_module_file()));
-    std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
-}
-
-/// PawnIO is Windows only; Linux reads CPU temperature from hwmon.
-#[cfg(not(windows))]
-fn pawnio_module(_configured: Option<&PathBuf>) -> std::result::Result<Vec<u8>, String> {
-    Err("PawnIO is for Windows".into())
-}
-
 fn sensors() -> Result<()> {
-    let mut s = sensors::Sensors::open(pawnio_module(None));
+    let mut s = sensors::Sensors::open(sensors::pawnio_module(None));
     s.read();
     std::thread::sleep(Duration::from_secs(1));
     let r = s.read();
@@ -414,7 +395,7 @@ fn status(config: &Path) -> Result<()> {
     for u in &unsupported {
         println!("{:04x}:{:04x} {}: no driver yet (see CONTRIBUTING.md)", u.vid, u.pid, u.product);
     }
-    let mut s = sensors::Sensors::open(pawnio_module(None));
+    let mut s = sensors::Sensors::open(sensors::pawnio_module(None));
     s.read();
     std::thread::sleep(Duration::from_millis(500));
     for x in s.read().list(s.gpu_name.is_some()) {
@@ -499,7 +480,7 @@ fn run(path: PathBuf, verbose: bool, demo: bool, limit: Option<Duration>) -> Res
             .context("starting the local API")?;
         eprintln!("camless: api on http://{}", cfg.api.listen);
     }
-    let sensors = sensors::Sensors::open(pawnio_module(cfg.pawnio_module.as_ref()));
+    let sensors = sensors::Sensors::open(sensors::pawnio_module(cfg.pawnio_module.as_ref()));
     if demo {
         eprintln!("camless: demo mode, simulated devices only");
     }
