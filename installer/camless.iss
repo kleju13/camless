@@ -294,7 +294,7 @@ begin
   if RemoveTask then
     Log('The task for Start as administrator without asking could not be written again, so it was deleted.')
   else
-    Log('The task for Start as administrator without asking could not be written again or deleted.');
+    MsgBox('camless could not renew or delete its scheduled task ' + TaskName + '. It may still start camless from its old folder. Delete it in Task Scheduler.', mbError, MB_OK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
