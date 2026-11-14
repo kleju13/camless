@@ -13,7 +13,7 @@ $version = $versions[0]
 if (@($versions | Select-Object -Unique).Count -ne 1) { throw "the crates are at different versions: $($versions -join ', ')" }
 if ($Tag -and $Tag -ne "v$version") { throw "tag $Tag does not match version $version in Cargo.toml" }
 
-cargo build --release --workspace --manifest-path (Join-Path $root 'Cargo.toml')
+cargo build --release --workspace --locked --manifest-path (Join-Path $root 'Cargo.toml')
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
 $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
