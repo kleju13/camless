@@ -481,22 +481,14 @@ struct Browser {
     name: String,
 }
 
-/// How camless reaches the browser's DevTools. On Windows, a port on 127.0.0.1, which
-/// the browser writes in `DevToolsActivePort`. On Linux, two pipes, as other users on
-/// the same machine could connect to that port too.
-#[cfg(windows)]
-const DEVTOOLS: &str = "--remote-debugging-port=0";
-#[cfg(not(windows))]
+/// How camless reaches the browser's DevTools: two pipes of its own, and not a port
+/// on 127.0.0.1, which every user and program on the computer could connect to.
 const DEVTOOLS: &str = "--remote-debugging-pipe";
 
 impl Browser {
     /// Starts the browser and connects to its DevTools.
     fn launch(installed: &Installed, dir: &Path, w: u16, h: u16, stop: &AtomicBool) -> Result<(Browser, Cdp)> {
         let (exe, name) = (&installed.exe, installed.name);
-        #[cfg(windows)]
-        let port_file = dir.join("DevToolsActivePort");
-        #[cfg(windows)]
-        let _ = std::fs::remove_file(&port_file);
         let args = [
             "--headless=new".to_string(),
             DEVTOOLS.into(),
@@ -528,47 +520,30 @@ impl Browser {
             "about:blank".into(),
         ];
         let deadline = Instant::now() + Duration::from_secs(20);
-        #[cfg(windows)]
-        {
-            let browser = Browser { process: os::spawn(exe, &args)?, name: name.into() };
-            loop {
-                // The file has the port, then the browser's WebSocket path.
-                if let Ok(text) = std::fs::read_to_string(&port_file) {
-                    let mut lines = text.lines();
-                    if let (Some(Ok(port)), Some(path)) = (lines.next().map(str::parse), lines.next()) {
-                        let cdp = Cdp::connect(port, path)?;
-                        return Ok((browser, cdp));
-                    }
-                }
-                browser.starting(stop, deadline, "did not open its DevTools port")?;
-                std::thread::sleep(Duration::from_millis(100));
+        let (process, to, from) = os::spawn_piped(exe, &args)?;
+        let browser = Browser { process, name: name.into() };
+        let mut cdp = Cdp::pipe(to, from)?;
+        // Its first reply says it is up.
+        let up = (|| -> Result<()> {
+            let id = cdp.send("Browser.getVersion", json!({}), None)?;
+            while cdp.reply(id, Duration::from_millis(100))?.is_none() {
+                browser.starting(stop, deadline, "did not answer on its DevTools pipe")?;
             }
-        }
-        #[cfg(not(windows))]
-        {
-            let (process, to, from) = os::spawn_piped(exe, &args)?;
-            let browser = Browser { process, name: name.into() };
-            let mut cdp = Cdp::pipe(to, from);
-            // Its first reply says it is up.
-            let up = (|| -> Result<()> {
-                let id = cdp.send("Browser.getVersion", json!({}), None)?;
-                while cdp.reply(id, Duration::from_millis(100))?.is_none() {
-                    browser.starting(stop, deadline, "did not answer on its DevTools pipe")?;
-                }
-                Ok(())
-            })();
-            match up {
-                Ok(()) => Ok((browser, cdp)),
-                // A browser gone at start closes its pipes; how it ended says more.
-                Err(_) if !stop.load(Ordering::SeqCst) && browser.process.wait(Duration::from_secs(1)) => {
-                    bail!("{name} exited at start (code {})", browser.process.exit_code().unwrap_or_default())
-                }
-                // Not yet tried: snap-confine may not pass the pipes on.
-                Err(e) if exe.starts_with("/snap/") => {
-                    Err(e.context("camless has not been tried with the Chromium snap yet; Google Chrome's .deb works"))
-                }
-                Err(e) => Err(e),
+            Ok(())
+        })();
+        match up {
+            Ok(()) => Ok((browser, cdp)),
+            // A browser gone at start closes its pipes; how it ended says more.
+            Err(_) if !stop.load(Ordering::SeqCst) && browser.process.wait(Duration::from_secs(1)) => {
+                // Chrome before 118 cannot be handed its pipes on Windows.
+                let needs = if cfg!(windows) { "; camless needs version 118 or newer" } else { "" };
+                bail!("{name} exited at start (code {}){needs}", browser.process.exit_code().unwrap_or_default())
             }
+            // Not yet tried: snap-confine may not pass the pipes on.
+            Err(e) if exe.starts_with("/snap/") => {
+                Err(e.context("camless has not been tried with the Chromium snap yet; Google Chrome's .deb works"))
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -603,28 +578,39 @@ use win as os;
 #[cfg(not(windows))]
 use unix as os;
 
-/// Starting the browser: as the signed-in user, inside a kill-on-close job.
+/// Starting the browser: as the signed-in user, inside a kill-on-close job, with the
+/// two pipes camless drives it through.
 #[cfg(windows)]
 mod win {
-    use anyhow::{bail, Result};
+    use anyhow::{bail, Context, Result};
     use std::ffi::c_void;
+    use std::fs::File;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
     use std::path::Path;
     use std::ptr::{null, null_mut};
     use std::time::Duration;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, STILL_ACTIVE, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, DuplicateHandle, SetHandleInformation, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, HANDLE, HANDLE_FLAG_INHERIT,
+        STILL_ACTIVE, WAIT_OBJECT_0,
+    };
     use windows_sys::Win32::Security::{
-        DuplicateTokenEx, GetTokenInformation, SecurityImpersonation, TokenElevation, TokenPrimary, TOKEN_ADJUST_DEFAULT,
-        TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_QUERY,
+        GetKernelObjectSecurity, GetTokenInformation, InitializeSecurityDescriptor, SetKernelObjectSecurity, SetSecurityDescriptorDacl,
+        SetSecurityDescriptorOwner, TokenDefaultDacl, TokenElevation, TokenUser, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
+        LABEL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, TOKEN_DEFAULT_DACL,
+        TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
+    use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, CreateProcessWithTokenW, GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken, ResumeThread,
-        TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION,
-        PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+        CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess, InitializeProcThreadAttributeList,
+        OpenProcess, OpenProcessToken, ResumeThread, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_CREATE_PROCESS, PROCESS_DUP_HANDLE,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, STARTF_USESTDHANDLES, STARTUPINFOEXW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
 
@@ -713,9 +699,44 @@ mod win {
         }
     }
 
-    /// A primary token of the desktop's user, from Explorer: an elevated camless
+    /// A handle of camless's own, closed when dropped.
+    struct Owned(HANDLE);
+
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// A copy of one of camless's handles in another process, for a child of that
+    /// process to inherit. Taken out of that process again when dropped.
+    struct Lent<'a> {
+        holder: &'a Owned,
+        handle: HANDLE,
+    }
+
+    impl<'a> Lent<'a> {
+        fn new(holder: &'a Owned, ours: &Owned) -> Result<Lent<'a>> {
+            let mut handle = null_mut();
+            let ok = unsafe { DuplicateHandle(GetCurrentProcess(), ours.0, holder.0, &mut handle, 0, 1, DUPLICATE_SAME_ACCESS) } != 0;
+            if !ok {
+                bail!("lending a pipe to the desktop shell: {}", std::io::Error::last_os_error());
+            }
+            Ok(Lent { holder, handle })
+        }
+    }
+
+    impl Drop for Lent<'_> {
+        fn drop(&mut self) {
+            // With no target, this only closes the handle where it is.
+            unsafe { DuplicateHandle(self.holder.0, self.handle, null_mut(), null_mut(), 0, 0, DUPLICATE_CLOSE_SOURCE) };
+        }
+    }
+
+    /// The desktop shell's process, Explorer, to start the browser as its child: the
+    /// browser then runs with the signed-in user's own rights, as an elevated camless
     /// must not hand administrator rights to a web page's browser.
-    fn shell_token() -> Result<HANDLE> {
+    fn shell_process() -> Result<Owned> {
         unsafe {
             let shell = GetShellWindow();
             if shell.is_null() {
@@ -723,51 +744,229 @@ mod win {
             }
             let mut pid = 0;
             GetWindowThreadProcessId(shell, &mut pid);
-            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            let process = OpenProcess(PROCESS_CREATE_PROCESS | PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION | READ_CONTROL, 0, pid);
             if process.is_null() {
                 bail!("opening the desktop shell: {}", std::io::Error::last_os_error());
             }
-            let mut token = null_mut();
-            let opened = OpenProcessToken(process, TOKEN_DUPLICATE, &mut token) != 0;
-            CloseHandle(process);
-            if !opened {
-                bail!("reading the desktop user's token: {}", std::io::Error::last_os_error());
-            }
-            let mut primary = null_mut();
-            let access = TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID;
-            let ok = DuplicateTokenEx(token, access, null(), SecurityImpersonation, TokenPrimary, &mut primary) != 0;
-            CloseHandle(token);
-            if !ok {
-                bail!("copying the desktop user's token: {}", std::io::Error::last_os_error());
-            }
-            Ok(primary)
+            Ok(Owned(process))
         }
     }
 
-    pub fn spawn(exe: &Path, args: &[String]) -> Result<super::win::Process> {
+    /// Who may open a program started under the desktop shell, its first thread and
+    /// its token: what they would be for a program the shell had started itself.
+    ///
+    /// Windows writes those from the token of whoever calls `CreateProcessW`, not from
+    /// the parent's. From an elevated camless they let administrators in, carry the
+    /// integrity level of an administrator's program, and leave the program's own
+    /// user, who is not one there, with little. Edge 157 could then not copy its own
+    /// token for its sandbox: "GPU process launch failed: error_code=49" in its log,
+    /// `SBOX_ERROR_CANNOT_CREATE_RESTRICTED_TOKEN`, and a breakpoint dialog on the
+    /// desktop. With the token put right it rendered, but could not open itself to
+    /// start its crash handler.
+    struct Rights {
+        /// TOKEN_USER and TOKEN_DEFAULT_DACL of the shell's token.
+        user: Vec<usize>,
+        access: Vec<usize>,
+        /// The security descriptor of the shell's token itself.
+        token: Vec<usize>,
+        /// The integrity level on the shell's process.
+        level: Vec<usize>,
+    }
+
+    const READ_CONTROL: u32 = 0x2_0000;
+    const WRITE_DAC: u32 = 0x4_0000;
+    const WRITE_OWNER: u32 = 0x8_0000;
+    /// The parts of a token's security descriptor that say who may open it.
+    const WHO: u32 = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION;
+
+    /// Parts of the security descriptor of a process, thread or token.
+    fn security_of(object: HANDLE, parts: u32) -> Result<Vec<usize>> {
+        unsafe {
+            let mut len = 0;
+            GetKernelObjectSecurity(object, parts, null_mut(), 0, &mut len);
+            let mut security = vec![0usize; (len as usize).div_ceil(size_of::<usize>())];
+            if GetKernelObjectSecurity(object, parts, security.as_mut_ptr() as *mut c_void, len, &mut len) == 0 {
+                bail!("reading who may open the desktop shell: {}", std::io::Error::last_os_error());
+            }
+            Ok(security)
+        }
+    }
+
+    impl Rights {
+        fn of(shell: &Owned) -> Result<Rights> {
+            let mut token = null_mut();
+            if unsafe { OpenProcessToken(shell.0, TOKEN_QUERY | READ_CONTROL, &mut token) } == 0 {
+                bail!("reading the desktop user's token: {}", std::io::Error::last_os_error());
+            }
+            let token = Owned(token);
+            Ok(Rights {
+                user: token_information(&token, TokenUser)?,
+                access: token_information(&token, TokenDefaultDacl)?,
+                token: security_of(token.0, WHO)?,
+                level: security_of(shell.0, LABEL_SECURITY_INFORMATION)?,
+            })
+        }
+
+        /// A security descriptor for the process and its first thread, which points
+        /// into `self`.
+        fn descriptor(&self) -> Result<SECURITY_DESCRIPTOR> {
+            unsafe {
+                let user = (*(self.user.as_ptr() as *const TOKEN_USER)).User.Sid;
+                let access = (*(self.access.as_ptr() as *const TOKEN_DEFAULT_DACL)).DefaultDacl;
+                // Without a list, the descriptor would let everyone in.
+                if access.is_null() {
+                    bail!("the desktop user's token has no default access list");
+                }
+                let mut descriptor: SECURITY_DESCRIPTOR = std::mem::zeroed();
+                let d = &mut descriptor as *mut SECURITY_DESCRIPTOR as *mut c_void;
+                if InitializeSecurityDescriptor(d, SECURITY_DESCRIPTOR_REVISION) == 0
+                    || SetSecurityDescriptorOwner(d, user, 0) == 0
+                    || SetSecurityDescriptorDacl(d, 1, access, 0) == 0
+                {
+                    bail!("describing the browser's rights: {}", std::io::Error::last_os_error());
+                }
+                Ok(descriptor)
+            }
+        }
+
+        /// Puts right what the descriptor at the start cannot: the integrity level on
+        /// `process` and `thread`, not yet running, and who may open their token.
+        fn hand_over(&self, process: HANDLE, thread: HANDLE) -> Result<()> {
+            unsafe {
+                let mut token = null_mut();
+                if OpenProcessToken(process, WRITE_DAC | WRITE_OWNER, &mut token) == 0 {
+                    bail!("opening the browser's token: {}", std::io::Error::last_os_error());
+                }
+                let token = Owned(token);
+                let level = self.level.as_ptr() as *mut c_void;
+                if SetKernelObjectSecurity(token.0, WHO, self.token.as_ptr() as *mut c_void) == 0
+                    || SetKernelObjectSecurity(process, LABEL_SECURITY_INFORMATION, level) == 0
+                    || SetKernelObjectSecurity(thread, LABEL_SECURITY_INFORMATION, level) == 0
+                {
+                    bail!("handing the browser over to the desktop user: {}", std::io::Error::last_os_error());
+                }
+                Ok(())
+            }
+        }
+    }
+
+    const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
+
+    /// One piece of a token's information, in memory aligned for its struct.
+    fn token_information(token: &Owned, class: TOKEN_INFORMATION_CLASS) -> Result<Vec<usize>> {
+        unsafe {
+            let mut len = 0;
+            GetTokenInformation(token.0, class, null_mut(), 0, &mut len);
+            let mut buf = vec![0usize; (len as usize).div_ceil(size_of::<usize>())];
+            if GetTokenInformation(token.0, class, buf.as_mut_ptr() as *mut c_void, len, &mut len) == 0 {
+                bail!("reading the desktop user's token: {}", std::io::Error::last_os_error());
+            }
+            Ok(buf)
+        }
+    }
+
+    /// A pipe as (read end, write end), neither inherited by other programs.
+    fn pipe() -> Result<(Owned, Owned)> {
+        let (mut read, mut write) = (null_mut(), null_mut());
+        // The size is a hint; a screencast frame is a few hundred kB.
+        if unsafe { CreatePipe(&mut read, &mut write, null(), 1 << 20) } == 0 {
+            return Err(std::io::Error::last_os_error()).context("making a pipe for the browser");
+        }
+        Ok((Owned(read), Owned(write)))
+    }
+
+    /// Starts the browser with the pipes `--remote-debugging-pipe` takes. On Windows
+    /// it inherits them as two handles and learns their numbers from
+    /// `--remote-debugging-io-pipes`: the one it reads commands from, then the one it
+    /// writes to (`AdoptPipes` in Chromium's `devtools_agent_host_impl.cc`, since
+    /// Chrome 118). Returns the ends camless writes to and reads from.
+    pub fn spawn_piped(exe: &Path, args: &[String]) -> Result<(Process, File, File)> {
+        let shell = if is_elevated() { Some(shell_process()?) } else { None };
+        spawn_with_pipes(exe, shell, |commands, replies| {
+            std::iter::once(format!("--remote-debugging-io-pipes={commands},{replies}")).chain(args.iter().cloned()).collect()
+        })
+    }
+
+    /// Starts `exe` with two pipes: one it reads from and one it writes to. `args`
+    /// gets the numbers of those two handles in the new process and returns its
+    /// arguments. Returns the ends camless writes to and reads from.
+    ///
+    /// A program inherits handles from its parent. With `shell`, that process is the
+    /// parent and not camless, so the program's ends are lent to it for the start.
+    fn spawn_with_pipes(exe: &Path, shell: Option<Owned>, args: impl Fn(usize, usize) -> Vec<String>) -> Result<(Process, File, File)> {
+        let (commands, to) = pipe()?;
+        let (from, replies) = pipe()?;
+        let rights = match &shell {
+            Some(shell) => Some(Rights::of(shell)?),
+            None => None,
+        };
+        let mut descriptor = match &rights {
+            Some(rights) => Some(rights.descriptor()?),
+            None => None,
+        };
+        let lent = match &shell {
+            Some(shell) => Some((Lent::new(shell, &commands)?, Lent::new(shell, &replies)?)),
+            None => None,
+        };
+        let inherited: [HANDLE; 2] = match &lent {
+            Some((commands, replies)) => [commands.handle, replies.handle],
+            None => {
+                for end in [&commands, &replies] {
+                    if unsafe { SetHandleInformation(end.0, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
+                        bail!("passing a pipe to {}: {}", exe.display(), std::io::Error::last_os_error());
+                    }
+                }
+                [commands.0, replies.0]
+            }
+        };
         let mut cmdline = quote(&exe.to_string_lossy());
-        for a in args {
+        for a in args(inherited[0] as usize, inherited[1] as usize) {
             cmdline.push(' ');
-            cmdline.push_str(&quote(a));
+            cmdline.push_str(&quote(&a));
         }
         let app = wide(exe.as_os_str());
         let mut cmd = wide(std::ffi::OsStr::new(&cmdline));
         unsafe {
-            let mut si: STARTUPINFOW = std::mem::zeroed();
-            si.cb = size_of::<STARTUPINFOW>() as u32;
-            let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
-            let started = if is_elevated() {
-                let token = shell_token()?;
-                let ok = CreateProcessWithTokenW(token, 0, app.as_ptr(), cmd.as_mut_ptr(), CREATE_SUSPENDED, null(), null(), &si, &mut pi);
-                CloseHandle(token);
-                ok != 0
-            } else {
-                let flags = CREATE_SUSPENDED | CREATE_NO_WINDOW;
-                CreateProcessW(app.as_ptr(), cmd.as_mut_ptr(), null(), null(), 0, flags, null(), null(), &si, &mut pi) != 0
-            };
-            if !started {
+            // The list names the only handles the program inherits, and its parent.
+            let count = if shell.is_some() { 2 } else { 1 };
+            let mut size = 0;
+            InitializeProcThreadAttributeList(null_mut(), count, 0, &mut size);
+            let mut list = vec![0usize; size.div_ceil(size_of::<usize>())];
+            let attributes = list.as_mut_ptr() as *mut c_void;
+            if InitializeProcThreadAttributeList(attributes, count, 0, &mut size) == 0 {
                 bail!("starting {}: {}", exe.display(), std::io::Error::last_os_error());
             }
+            let handles = (PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize, inherited.as_ptr() as *const c_void, size_of_val(&inherited));
+            let parent = shell.as_ref().map(|s| &s.0 as *const HANDLE as *const c_void);
+            let parent = parent.map(|shell| (PROC_THREAD_ATTRIBUTE_PARENT_PROCESS as usize, shell, size_of::<HANDLE>()));
+            let mut si: STARTUPINFOEXW = std::mem::zeroed();
+            si.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+            // No standard input or output, said outright. Left unsaid, Windows gives the
+            // program camless's own by their numbers, and under another parent those
+            // numbers are that parent's handles, whatever they are.
+            si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            si.lpAttributeList = attributes;
+            let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+            let flags = CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT;
+            // For the process and for its first thread.
+            let attributes_of = |d: &mut SECURITY_DESCRIPTOR| SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: d as *mut SECURITY_DESCRIPTOR as *mut c_void,
+                bInheritHandle: 0,
+            };
+            let security = descriptor.as_mut().map(attributes_of);
+            let security = security.as_ref().map_or(null(), |s| s as *const SECURITY_ATTRIBUTES);
+            let started = [Some(handles), parent]
+                .into_iter()
+                .flatten()
+                .all(|(attribute, value, len)| UpdateProcThreadAttribute(attributes, 0, attribute, value, len, null_mut(), null()) != 0)
+                && CreateProcessW(app.as_ptr(), cmd.as_mut_ptr(), security, security, 1, flags, null(), null(), &si.StartupInfo, &mut pi) != 0;
+            let error = std::io::Error::last_os_error();
+            DeleteProcThreadAttributeList(attributes);
+            if !started {
+                bail!("starting {}: {error}", exe.display());
+            }
+            let thread = Owned(pi.hThread);
             // Suspended until it is in the job, so none of its child processes escape it.
             let job = CreateJobObjectW(null(), null());
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -779,15 +978,57 @@ mod win {
             if !in_job && !job.is_null() {
                 CloseHandle(job);
             }
-            ResumeThread(pi.hThread);
-            CloseHandle(pi.hThread);
-            Ok(Process { handle: pi.hProcess, job: in_job.then_some(job) })
+            // From here on, an early return ends the program.
+            let process = Process { handle: pi.hProcess, job: in_job.then_some(job) };
+            if let Some(rights) = &rights {
+                rights.hand_over(process.handle, thread.0)?;
+            }
+            ResumeThread(thread.0);
+            // The program has its ends now. The copies here and in the shell close, so
+            // each side sees the other one go.
+            drop(lent);
+            drop((commands, replies));
+            let ends = [to, from].map(|end| File::from_raw_handle(std::mem::ManuallyDrop::new(end).0));
+            let [to, from] = ends;
+            Ok((process, to, from))
         }
     }
 
     #[cfg(test)]
     mod tests {
-        use super::quote;
+        use super::*;
+
+        /// What camless writes to one pipe comes back from the other. The program in
+        /// between is this test program again, running only the test below.
+        #[test]
+        fn devtools_messages_go_through_the_pipes() {
+            let me = std::env::current_exe().unwrap();
+            // The numbers travel as a name to skip, which no test has.
+            let args = |read, write| {
+                let only = ["web::win::tests::copies_its_pipes_when_asked", "--exact", "--skip"].map(String::from);
+                only.into_iter().chain([format!("pipes={read},{write}")]).collect()
+            };
+            let (p, to, from) = spawn_with_pipes(&me, None, args).unwrap();
+            let mut cdp = crate::cdp::Cdp::pipe(to, from).unwrap();
+            let id = cdp.send("Browser.getVersion", serde_json::json!({}), None).unwrap();
+            let echo = cdp.reply(id, Duration::from_secs(30)).unwrap().expect("the message came back");
+            assert_eq!(echo["method"], "Browser.getVersion");
+            // Closing camless's end ends the copy, and with it the program.
+            drop(cdp);
+            assert!(p.wait(Duration::from_secs(30)));
+            assert_eq!(p.exit_code(), Some(0));
+        }
+
+        /// The other half of the test above; on its own it has nothing to do.
+        #[test]
+        fn copies_its_pipes_when_asked() {
+            let Some(pipes) = std::env::args().find_map(|a| a.strip_prefix("pipes=").map(str::to_string)) else {
+                return;
+            };
+            let (read, write) = pipes.split_once(',').unwrap();
+            let open = |number: &str| unsafe { File::from_raw_handle(number.parse::<usize>().unwrap() as HANDLE) };
+            std::io::copy(&mut open(read), &mut open(write)).unwrap();
+        }
 
         #[test]
         fn quotes_like_the_c_runtime() {
@@ -920,7 +1161,7 @@ mod unix {
         #[test]
         fn devtools_messages_go_through_the_pipes() {
             let (p, to, from) = spawn_piped(Path::new("/bin/sh"), &["-c".into(), "cat <&3 >&4".into()]).unwrap();
-            let mut cdp = crate::cdp::Cdp::pipe(to, from);
+            let mut cdp = crate::cdp::Cdp::pipe(to, from).unwrap();
             let id = cdp.send("Browser.getVersion", serde_json::json!({}), None).unwrap();
             let echo = cdp.reply(id, Duration::from_secs(5)).unwrap().expect("the message came back");
             assert_eq!(echo["method"], "Browser.getVersion");

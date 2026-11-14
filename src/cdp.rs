@@ -1,87 +1,40 @@
-//! Just enough of the Chrome DevTools Protocol to drive one headless page: a
-//! WebSocket client for the browser's loopback debugging port, or on Linux the
-//! browser's own pipes, commands with replies, and events in between.
+//! Just enough of the Chrome DevTools Protocol to drive one headless page over the
+//! browser's own pipes (`--remote-debugging-pipe`): commands with replies, and
+//! events in between. Each message is JSON that ends in a NUL byte.
+//!
+//! The pipes, and not a debugging port on 127.0.0.1: any user of the computer, and
+//! any program on it, can connect to such a port and then drive a browser that runs
+//! as the signed-in user. Nobody else can reach a pipe.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
+use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 /// Screencast frames are base64 PNGs of a few hundred kB; anything far beyond that
 /// is not a frame of a 640×640 screen.
 const MAX_MESSAGE: usize = 32 << 20;
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
+/// How much of the browser's output is read at once.
+const CHUNK: usize = 256 << 10;
 
 pub struct Cdp {
-    link: Link,
-    /// Bytes read but not yet parsed into frames.
+    /// The pipe the browser reads commands from.
+    to: File,
+    from: Replies,
+    /// Bytes read but not yet split into messages.
     buf: Vec<u8>,
-    chunk: Vec<u8>,
-    /// A text message split over continuation frames.
-    partial: Vec<u8>,
     events: VecDeque<Value>,
     next_id: u64,
-    mask_seed: u32,
-}
-
-/// How the messages travel.
-enum Link {
-    /// WebSocket frames on the debugging port.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    Socket(TcpStream),
-    /// `--remote-debugging-pipe`: JSON messages, each ending in a NUL byte, written to
-    /// the browser's fd 3 and read from its fd 4. No other user can reach a pipe, as
-    /// they can a port on 127.0.0.1.
-    #[cfg(unix)]
-    Pipe { to: std::fs::File, from: std::fs::File },
 }
 
 impl Cdp {
-    fn new(link: Link, buf: Vec<u8>, mask_seed: u32) -> Cdp {
-        Cdp { link, buf, chunk: vec![0; 256 << 10], partial: Vec::new(), events: VecDeque::new(), next_id: 1, mask_seed }
-    }
-
-    /// Talks to a browser started with `--remote-debugging-pipe` over its two pipes.
-    #[cfg(unix)]
-    pub fn pipe(to: std::fs::File, from: std::fs::File) -> Cdp {
-        Cdp::new(Link::Pipe { to, from }, Vec::new(), 1)
-    }
-
-    /// Connects to `ws://127.0.0.1:{port}{path}`, as written in `DevToolsActivePort`.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub fn connect(port: u16, path: &str) -> Result<Cdp> {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).with_context(|| format!("connecting to port {port}"))?;
-        stream.set_nodelay(true)?;
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos();
-        let key = base64_encode(&seed.to_le_bytes().repeat(4));
-        let request = format!(
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
-             Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-        );
-        stream.write_all(request.as_bytes())?;
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-        let mut buf = Vec::new();
-        let end = loop {
-            let mut chunk = [0u8; 4096];
-            let n = stream.read(&mut chunk).context("reading the WebSocket handshake")?;
-            if n == 0 {
-                bail!("the browser closed the connection during the handshake");
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                break i + 4;
-            }
-            if buf.len() > 16 << 10 {
-                bail!("no end to the handshake reply");
-            }
-        };
-        let head = String::from_utf8_lossy(&buf[..end]);
-        if !head.starts_with("HTTP/1.1 101") {
-            bail!("the browser refused the WebSocket: {}", head.lines().next().unwrap_or_default());
-        }
-        Ok(Cdp::new(Link::Socket(stream), buf[end..].to_vec(), seed | 1))
+    /// Talks to a browser started with `--remote-debugging-pipe` over its two pipes:
+    /// `to` is the one it reads, `from` the one it writes.
+    pub fn pipe(to: File, from: File) -> Result<Cdp> {
+        Ok(Cdp { to, from: Replies::new(from, CHUNK)?, buf: Vec::new(), events: VecDeque::new(), next_id: 1 })
     }
 
     /// Sends a command and returns its id without waiting for the reply.
@@ -92,7 +45,7 @@ impl Cdp {
         if let Some(s) = session {
             msg["sessionId"] = json!(s);
         }
-        self.write_message(msg.to_string().as_bytes())?;
+        self.to.write_all(&[msg.to_string().as_bytes(), b"\0"].concat()).context("writing to the browser")?;
         Ok(id)
     }
 
@@ -113,7 +66,7 @@ impl Cdp {
         let deadline = Instant::now() + timeout;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
-            match self.read_message(left)? {
+            match read_message(&mut self.from, &mut self.buf, left)? {
                 Some(msg) if msg["id"].as_u64() == Some(id) => return Ok(Some(msg)),
                 Some(msg) if msg.get("method").is_some() => self.events.push_back(msg),
                 Some(_) => {}
@@ -131,7 +84,7 @@ impl Cdp {
         let deadline = Instant::now() + timeout;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
-            match self.read_message(left)? {
+            match read_message(&mut self.from, &mut self.buf, left)? {
                 Some(msg) if msg.get("method").is_some() => return Ok(Some(msg)),
                 Some(_) => {}
                 None if left.is_zero() => return Ok(None),
@@ -139,86 +92,10 @@ impl Cdp {
             }
         }
     }
-
-    /// One whole message, or None if none arrived within `timeout`.
-    fn read_message(&mut self, timeout: Duration) -> Result<Option<Value>> {
-        #[cfg(unix)]
-        if let Link::Pipe { from, .. } = &mut self.link {
-            return read_piped(from, &mut self.buf, &mut self.chunk, timeout);
-        }
-        self.read_frames(timeout)
-    }
-
-    fn read_frames(&mut self, timeout: Duration) -> Result<Option<Value>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            while let Some((opcode, fin, payload, used)) = parse_frame(&self.buf)? {
-                self.buf.drain(..used);
-                match opcode {
-                    0x0 | 0x1 | 0x2 => {
-                        self.partial.extend_from_slice(&payload);
-                        if self.partial.len() > MAX_MESSAGE {
-                            bail!("a DevTools message over {} MB", MAX_MESSAGE >> 20);
-                        }
-                        if fin {
-                            let text = std::mem::take(&mut self.partial);
-                            return Ok(Some(serde_json::from_slice(&text).context("a DevTools message that is not JSON")?));
-                        }
-                    }
-                    0x8 => bail!("the browser closed the DevTools connection"),
-                    0x9 => self.write_frame(0xA, &payload)?,
-                    _ => {}
-                }
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            let stream = match &mut self.link {
-                Link::Socket(s) => s,
-                #[cfg(unix)]
-                Link::Pipe { .. } => unreachable!("frames come on the socket only"),
-            };
-            // A zero timeout means "block" to the socket, so wait at least a moment.
-            stream.set_read_timeout(Some(left.max(Duration::from_millis(1))))?;
-            match stream.read(&mut self.chunk) {
-                Ok(0) => bail!("the browser closed the DevTools connection"),
-                Ok(n) => self.buf.extend_from_slice(&self.chunk[..n]),
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                    if Instant::now() >= deadline {
-                        return Ok(None);
-                    }
-                }
-                Err(e) => return Err(e).context("reading from the browser"),
-            }
-        }
-    }
-
-    fn write_message(&mut self, text: &[u8]) -> Result<()> {
-        #[cfg(unix)]
-        if let Link::Pipe { to, .. } = &mut self.link {
-            return to.write_all(&[text, b"\0"].concat()).context("writing to the browser");
-        }
-        self.write_frame(0x1, text)
-    }
-
-    fn write_frame(&mut self, opcode: u8, payload: &[u8]) -> Result<()> {
-        // Clients must mask what they send. The mask only matters to proxies, and
-        // there are none on loopback, so a cheap generator will do.
-        self.mask_seed ^= self.mask_seed << 13;
-        self.mask_seed ^= self.mask_seed >> 17;
-        self.mask_seed ^= self.mask_seed << 5;
-        let frame = encode_frame(opcode, payload, self.mask_seed.to_le_bytes());
-        let stream = match &mut self.link {
-            Link::Socket(s) => s,
-            #[cfg(unix)]
-            Link::Pipe { .. } => unreachable!("frames go on the socket only"),
-        };
-        stream.write_all(&frame).context("writing to the browser")
-    }
 }
 
-/// One message from the browser's pipe, or None if none arrived within `timeout`.
-#[cfg(unix)]
-fn read_piped(from: &mut std::fs::File, buf: &mut Vec<u8>, chunk: &mut [u8], timeout: Duration) -> Result<Option<Value>> {
-    use std::os::fd::AsRawFd;
+/// One whole message from the browser, or None if none arrived within `timeout`.
+fn read_message(from: &mut Replies, buf: &mut Vec<u8>, timeout: Duration) -> Result<Option<Value>> {
     let deadline = Instant::now() + timeout;
     // A frame arrives over many reads: each looks for the end in what it added.
     let mut searched = 0;
@@ -232,87 +109,104 @@ fn read_piped(from: &mut std::fs::File, buf: &mut Vec<u8>, chunk: &mut [u8], tim
         if buf.len() > MAX_MESSAGE {
             bail!("a DevTools message over {} MB", MAX_MESSAGE >> 20);
         }
-        let left = deadline.saturating_duration_since(Instant::now());
-        let mut fd = libc::pollfd { fd: from.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-        let ms = left.as_millis().min(i32::MAX as u128) as i32;
+        if !from.more(buf, deadline.saturating_duration_since(Instant::now()))? {
+            return Ok(None);
+        }
+    }
+}
+
+const CLOSED: &str = "the browser closed the DevTools connection";
+
+/// The pipe the browser writes to, read with a time limit.
+#[cfg(unix)]
+struct Replies {
+    from: File,
+    chunk: Vec<u8>,
+}
+
+#[cfg(unix)]
+impl Replies {
+    fn new(from: File, chunk: usize) -> Result<Replies> {
+        Ok(Replies { from, chunk: vec![0; chunk] })
+    }
+
+    /// Waits up to `timeout` for the browser to write, and adds what it wrote to
+    /// `buf`. False if the time passed first.
+    fn more(&mut self, buf: &mut Vec<u8>, timeout: Duration) -> Result<bool> {
+        use std::os::fd::AsRawFd;
+        let mut fd = libc::pollfd { fd: self.from.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
         // SAFETY: one pollfd that lives through the call.
         let ready = unsafe { libc::poll(&mut fd, 1, ms) };
         if ready < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() == ErrorKind::Interrupted {
-                continue;
+                return Ok(true);
             }
             return Err(e).context("waiting for the browser");
         }
         if ready == 0 {
-            return Ok(None);
+            return Ok(false);
         }
-        match from.read(chunk) {
-            Ok(0) => bail!("the browser closed the DevTools connection"),
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        match self.from.read(&mut self.chunk) {
+            Ok(0) => bail!(CLOSED),
+            Ok(n) => buf.extend_from_slice(&self.chunk[..n]),
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) => return Err(e).context("reading from the browser"),
         }
+        Ok(true)
     }
 }
 
-/// A client frame: final, masked.
-fn encode_frame(opcode: u8, payload: &[u8], mask: [u8; 4]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(payload.len() + 14);
-    out.push(0x80 | opcode);
-    match payload.len() {
-        n if n < 126 => out.push(0x80 | n as u8),
-        n if n <= 0xffff => {
-            out.push(0x80 | 126);
-            out.extend_from_slice(&(n as u16).to_be_bytes());
-        }
-        n => {
-            out.push(0x80 | 127);
-            out.extend_from_slice(&(n as u64).to_be_bytes());
-        }
-    }
-    out.extend_from_slice(&mask);
-    out.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
-    out
-}
+/// The pipe the browser writes to, read with a time limit. A read of an anonymous
+/// pipe on Windows cannot be given one, so a thread reads and hands on what it got.
+/// It ends with the browser, which closes the pipe.
+#[cfg(windows)]
+struct Replies(std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>);
 
-/// (opcode, final, payload, bytes used) of the first whole frame in `buf`.
-fn parse_frame(buf: &[u8]) -> Result<Option<(u8, bool, Vec<u8>, usize)>> {
-    if buf.len() < 2 {
-        return Ok(None);
+#[cfg(windows)]
+impl Replies {
+    fn new(mut from: File, chunk: usize) -> Result<Replies> {
+        // A few chunks ahead at most: the browser waits with the rest, as it would
+        // on a pipe nobody reads.
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let read = move || {
+            let mut chunk = vec![0; chunk];
+            loop {
+                let got = match from.read(&mut chunk) {
+                    Ok(0) => return,
+                    Ok(n) => Ok(chunk[..n].to_vec()),
+                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                    Err(e) => Err(e),
+                };
+                let failed = got.is_err();
+                if tx.send(got).is_err() || failed {
+                    return;
+                }
+            }
+        };
+        std::thread::Builder::new().name("browser-pipe".into()).spawn(read).context("starting the thread that reads from the browser")?;
+        Ok(Replies(rx))
     }
-    let (fin, opcode, masked) = (buf[0] & 0x80 != 0, buf[0] & 0x0f, buf[1] & 0x80 != 0);
-    let (len, mut at) = match buf[1] & 0x7f {
-        126 if buf.len() >= 4 => (u16::from_be_bytes([buf[2], buf[3]]) as u64, 4),
-        127 if buf.len() >= 10 => (u64::from_be_bytes(buf[2..10].try_into().unwrap()), 10),
-        126 | 127 => return Ok(None),
-        n => (n as u64, 2),
-    };
-    if len > MAX_MESSAGE as u64 {
-        bail!("a WebSocket frame of {len} bytes");
-    }
-    let mask = if masked {
-        if buf.len() < at + 4 {
-            return Ok(None);
+
+    /// Waits up to `timeout` for the browser to write, and adds what it wrote to
+    /// `buf`. False if the time passed first.
+    fn more(&mut self, buf: &mut Vec<u8>, timeout: Duration) -> Result<bool> {
+        use std::sync::mpsc::RecvTimeoutError;
+        match self.0.recv_timeout(timeout) {
+            Ok(Ok(bytes)) => buf.extend_from_slice(&bytes),
+            Ok(Err(e)) => return Err(e).context("reading from the browser"),
+            Err(RecvTimeoutError::Timeout) => return Ok(false),
+            Err(RecvTimeoutError::Disconnected) => bail!(CLOSED),
         }
-        at += 4;
-        Some([buf[at - 4], buf[at - 3], buf[at - 2], buf[at - 1]])
-    } else {
-        None
-    };
-    let end = at + len as usize;
-    if buf.len() < end {
-        return Ok(None);
+        Ok(true)
     }
-    let mut payload = buf[at..end].to_vec();
-    if let Some(m) = mask {
-        payload.iter_mut().enumerate().for_each(|(i, b)| *b ^= m[i % 4]);
-    }
-    Ok(Some((opcode, fin, payload, end)))
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+/// What the tests make their data URLs with; camless itself only decodes.
+#[cfg(test)]
 pub fn base64_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for c in data.chunks(3) {
@@ -365,45 +259,45 @@ mod tests {
         assert!(base64_decode("a$b").is_err());
     }
 
+    /// A pipe as (read end, write end).
     #[cfg(unix)]
-    #[test]
-    fn piped_messages_split_over_reads_come_out_whole_and_in_order() {
+    fn pipe() -> (File, File) {
         use std::os::fd::FromRawFd;
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
-        let (mut from, mut to) = unsafe { (std::fs::File::from_raw_fd(fds[0]), std::fs::File::from_raw_fd(fds[1])) };
+        unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) }
+    }
+
+    #[cfg(windows)]
+    fn pipe() -> (File, File) {
+        use std::os::windows::io::FromRawHandle;
+        use windows_sys::Win32::System::Pipes::CreatePipe;
+        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+        assert_ne!(unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 0) }, 0);
+        unsafe { (File::from_raw_handle(read), File::from_raw_handle(write)) }
+    }
+
+    #[test]
+    fn piped_messages_split_over_reads_come_out_whole_and_in_order() {
+        let (from, mut to) = pipe();
+        let mut from = Replies::new(from, 7).unwrap();
         let mut buf = Vec::new();
-        let mut chunk = vec![0; 7];
         to.write_all(b"{\"id\":1,\"a\":\"long enough for many reads\"}\0{\"id\":2}\0{\"id\"").unwrap();
-        let first = read_piped(&mut from, &mut buf, &mut chunk, Duration::from_secs(5)).unwrap().unwrap();
+        let first = read_message(&mut from, &mut buf, Duration::from_secs(5)).unwrap().unwrap();
         assert_eq!(first["id"], 1);
-        assert_eq!(read_piped(&mut from, &mut buf, &mut chunk, Duration::from_secs(5)).unwrap().unwrap()["id"], 2);
-        assert_eq!(read_piped(&mut from, &mut buf, &mut chunk, Duration::from_millis(1)).unwrap(), None);
+        assert_eq!(read_message(&mut from, &mut buf, Duration::from_secs(5)).unwrap().unwrap()["id"], 2);
+        assert_eq!(read_message(&mut from, &mut buf, Duration::from_millis(50)).unwrap(), None);
         to.write_all(b":3}\0").unwrap();
-        assert_eq!(read_piped(&mut from, &mut buf, &mut chunk, Duration::from_secs(5)).unwrap().unwrap()["id"], 3);
+        assert_eq!(read_message(&mut from, &mut buf, Duration::from_secs(5)).unwrap().unwrap()["id"], 3);
         assert!(buf.is_empty());
     }
 
     #[test]
-    fn frames_round_trip_at_every_length_form() {
-        for len in [0usize, 125, 126, 65535, 65536, 300_000] {
-            let payload: Vec<u8> = (0..len).map(|i| i as u8).collect();
-            let frame = encode_frame(0x1, &payload, [1, 2, 3, 4]);
-            let (op, fin, got, used) = parse_frame(&frame).unwrap().unwrap();
-            assert_eq!((op, fin, used), (0x1, true, frame.len()));
-            assert_eq!(got, payload);
-            // Half a frame is not a frame yet.
-            assert!(parse_frame(&frame[..frame.len() - 1]).unwrap().is_none() || len == 0);
-        }
-    }
-
-    #[test]
-    fn reads_unmasked_server_frames() {
-        let mut frame = vec![0x81, 126, 0x01, 0x00];
-        frame.extend(std::iter::repeat_n(b'x', 256));
-        frame.extend_from_slice(&[0x89, 0]);
-        let (op, _, payload, used) = parse_frame(&frame).unwrap().unwrap();
-        assert_eq!((op, payload.len(), used), (1, 256, 260));
-        assert_eq!(parse_frame(&frame[used..]).unwrap().unwrap().0, 0x9);
+    fn a_closed_pipe_is_an_error_and_not_a_wait() {
+        let (from, to) = pipe();
+        let mut from = Replies::new(from, 64).unwrap();
+        drop(to);
+        let e = read_message(&mut from, &mut Vec::new(), Duration::from_secs(5)).unwrap_err();
+        assert_eq!(e.to_string(), CLOSED);
     }
 }
