@@ -11,6 +11,7 @@ mod q565;
 mod report;
 mod requirements;
 mod sensors;
+mod state;
 mod web;
 
 use anyhow::{bail, Context, Result};
@@ -470,7 +471,10 @@ fn run(path: PathBuf, verbose: bool, demo: bool, limit: Option<Duration>) -> Res
     }
     let shared = Arc::new(Mutex::new(daemon::Snapshot::default()));
     // Simulated readings stay out of the files.
-    let history_dir = path.parent().filter(|_| !demo).map(|d| d.join("history"));
+    let history_dir = (!demo).then(|| state::init(&path).join("history"));
+    if !demo {
+        state::bring_history_over(&path);
+    }
     let games = games::Games::new(history_dir.as_deref(), web::is_elevated(), demo);
     let history = Arc::new(Mutex::new(history::History::new(history_dir)));
     // Two frames in flight at most; the API answers 429 beyond that.

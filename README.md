@@ -95,7 +95,7 @@ The app lists other NZXT devices as "no driver yet". If you have one, *Settings 
 ### Windows
 
 1. Quit NZXT CAM, and turn it off in *Task Manager → Startup apps* so it does not come back at the next logon. While CAM's app runs, it holds the devices and camless cannot open them. CAM Service can keep running.
-2. Run [camless-setup.exe](https://github.com/kleju13/camless/releases/latest/download/camless-setup.exe). It needs no administrator rights. It is not code-signed, so SmartScreen may stop it: *More info → Run anyway*. Or install from PowerShell, which also checks the download's SHA-256:
+2. Run [camless-setup.exe](https://github.com/kleju13/camless/releases/latest/download/camless-setup.exe). It asks for administrator rights and installs in `C:\Program Files\camless`. It is not code-signed, so SmartScreen may stop it: *More info → Run anyway*. Or install from PowerShell, which also checks the download's SHA-256:
    ```
    irm https://raw.githubusercontent.com/kleju13/camless/main/scripts/install.ps1 | iex
    ```
@@ -104,7 +104,7 @@ The app lists other NZXT devices as "no driver yet". If you have one, *Settings 
 
 The app checks for a new release each time it starts and shows *Update available* under the service in the sidebar. *Update* there, or in *Settings → About*, installs it. Uninstall camless from *Settings → Apps* in Windows. It keeps your settings in `%APPDATA%\camless` unless you choose to delete them.
 
-CPU temperature also needs [PawnIO](https://pawnio.eu) and its signed module for your CPU in `%LOCALAPPDATA%\Programs\camless`: `IntelMSR.bin` on Intel, `AMDFamily17.bin` on AMD Ryzen. Both are in the zip of the latest [PawnIO.Modules release](https://github.com/namazso/PawnIO.Modules/releases/latest). Without them, curves on CPU temperature hold the failsafe duty. When they are missing, the app says so when it starts, with the file this CPU needs, and *Settings → Software from elsewhere* shows what camless found. CPU temperature starts within seconds of putting them in place. The Kraken's liquid temperature needs none of this, so new curves use it by default.
+CPU temperature also needs [PawnIO](https://pawnio.eu) and its signed module for your CPU in `C:\Program Files\camless`: `IntelMSR.bin` on Intel, `AMDFamily17.bin` on AMD Ryzen. Both are in the zip of the latest [PawnIO.Modules release](https://github.com/namazso/PawnIO.Modules/releases/latest). Without them, curves on CPU temperature hold the failsafe duty. When they are missing, the app says so when it starts, with the file this CPU needs, and *Settings → Software from elsewhere* shows what camless found. CPU temperature starts within seconds of putting them in place. The Kraken's liquid temperature needs none of this, so new curves use it by default.
 
 GPU temperature, load and power come from NVIDIA's driver (NVML) on an NVIDIA card. Any other card, such as AMD's or Intel's, gives the temperature and load that Task Manager shows, which Windows keeps for every card. An AMD card's power comes from AMD's driver (ADL), from the log the driver keeps, as LibreHardwareMonitor reads it, or else from a reading of the moment; an Intel card has none. If an AMD card shows no power, or power that jumps, `camless report` says which way it was read and what it read over the last minute.
 

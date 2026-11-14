@@ -463,6 +463,15 @@ pub fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
     }
 }
 
+/// Whether `path` is below the folder `dir`, as Windows compares names: without
+/// regard to case, and with either slash. A path that climbs back out with `..` is not.
+pub fn is_inside(path: &Path, dir: &Path) -> bool {
+    let lower = |p: &Path| p.to_string_lossy().to_lowercase().replace('/', "\\");
+    let (path, dir) = (lower(path), lower(dir));
+    let dir = dir.trim_end_matches('\\');
+    !dir.is_empty() && path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('\\') && !rest.contains("\\..\\"))
+}
+
 fn split_channel(channel: &str) -> Option<(&str, &str)> {
     channel.split_once('/').filter(|(d, c)| !d.is_empty() && !c.is_empty() && !c.contains('/'))
 }
@@ -816,6 +825,19 @@ pub fn curve_order(curves: &[CurveSpec]) -> Result<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_is_inside_a_folder_the_way_windows_compares() {
+        let pf = Path::new(r"C:\Program Files");
+        assert!(is_inside(Path::new(r"C:\Program Files\camless\camless-gui.exe"), pf));
+        assert!(is_inside(Path::new(r"c:\program files/camless/camless-gui.exe"), Path::new(r"C:\Program Files\")));
+        // A folder of the user's, a look-alike next to Program Files, and a way back out.
+        assert!(!is_inside(Path::new(r"C:\Users\A\AppData\Local\Programs\camless\camless-gui.exe"), pf));
+        assert!(!is_inside(Path::new(r"C:\Program Files Evil\camless-gui.exe"), pf));
+        assert!(!is_inside(Path::new(r"C:\Program Files\..\Users\A\camless-gui.exe"), pf));
+        assert!(!is_inside(Path::new(r"C:\Program Files"), pf));
+        assert!(!is_inside(Path::new(r"C:\x.exe"), Path::new("")));
+    }
 
     pub const SAMPLE: &str = r#"
 interval_ms = 1000

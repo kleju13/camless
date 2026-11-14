@@ -289,9 +289,6 @@ body.light { background: #f7f6fa; }
 .cam-thumb path { stroke: var(--tick-major); }
 .cam-thumb polyline { stroke: var(--ce-line); stroke-width: 1.5; stroke-linejoin: round; }
 .cam-row-line > .txt span { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: none; }
-.cam-risk { display: flex !important; gap: 6px; margin-top: 6px !important; color: var(--t2); }
-.cam-risk svg.i { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--amber); }
-.cam-risk span { margin: 0 !important; }
 .cam-row > .txt { flex: 1; min-width: 0; }
 .cam-row > .txt > b { display: block; font-size: 13px; font-weight: 600; }
 .cam-row > .txt span b { font-weight: 600; color: var(--t2); }

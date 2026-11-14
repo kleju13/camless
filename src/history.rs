@@ -355,6 +355,24 @@ fn day_file(day: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}.csv")
 }
 
+/// Whether `name` is a day file's, such as `2026-10-20.csv`.
+pub fn is_day_file(name: &str) -> bool {
+    file_day(name).is_some()
+}
+
+/// The lines of a day file that are this module's own: a header, or a time followed
+/// by numbers. See [`crate::state`] for what else a file can hold.
+pub fn clean(text: &str) -> String {
+    let own = |l: &&str| {
+        if let Some(names) = l.strip_prefix("#t") {
+            return (names.is_empty() || names.starts_with(',')) && !l.contains(char::is_control);
+        }
+        let mut fields = l.split(',');
+        fields.next().is_some_and(|t| t.parse::<i64>().is_ok()) && fields.all(|f| f.is_empty() || f.parse::<f32>().is_ok())
+    };
+    text.lines().filter(own).flat_map(|l| [l, "\n"]).collect()
+}
+
 /// The day a file is for, if its name is one of ours.
 fn file_day(name: &str) -> Option<i64> {
     let stem = name.strip_suffix(".csv")?;

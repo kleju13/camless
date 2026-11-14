@@ -290,7 +290,7 @@ impl Games {
     /// Sessions are kept in `dir`, or only in memory without one. Without
     /// administrator rights there are no frame rates.
     pub fn new(dir: Option<&Path>, elevated: bool, demo: bool) -> Games {
-        let file = dir.map(|d| d.join("sessions.jsonl"));
+        let file = dir.map(|d| d.join(FILE));
         let log = file.as_deref().map(load).unwrap_or_default();
         let (error, retry) = match (demo, elevated) {
             (true, _) => (None, Some(Instant::now())),
@@ -520,6 +520,16 @@ impl Games {
 
 fn unix_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
+/// The sessions' file, in the history's folder.
+pub const FILE: &str = "sessions.jsonl";
+
+/// The lines of a sessions file that are sessions, written again. See
+/// [`crate::state`] for what else a file can hold.
+pub fn clean(text: &str) -> String {
+    let lines = text.lines().filter_map(|l| serde_json::from_str::<Session>(l).ok()).filter_map(|s| serde_json::to_string(&s).ok());
+    lines.flat_map(|l| [l, "\n".to_string()]).collect()
 }
 
 fn load(file: &Path) -> Vec<Session> {

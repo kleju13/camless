@@ -72,6 +72,7 @@ impl Tray {
     /// Must run on the thread of the event loop, once it runs.
     pub fn new() -> Result<Tray> {
         let show = MenuItem::new("Open camless", true, None);
+        autostart::follow();
         let logon = CheckMenuItem::new("Start with Windows", true, autostart::enabled(), None);
         let exit = MenuItem::new("Exit", true, None);
         let menu = Menu::new();
@@ -150,5 +151,39 @@ pub mod autostart {
             return Err(anyhow!("registry error {r}"));
         }
         Ok(())
+    }
+
+    /// Points the entry at this app when the camless it names is gone: the setup once
+    /// put camless in the user's own folder and now moves it to Program Files.
+    pub fn follow() {
+        let (key, value) = (wide(KEY), wide(VALUE));
+        let mut buf = [0u16; 1024];
+        let mut len = size_of_val(&buf) as u32;
+        let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, null_mut(), buf.as_mut_ptr().cast(), &mut len) };
+        if r != ERROR_SUCCESS {
+            return;
+        }
+        let text = String::from_utf16_lossy(&buf[..(len as usize / 2).min(buf.len())]);
+        if program(&text).is_some_and(|exe| !std::path::Path::new(exe).exists()) {
+            let _ = set(true);
+        }
+    }
+
+    /// The program an entry starts: what its first pair of quotes holds.
+    fn program(entry: &str) -> Option<&str> {
+        let rest = entry.trim_start().strip_prefix('"')?;
+        rest.split_once('"').map(|(exe, _)| exe).filter(|exe| !exe.is_empty())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn the_entry_names_its_program() {
+            let entry = "\"C:\\Users\\A B\\AppData\\Local\\Programs\\camless\\camless-gui.exe\" --tray\0";
+            assert_eq!(super::program(entry), Some(r"C:\Users\A B\AppData\Local\Programs\camless\camless-gui.exe"));
+            // One written some other way is left alone.
+            assert_eq!(super::program(r"C:\camless-gui.exe --tray"), None);
+            assert_eq!(super::program("\"\""), None);
+        }
     }
 }

@@ -6,7 +6,14 @@ camless is two programs, `camless` and `camless-gui` on [Linux](#linux):
 
 The app starts the service if it is not running. On Windows, it asks for administrator rights (UAC), so CPU temperature works. If the answer is no, the service runs without them and the app says so. The bottom of the sidebar always shows the service's state with a start or restart button, and *Settings → Service* starts, restarts and stops it.
 
-*Settings → Service → Start as administrator without asking* stops the prompts. It is off until you turn it on, and Windows asks once then. The app sets up a scheduled task, `camless (<your user name>)`, that runs `camless-gui.exe --start-service` with your full rights, and from then on starts the service through it, also at logon with *Start with Windows*. The task has no trigger of its own. You may run and delete it without administrator rights, so turning the switch off and uninstalling need none. The trade-off: camless sits in a folder you can write to, so any program you run could replace it and use the task to get administrator rights without a prompt. On a standard account the switch refuses: a task that runs as you could not give the service administrator rights.
+*Settings → Service → Start as administrator without asking* stops the prompts. It is off until you turn it on, and Windows asks once then. The app sets up a scheduled task, `camless (<your user name>)`, that runs `camless-gui.exe --start-service` with your full rights, and from then on starts the service through it, also at logon with *Start with Windows*. The task has no trigger of its own. You may run and delete it without administrator rights, so turning the switch off needs none.
+
+A task gives administrator rights to whatever it starts, so camless guards what that is:
+- The switch works only for a camless in Program Files, where the setup puts it and only administrators write. A copy elsewhere, such as a build of your own, keeps asking through UAC.
+- The task is written by a copy of the app that has administrator rights itself, `camless-gui.exe --set-up-task`, which the switch starts through UAC. It keeps the task's definition in its own folder until Windows has read it.
+- The setup writes the task again after every install, for the camless it just installed. If that fails, it deletes the task, and the app asks through UAC again.
+
+On a standard account the switch refuses: a task that runs as you could not give the service administrator rights.
 
 ## Software from elsewhere
 
@@ -56,7 +63,7 @@ When something this PC needs is missing, the app opens a dialog once each time i
 ## GPU fans
 
 `[devices] gpu`, off unless you turn it on, lets camless set the graphics card's fans. Experimental: nobody has run it on a card yet. Give them a curve on the GPU's temperature.
-- On Windows, NVIDIA cards, through NVML (`nvml.dll`, which comes with the driver): `nvmlDeviceSetFanSpeed_v2` sets a fan's duty, within the card's `nvmlDeviceGetMinMaxFanSpeed`, and `nvmlDeviceSetDefaultFanSpeed_v2` gives it back to the card's curve. The rpm comes from `nvmlDeviceGetFanSpeedRPM`, on drivers that have it. Setting a fan needs administrator rights: without them, or on a card whose fans NVML does not set (`NVML_ERROR_NOT_SUPPORTED`, which no source rules out on GeForce cards), camless says so and leaves the fan out until the service starts again. Before it first sets a fan, camless leaves a file, `%APPDATA%\camless\taken-gpu-fans`: if camless crashes or is killed, the card keeps the last duty until a camless starts again, which gives every fan back to the card's curve, whatever the settings say by then. camless loads `nvml.dll` from System32, or from NVSMI on older drivers, by its full path, for the GPU's sensors too: a service that runs as administrator must not load one from a folder the user's programs can write to. AMD cards on Windows need AMD's ADLX, which camless does not drive yet.
+- On Windows, NVIDIA cards, through NVML (`nvml.dll`, which comes with the driver): `nvmlDeviceSetFanSpeed_v2` sets a fan's duty, within the card's `nvmlDeviceGetMinMaxFanSpeed`, and `nvmlDeviceSetDefaultFanSpeed_v2` gives it back to the card's curve. The rpm comes from `nvmlDeviceGetFanSpeedRPM`, on drivers that have it. Setting a fan needs administrator rights: without them, or on a card whose fans NVML does not set (`NVML_ERROR_NOT_SUPPORTED`, which no source rules out on GeForce cards), camless says so and leaves the fan out until the service starts again. Before it first sets a fan, camless leaves a file, `taken-gpu-fans` in [the service's folder](#the-services-own-files): if camless crashes or is killed, the card keeps the last duty until a camless starts again, which gives every fan back to the card's curve, whatever the settings say by then. camless loads `nvml.dll` from System32, or from NVSMI on older drivers, by its full path, for the GPU's sensors too: a service that runs as administrator must not load one from a folder the user's programs can write to. AMD cards on Windows need AMD's ADLX, which camless does not drive yet.
 - On Linux, AMD cards, through the `amdgpu` driver's hwmon files, as the motherboard's headers: `pwm1_enable` 1 and `pwm1` for a duty, the mode it had to give it back. The same udev rule gives you those two files. Cards from the RX 7000 series on may not take a duty in `pwm1`: the kernel gives them a fan curve in `gpu_od` instead, which camless does not write. A card that refuses manual mode or the duty is left out once it refuses, until the service starts again. A crash is covered as on the motherboard. NVML needs root on Linux, which the service is not.
 - A card's fans are `gpu`, and a second card's `gpu#2`. camless gives a fan back when its curve is removed and when the service stops, the setting goes off, or another program that sets them starts: the motherboard's fan programs and MSI Afterburner.
 
@@ -64,7 +71,7 @@ When something this PC needs is missing, the app opens a dialog once each time i
 
 The service records every sensor, and the speed and duty of every fan, while it runs:
 - the last hour at one reading a second, in memory;
-- each minute's average and highest value, in `history/` next to `camless.toml`, one CSV file per UTC day. Files older than 30 days are deleted. A day takes about 300 KB with a Kraken and a Control Hub.
+- each minute's average and highest value, in `history/` in [the service's folder](#the-services-own-files), one CSV file per UTC day. Files older than 30 days are deleted. A day takes about 300 KB with a Kraken and a Control Hub.
 
 *Monitoring → History* shows them for the last 10 minutes, hour, 24 hours, 7 days or 30 days, a chart for each kind: liquid temperature, CPU and GPU temperature, load, power, fan and pump speeds, and the frame rate while Games is on. Liquid has a chart of its own, scaled close around its readings, so a change of a degree shows; the line at 55 °C, where every fan goes to 100 %, shows once the readings come near it. Each series gives its reading now, its average and its highest over the range. Pointing at a chart shows the readings at that moment, and a line marks it in the others. Dragging across a chart zooms in: sideways on a stretch of time, for every chart, which loads again finer where the history has it; up or down on the values of that chart; far both ways on both. A double-click or *Reset zoom* zooms out. The button in a chart's corner makes it as wide as the page and taller, and the app remembers it. Over 24 hours and more, a point stands for several minutes: the line is their average, and a shade above it shows how high they went. `camless run --demo` keeps its simulated readings in memory only.
 
@@ -107,8 +114,10 @@ The safeguards under [Fan control](#fan-control) still apply on top. The server 
 To add it to Claude Code:
 
 ```
-claude mcp add camless -- C:\Users\<you>\AppData\Local\Programs\camless\camless.exe mcp
+claude mcp add camless -- "C:\Program Files\camless\camless.exe" mcp
 ```
+
+Until 0.6.0-beta.6 camless was in `%LOCALAPPDATA%\Programs\camless`. An assistant set up with that path needs the new one.
 
 On Linux, the command is `~/.local/bin/camless mcp`.
 
@@ -118,7 +127,7 @@ Or to Claude Desktop, in `claude_desktop_config.json`:
 {
   "mcpServers": {
     "camless": {
-      "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\camless\\camless.exe",
+      "command": "C:\\Program Files\\camless\\camless.exe",
       "args": ["mcp"]
     }
   }
@@ -189,9 +198,17 @@ The fonts are in `gui/ui`: Archivo for text, Saira for digits, and one glyph fro
 
 ## Installs and updates
 
-`camless-setup.exe` (Inno Setup, `installer/camless.iss`) installs both exes for the current user in `%LOCALAPPDATA%\Programs\camless`. Run over an installed camless, it closes the app, stops the service through `POST /v1/stop`, replaces both exes and opens the app again, which starts the service.
+`camless-setup.exe` (Inno Setup, `installer/camless.iss`) installs both exes in `C:\Program Files\camless` and asks Windows for administrator rights to do it. The service runs as administrator, so its program must be where only administrators write: in a folder of yours, any program you run could replace it. Run over an installed camless, the setup closes the app, stops the service through `POST /v1/stop`, replaces both exes and opens the app again, without the setup's rights. The app starts the service.
 
-The app asks GitHub for the latest release once each time it starts. *Update* downloads `camless-setup.exe`, checks it against the release's SHA-256, quits the app and runs the setup, so the app and the service always update together. Uninstalling keeps `%APPDATA%\camless` unless you choose to delete it.
+Until 0.6.0-beta.6 the setup needed no administrator rights and put camless in `%LOCALAPPDATA%\Programs\camless`. The setup moves such a copy: it removes the old exes, uninstaller, shortcuts and entry in Windows' list of apps, takes a PawnIO module along, and writes the task for *Start as administrator without asking* again. It runs nothing from the old folder, and it deletes there with your rights, not its own: the folder is yours, and a link in its place could lead anywhere. It leaves a folder that is a link alone. The app points *Start with Windows* at its new place when it starts. A `camless.toml` that you put beside the old exe stays there with its `profiles`, and camless goes back to the one in `%APPDATA%\camless`: move them there to keep those settings. This happens for the account that answers the UAC prompt. If you install with another account's administrator password, uninstall the old copy yourself in *Settings → Apps*.
+
+The app asks GitHub for the latest release once each time it starts. *Update* downloads `camless-setup.exe`, checks it against the release's SHA-256, quits the app and runs the setup, so the app and the service always update together. Uninstalling keeps `%APPDATA%\camless` and the history unless you choose to delete them.
+
+### The service's own files
+
+The service writes three things: the history, the game sessions (`history/sessions.jsonl`) and `taken-gpu-fans`. The history and the sessions are in the folder of `camless.toml`. `taken-gpu-fans` is in `%APPDATA%\camless` whatever config the service runs, so that the next camless finds it. There is one exception: the installed service on Windows, while it runs as administrator, keeps all three in `C:\Program Files\camless\data`. In a folder of yours, a program you run could put a link in place of `history`, and the service would write wherever the link leads, with administrator rights.
+
+The first time it uses that folder, the service brings over the history beside `camless.toml`, all of it or none: a service that stops halfway starts again the next time. It takes day files and `sessions.jsonl` only, and of those only the lines that are history or sessions. The old files stay. A service that runs without administrator rights writes beside `camless.toml` as before, so the two do not see each other's days.
 
 *Settings → About → Update channel* picks what the app offers:
 - **Stable**, the default, offers releases.
