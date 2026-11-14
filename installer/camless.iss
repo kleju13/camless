@@ -93,7 +93,7 @@ begin
 end;
 
 { The service's API address: listen under [api] in camless.toml, which is next to the exe if there
-  is one, else in %APPDATA%\camless. }
+  is one, also the exe of a camless this setup replaces, else in %APPDATA%\camless. }
 function ApiAddress: String;
 var
   Lines: TArrayOfString;
@@ -103,6 +103,8 @@ var
 begin
   Result := '127.0.0.1:30641';
   Path := ExpandConstant('{app}\camless.toml');
+  if not FileExists(Path) and (OldDir <> '') then
+    Path := OldDir + '\camless.toml';
   if not FileExists(Path) then
     Path := ExpandConstant('{userappdata}\camless\camless.toml');
   if not LoadStringsFromFile(Path, Lines) then
@@ -188,43 +190,71 @@ begin
   Result := Exec(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN ' + TaskName, '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
 end;
 
-{ Until 0.6.0-beta.6 the setup installed camless for one user, in a folder of theirs. This finds
-  that copy, before the new one's shortcuts are made. }
-procedure FindOldInstall;
+function RemoveTask: Boolean;
+var
+  Code: Integer;
 begin
-  OldDir := ExpandConstant('{localappdata}\Programs\camless');
-  if (CompareText(OldDir, WizardDirValue) = 0) or not FileExists(OldDir + '\camless-gui.exe') then
+  Result := Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN ' + TaskName + ' /F', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
+end;
+
+{ Whether the folder or file at Path is a link, such as a junction. }
+function IsLink(const Path: String): Boolean;
+var
+  Find: TFindRec;
+begin
+  Result := FindFirst(Path, Find);
+  if not Result then
+    Exit;
+  Result := Find.Attributes and FILE_ATTRIBUTE_REPARSE_POINT <> 0;
+  FindClose(Find);
+end;
+
+{ Until 0.6.0-beta.6 the setup installed camless for one user, in a folder of theirs. This finds
+  that copy, before the service is stopped and the new one's shortcuts are made. A folder that
+  is a link is left alone: it could lead to another program's folder. }
+procedure FindOldInstall;
+var
+  Programs: String;
+begin
+  Programs := ExpandConstant('{localappdata}\Programs');
+  OldDir := Programs + '\camless';
+  if (CompareText(OldDir, WizardDirValue) = 0) or not FileExists(OldDir + '\camless-gui.exe')
+      or IsLink(Programs) or IsLink(OldDir) then
     OldDir := ''
   else
     HadDesktopShortcut := FileExists(ExpandConstant('{userdesktop}\camless.lnk'));
 end;
 
-{ Removes that copy once the new one is in place: its two exes, its uninstaller, its shortcuts
-  and its entry in Windows' list of apps. Nothing from its folder is run, since this setup has
-  administrator rights and any program of the user's could have replaced what is there. The app
-  repairs Start with Windows by itself. }
+function Quoted(const Path: String): String;
+begin
+  Result := ' "' + Path + '"';
+end;
+
+{ Removes that copy once the new one is in place: its two exes, its uninstaller, its shortcuts,
+  a PawnIO module that the new copy has now, and its entry in Windows' list of apps. The folder
+  goes too if nothing else is left in it. Nothing from the folder is run, since this setup has
+  administrator rights and any program of the user's could have replaced what is there. For the
+  same reason the files are deleted with the user's rights, not the setup's: the folder could
+  become a link to another one between the look at it and the delete. The app repairs Start with
+  Windows by itself. }
 procedure RemoveOldInstall;
 var
-  Find: TFindRec;
+  Files: String;
+  Code: Integer;
 begin
-  DeleteFile(ExpandConstant('{userdesktop}\camless.lnk'));
-  DeleteFile(ExpandConstant('{userprograms}\camless.lnk'));
-  DeleteFile(OldDir + '\camless.exe');
-  DeleteFile(OldDir + '\camless-gui.exe');
-  if FindFirst(OldDir + '\unins???.*', Find) then
-  try
-    repeat
-      DeleteFile(OldDir + '\' + Find.Name);
-    until not FindNext(Find);
-  finally
-    FindClose(Find);
-  end;
+  Files := Quoted(ExpandConstant('{userdesktop}\camless.lnk')) + Quoted(ExpandConstant('{userprograms}\camless.lnk'))
+    + Quoted(OldDir + '\camless.exe') + Quoted(OldDir + '\camless-gui.exe') + Quoted(OldDir + '\unins???.*');
+  if FileExists(ExpandConstant('{app}\IntelMSR.bin')) then
+    Files := Files + Quoted(OldDir + '\IntelMSR.bin');
+  if FileExists(ExpandConstant('{app}\AMDFamily17.bin')) then
+    Files := Files + Quoted(OldDir + '\AMDFamily17.bin');
+  ExecAsOriginalUser(ExpandConstant('{cmd}'), '/C del /F /Q' + Files + ' & rd' + Quoted(OldDir), '', SW_HIDE, ewWaitUntilTerminated, Code);
   RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, OldUninstallKey);
 end;
 
-{ Moves a PawnIO module the user put next to the old camless.exe to the new one. Only a plain
+{ Copies a PawnIO module the user put next to the old camless.exe to the new one. Only a plain
   file of a module's size: a link there could name a file the user may not read. }
-procedure MoveModule(const Name: String);
+procedure CopyModule(const Name: String);
 var
   Find: TFindRec;
   Plain: Boolean;
@@ -237,39 +267,47 @@ begin
   Plain := (Find.Attributes and (FILE_ATTRIBUTE_DIRECTORY or FILE_ATTRIBUTE_REPARSE_POINT) = 0)
     and (Find.SizeHigh = 0) and (Find.SizeLow < 1048576);
   FindClose(Find);
-  if Plain and not FileExists(Target) and CopyFile(Old, Target, True) then
-    DeleteFile(Old);
+  if Plain and not FileExists(Target) then
+    CopyFile(Old, Target, True);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  if not StopCamless then
-  begin
-    Result := 'The camless service did not stop. Restart Windows, then run setup again.';
-    Exit;
-  end;
+  { First, for the address of a service that reads a camless.toml beside the old exe. }
   FindOldInstall;
+  if not StopCamless then
+    Result := 'The camless service did not stop. Restart Windows, then run setup again.';
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+{ The task names the exe it starts. The app writes it again for the camless just installed: one
+  left pointing at the old folder would start, as administrator, whatever is put there. So a
+  task that cannot be written again is deleted, and the app asks through UAC as before. }
+procedure RenewTask;
 var
   Code: Integer;
 begin
+  if not TaskExists then
+    Exit;
+  if Exec(ExpandConstant('{app}\camless-gui.exe'), '--set-up-task', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
+    Exit;
+  if RemoveTask then
+    Log('The task for Start as administrator without asking could not be written again, so it was deleted.')
+  else
+    Log('The task for Start as administrator without asking could not be written again or deleted.');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
   if CurStep <> ssPostInstall then
     Exit;
+  RenewTask;
   if OldDir <> '' then
   begin
+    CopyModule('IntelMSR.bin');
+    CopyModule('AMDFamily17.bin');
     RemoveOldInstall;
-    MoveModule('IntelMSR.bin');
-    MoveModule('AMDFamily17.bin');
-    { Gone if nothing else is left in it. }
-    RemoveDir(OldDir);
   end;
-  { The task names the exe it starts. The app writes it again for the camless just installed:
-    one left pointing at the old folder would start, as administrator, whatever is put there. }
-  if TaskExists then
-    Exec(ExpandConstant('{app}\camless-gui.exe'), '--set-up-task', '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
 function InitializeUninstall: Boolean;
@@ -282,12 +320,8 @@ end;
 { Deletes the task the app sets up for Start as administrator without asking. A task left behind
   would start nothing, but a failure is reported all the same. }
 procedure DeleteTask;
-var
-  Code: Integer;
 begin
-  if not TaskExists then
-    Exit;
-  if Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN ' + TaskName + ' /F', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
+  if not TaskExists or RemoveTask then
     Exit;
   if not UninstallSilent then
     MsgBox('camless could not delete its scheduled task ' + TaskName + '. Delete it in Task Scheduler.', mbError, MB_OK);

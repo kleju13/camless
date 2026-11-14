@@ -11,7 +11,7 @@ The app starts the service if it is not running. On Windows, it asks for adminis
 A task gives administrator rights to whatever it starts, so camless guards what that is:
 - The switch works only for a camless in Program Files, where the setup puts it and only administrators write. A copy elsewhere, such as a build of your own, keeps asking through UAC.
 - The task is written by a copy of the app that has administrator rights itself, `camless-gui.exe --set-up-task`, which the switch starts through UAC. It keeps the task's definition in its own folder until Windows has read it.
-- The setup writes the task again after every install, for the camless it just installed.
+- The setup writes the task again after every install, for the camless it just installed. If that fails, it deletes the task, and the app asks through UAC again.
 
 On a standard account the switch refuses: a task that runs as you could not give the service administrator rights.
 
@@ -127,7 +127,7 @@ Or to Claude Desktop, in `claude_desktop_config.json`:
 {
   "mcpServers": {
     "camless": {
-      "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\camless\\camless.exe",
+      "command": "C:\\Program Files\\camless\\camless.exe",
       "args": ["mcp"]
     }
   }
@@ -200,15 +200,15 @@ The fonts are in `gui/ui`: Archivo for text, Saira for digits, and one glyph fro
 
 `camless-setup.exe` (Inno Setup, `installer/camless.iss`) installs both exes in `C:\Program Files\camless` and asks Windows for administrator rights to do it. The service runs as administrator, so its program must be where only administrators write: in a folder of yours, any program you run could replace it. Run over an installed camless, the setup closes the app, stops the service through `POST /v1/stop`, replaces both exes and opens the app again, without the setup's rights. The app starts the service.
 
-Until 0.6.0-beta.6 the setup needed no administrator rights and put camless in `%LOCALAPPDATA%\Programs\camless`. The setup moves such a copy: it removes the old exes, uninstaller, shortcuts and entry in Windows' list of apps, takes a PawnIO module along, and writes the task for *Start as administrator without asking* again. It runs nothing from the old folder. The app points *Start with Windows* at its new place when it starts. This happens for the account that answers the UAC prompt. If you install with another account's administrator password, uninstall the old copy yourself in *Settings → Apps*.
+Until 0.6.0-beta.6 the setup needed no administrator rights and put camless in `%LOCALAPPDATA%\Programs\camless`. The setup moves such a copy: it removes the old exes, uninstaller, shortcuts and entry in Windows' list of apps, takes a PawnIO module along, and writes the task for *Start as administrator without asking* again. It runs nothing from the old folder, and it deletes there with your rights, not its own: the folder is yours, and a link in its place could lead anywhere. It leaves a folder that is a link alone. The app points *Start with Windows* at its new place when it starts. A `camless.toml` that you put beside the old exe stays there with its `profiles`, and camless goes back to the one in `%APPDATA%\camless`: move them there to keep those settings. This happens for the account that answers the UAC prompt. If you install with another account's administrator password, uninstall the old copy yourself in *Settings → Apps*.
 
 The app asks GitHub for the latest release once each time it starts. *Update* downloads `camless-setup.exe`, checks it against the release's SHA-256, quits the app and runs the setup, so the app and the service always update together. Uninstalling keeps `%APPDATA%\camless` and the history unless you choose to delete them.
 
 ### The service's own files
 
-The service writes three things: the history, the game sessions (`history/sessions.jsonl`) and `taken-gpu-fans`. They are in the folder of `camless.toml`, with one exception. The installed service on Windows, while it runs as administrator, keeps them in `C:\Program Files\camless\data`. In a folder of yours, a program you run could put a link in place of `history`, and the service would write wherever the link leads, with administrator rights.
+The service writes three things: the history, the game sessions (`history/sessions.jsonl`) and `taken-gpu-fans`. The history and the sessions are in the folder of `camless.toml`. `taken-gpu-fans` is in `%APPDATA%\camless` whatever config the service runs, so that the next camless finds it. There is one exception: the installed service on Windows, while it runs as administrator, keeps all three in `C:\Program Files\camless\data`. In a folder of yours, a program you run could put a link in place of `history`, and the service would write wherever the link leads, with administrator rights.
 
-The first time it uses that folder, the service brings over the history beside `camless.toml`. It takes day files and `sessions.jsonl` only, and of those only the lines that are history or sessions. The old files stay. A service that runs without administrator rights writes beside `camless.toml` as before, so the two do not see each other's days.
+The first time it uses that folder, the service brings over the history beside `camless.toml`, all of it or none: a service that stops halfway starts again the next time. It takes day files and `sessions.jsonl` only, and of those only the lines that are history or sessions. The old files stay. A service that runs without administrator rights writes beside `camless.toml` as before, so the two do not see each other's days.
 
 *Settings → About → Update channel* picks what the app offers:
 - **Stable**, the default, offers releases.

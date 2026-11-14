@@ -28,7 +28,13 @@ pub fn dir() -> &'static Path {
 
 fn resolve(config: &Path) -> PathBuf {
     let beside = config.parent().map(Path::to_path_buf).unwrap_or_default();
-    own_folder().map_or(beside, |own| own.join("data"))
+    own().map_or(beside, Path::to_path_buf)
+}
+
+/// The installed service's folder for its files, while it runs as administrator.
+pub fn own() -> Option<&'static Path> {
+    static OWN: OnceLock<Option<PathBuf>> = OnceLock::new();
+    OWN.get_or_init(|| own_folder().map(|folder| folder.join("data"))).as_deref()
 }
 
 /// The folder camless.exe is in, when that is in Program Files and the service has
@@ -67,8 +73,12 @@ fn bring_over(from: &Path, to: &Path) {
         return;
     }
     let Ok(entries) = std::fs::read_dir(from) else { return };
-    if let Err(e) = std::fs::create_dir_all(to) {
-        eprintln!("history: {} not made, so the old history stays in {}: {e}", to.display(), from.display());
+    // Filled beside `to` and renamed at the end: a camless that stops halfway leaves
+    // no `to`, and the next one starts again.
+    let part = to.with_extension("part");
+    let _ = std::fs::remove_dir_all(&part);
+    if let Err(e) = std::fs::create_dir_all(&part) {
+        eprintln!("history: {} not made, so the old history stays in {}: {e}", part.display(), from.display());
         return;
     }
     let mut brought = 0;
@@ -84,11 +94,13 @@ fn bring_over(from: &Path, to: &Path) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
-        if std::fs::write(to.join(name), clean(&text)).is_ok() {
+        if std::fs::write(part.join(name), clean(&text)).is_ok() {
             brought += 1;
         }
     }
-    if brought > 0 {
+    if let Err(e) = std::fs::rename(&part, to) {
+        eprintln!("history: {} not made, so the old history stays in {}: {e}", to.display(), from.display());
+    } else if brought > 0 {
         eprintln!("history: {brought} files brought over from {} to {}", from.display(), to.display());
     }
 }
@@ -108,8 +120,13 @@ mod tests {
         std::fs::write(from.join(games::FILE), format!("{session}\nnot json\n")).unwrap();
         std::fs::write(from.join("notes.txt"), "mine").unwrap();
         std::fs::create_dir_all(from.join("2026-10-21.csv")).unwrap();
+        // What a camless that stopped halfway left.
+        let part = root.join("new").join("history.part");
+        std::fs::create_dir_all(&part).unwrap();
+        std::fs::write(part.join("2026-10-19.csv"), "#t\n").unwrap();
 
         bring_over(&from, &to);
+        assert!(!part.exists() && !to.join("2026-10-19.csv").exists());
         assert_eq!(std::fs::read_to_string(to.join("2026-10-20.csv")).unwrap(), "#t,cpu.temp\n1760918400,40,41.5\n1760918460,,\n1760918520,4\n");
         let sessions = std::fs::read_to_string(to.join(games::FILE)).unwrap();
         assert_eq!(sessions.lines().count(), 1);
