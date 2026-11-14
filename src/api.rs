@@ -67,6 +67,13 @@ fn handle(
     if !header(&req, "Host").is_some_and(|h| hosts.iter().any(|ok| ok.eq_ignore_ascii_case(h))) {
         return Ok(req.respond(Response::empty(421))?);
     }
+    // Nor does a page on the web get to ask at all: a browser says where a request
+    // comes from, and programs on this PC say nothing.
+    if from_another_site(header(&req, "Origin"), header(&req, "Sec-Fetch-Site"), hosts) {
+        // Someone who followed a link here reads this in their browser.
+        let msg = "camless's local API does not answer web pages. To see this address, type it into the address bar.";
+        return Ok(req.respond(Response::from_string(msg).with_status_code(403))?);
+    }
     let snapshot = || shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
@@ -128,6 +135,16 @@ fn handle(
     }
 }
 
+/// Whether a browser sent this for a page that is not the API's own: one with an
+/// `Origin` other than the API's address, or one the browser marks as coming from
+/// another site or another port (`Sec-Fetch-Site`). Such a page could not read the
+/// answer, and the two POSTs already turn it away by content type; this keeps it from
+/// every path, the ones added later too. A request with neither header is a program's.
+fn from_another_site(origin: Option<&str>, fetch_site: Option<&str>, hosts: &[String]) -> bool {
+    let own = |o: &str| o.strip_prefix("http://").is_some_and(|h| hosts.iter().any(|ok| ok.eq_ignore_ascii_case(h)));
+    origin.is_some_and(|o| !own(o.trim())) || fetch_site.is_some_and(|s| !matches!(s.trim(), "same-origin" | "none"))
+}
+
 /// The body of `GET path` from the service at `addr`, for commands that ask the
 /// running service, the way the app asks it.
 pub fn get(addr: &str, path: &str) -> Result<String> {
@@ -146,12 +163,19 @@ pub fn get(addr: &str, path: &str) -> Result<String> {
     Ok(body.to_string())
 }
 
+/// The largest time or span a history query may name, in seconds.
+const MAX_SECS: i64 = 99_999_999_999;
+
 /// The window a history query asks for, as (from, to, ids): the last `span` seconds,
 /// 600 by default, or `from` to `to` (Unix seconds, `to` now by default). `ids` is a
 /// comma-separated list of series.
 fn history_query(query: &str, now: i64) -> std::result::Result<(i64, i64, Option<Vec<String>>), String> {
     let (mut span, mut from, mut to, mut ids) = (600, None, now, None);
-    let secs = |k: &str, v: &str| v.parse::<i64>().map_err(|_| format!("{k} {v:?} is not a number of seconds"));
+    // Times since 1970 and spans, so never negative, and no further than the year
+    // 5138: the arithmetic on them then stays far from the ends of an i64.
+    let secs = |k: &str, v: &str| {
+        v.parse::<i64>().ok().filter(|n| (0..=MAX_SECS).contains(n)).ok_or_else(|| format!("{k} {v:?} is not a number of seconds"))
+    };
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         match k {
@@ -260,5 +284,28 @@ mod tests {
         assert_eq!(history_query("from=1799999000", now), Ok((1_799_999_000, now, None)));
         assert!(history_query("from=1700003600&to=1700000000", now).is_err());
         assert_eq!(percent_decode("a%2"), "a%2");
+        // Nothing that would overflow further on.
+        for query in ["from=-9223372036854775808&to=-9223372036854775807", "to=-1", "span=-5", "from=100000000000", "span=9223372036854775807"] {
+            assert!(history_query(query, now).is_err(), "{query}");
+        }
+    }
+
+    #[test]
+    fn pages_on_the_web_are_turned_away() {
+        let hosts = ["127.0.0.1:30641".to_string(), "localhost:30641".to_string(), "[::1]:30641".to_string()];
+        let other = |origin, site| from_another_site(origin, site, &hosts);
+        // Programs: the app, curl, a script that posts frames.
+        assert!(!other(None, None));
+        // A page the API itself would serve, and an address typed into the browser.
+        assert!(!other(Some("http://127.0.0.1:30641"), Some("same-origin")));
+        assert!(!other(Some("http://LOCALHOST:30641"), None));
+        assert!(!other(None, Some("none")));
+        // Pages elsewhere, with or without CORS, and ones on another port of this PC.
+        assert!(other(Some("https://example.com"), Some("cross-site")));
+        assert!(other(None, Some("cross-site")));
+        assert!(other(None, Some("same-site")));
+        assert!(other(Some("http://localhost:8080"), None));
+        assert!(other(Some("https://127.0.0.1:30641"), None));
+        assert!(other(Some("null"), None));
     }
 }

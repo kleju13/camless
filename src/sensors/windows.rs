@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use libloading::Library;
 use std::ffi::c_void;
 use camless_core::status::{PowerSource, PowerStats};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use windows_sys::Wdk::Graphics::Direct3D::{
     D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, D3DKMT_ADAPTERINFO,
@@ -17,11 +18,36 @@ use windows_sys::Wdk::Graphics::Direct3D::{
 };
 use windows_sys::Win32::Foundation::{FILETIME, HANDLE, LUID, WAIT_ABANDONED, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ};
-use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetSystemTimes, ReleaseMutex, WaitForSingleObject};
 
 /// The library NVIDIA's driver installs.
 pub const NVML: &str = "nvml.dll";
+
+/// Windows' System32, as Windows names it. Not from `%SystemRoot%`: the service may
+/// run as administrator, and a variable is whatever the user's programs set it to.
+pub fn system_dir() -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buf = [0u16; 260];
+    let len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    (1..buf.len()).contains(&len).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..len])))
+}
+
+/// `nvml.dll` where NVIDIA's driver puts it: System32 since 2019, NVSMI in Program
+/// Files before. By its full path: a bare name would also be looked for beside
+/// camless and in every folder on the PATH, which the user's programs can write to,
+/// and the service would load that one as administrator on a PC without the driver.
+pub fn nvml() -> Result<Library> {
+    let system = system_dir().map(|d| d.join(NVML));
+    let nvsmi = reg_string(r"SOFTWARE\Microsoft\Windows\CurrentVersion", "ProgramFilesDir")
+        .map(|p| PathBuf::from(p).join("NVIDIA Corporation").join("NVSMI").join(NVML));
+    for path in [system, nvsmi].into_iter().flatten().filter(|p| p.is_file()) {
+        if let Ok(lib) = unsafe { Library::new(&path) } {
+            return Ok(lib);
+        }
+    }
+    bail!("{NVML} not found: no NVIDIA driver")
+}
 
 /// Without PawnIO and administrator rights there is no CPU temperature.
 pub const NO_CPU_TEMP: &str = "no CPU temperature (needs PawnIO and administrator rights)";
@@ -720,10 +746,7 @@ unsafe impl Send for AdlPower {}
 impl AdlPower {
     fn open(address: D3DKMT_ADAPTERADDRESS) -> Result<AdlPower> {
         // A full path, so no atiadlxx.dll beside camless loads instead.
-        let path = std::env::var_os("SystemRoot")
-            .map(|r| std::path::PathBuf::from(r).join("System32").join("atiadlxx.dll"))
-            .filter(|p| p.exists())
-            .context("atiadlxx.dll not found: no AMD driver")?;
+        let path = system_dir().map(|d| d.join("atiadlxx.dll")).filter(|p| p.is_file()).context("atiadlxx.dll not found: no AMD driver")?;
         unsafe {
             let lib = Library::new(&path).context("atiadlxx.dll does not load")?;
             let create: unsafe extern "C" fn(extern "C" fn(i32) -> *mut c_void, i32, *mut *mut c_void) -> i32 =
@@ -911,6 +934,14 @@ impl Drop for WddmGpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Windows names its own folder, whatever `%SystemRoot%` says.
+    #[test]
+    fn system32_comes_from_windows() {
+        let dir = system_dir().expect("Windows names its system folder");
+        assert!(dir.is_absolute() && dir.is_dir(), "{}", dir.display());
+        assert!(dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("system32")), "{}", dir.display());
+    }
 
     // Built from the registers' layouts in Intel's SDM and AMD's PPR, not read from a
     // CPU.
