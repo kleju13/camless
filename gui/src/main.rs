@@ -4,7 +4,8 @@
 //!
 //! `camless-gui --serve 127.0.0.1:<port> --config <camless.toml> [--ui-dir <dir>]`
 //! serves the same page to a browser instead, as a sandbox, to work on the UI.
-//! `camless-gui --start-service` starts the service and exits; see [`task`].
+//! `camless-gui --start-service` starts the service and exits, and `--set-up-task`
+//! sets up the task that runs it; see [`task`].
 //!
 //! On Linux the window is GTK's and the page WebKitGTK's ([`app`]), the tray icon an
 //! AppIndicator ([`tray`]), and the service a systemd user service ([`service`]).
@@ -40,6 +41,10 @@ fn main() -> anyhow::Result<()> {
     // The scheduled task runs this as administrator: the service inherits that.
     if args.iter().any(|a| a == task::START_SERVICE) {
         return client::start_daemon(&camless_core::config::default_path());
+    }
+    #[cfg(windows)]
+    if args.iter().any(|a| a == task::SET_UP) {
+        return task::set_up_elevated();
     }
     if let Some(listen) = value("--serve") {
         let config = value("--config")

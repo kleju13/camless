@@ -1,5 +1,6 @@
 # Installs or updates camless from the latest release: downloads camless-setup.exe, checks its
-# SHA-256 and runs it silently. No admin needed; the app asks for it when it starts the service.
+# SHA-256 and runs it silently. The setup asks for administrator rights, and the app asks again
+# when it starts the service.
 #   irm https://raw.githubusercontent.com/kleju13/camless/main/scripts/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell downloads many times slower while it draws a progress bar.
@@ -23,7 +24,7 @@ $have = (Get-FileHash $setup -Algorithm SHA256).Hash
 if ($have -ne $want) { Remove-Item $setup; throw "download does not match its checksum ($have, expected $want)" }
 Unblock-File $setup
 
-Write-Host 'Installing...'
+Write-Host 'Installing: answer Yes when Windows asks for administrator rights.'
 # Not -Wait: that also waits for the app, which setup opens at the end and which keeps running.
 $p = Start-Process $setup '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -PassThru
 $null = $p.Handle  # without it, Windows PowerShell loses the exit code
@@ -31,5 +32,5 @@ $p.WaitForExit()
 if ($p.ExitCode -ne 0) { throw "setup failed with exit code $($p.ExitCode)" }
 Remove-Item $dir -Recurse -ErrorAction SilentlyContinue
 
-Write-Host "Installed camless $($release.tag_name) in $env:LOCALAPPDATA\Programs\camless, with a Start menu entry."
-Write-Host 'The app is opening: answer Yes when Windows asks for administrator rights, so CPU temperature works.'
+Write-Host "Installed camless $($release.tag_name) in $env:ProgramFiles\camless, with a Start menu entry."
+Write-Host 'The app is opening: answer Yes when Windows asks again, for the service, so CPU temperature works.'

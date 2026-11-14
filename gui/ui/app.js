@@ -3813,7 +3813,7 @@
     const sv = S.server, v = esc(sv.update.latest);
     const ok = await confirmBox({
       title: `Update to camless ${sv.update.latest}`,
-      text: `camless downloads ${v}, closes, installs the app and the service together, and opens again.${sv.admin_task || linux() ? '' : ' Windows then asks for administrator rights for the service, as at every start.'} For those few seconds, fans that camless sets run at the failsafe speed; curves stored on a cooler keep running.`,
+      text: `camless downloads ${v}, closes, installs the app and the service together, and opens again.${linux() ? '' : sv.admin_task ? ' Windows asks for administrator rights for the setup.' : ' Windows asks for administrator rights twice: for the setup, then for the service, as at every start.'} For those few seconds, fans that camless sets run at the failsafe speed; curves stored on a cooler keep running.`,
       ok: 'Update',
     });
     if (ok) act('update/install', {});
@@ -3863,7 +3863,7 @@
       let hint;
       if (sv.sandbox) hint = 'In this test copy the switch changes nothing in Windows.';
       else if (sv.admin_task_busy) hint = 'Waiting for Windows…';
-      else hint = `Windows asks once, then camless starts the service as administrator on its own.<span class="cam-risk">${I.warn}<span>Any program you run could then get administrator rights through camless, without a prompt.</span></span>`;
+      else hint = 'Windows asks once, then camless starts the service as administrator on its own.';
       if (sv.admin_task_error && !sv.admin_task_busy) hint += `<span class="cam-err">${esc(sv.admin_task_error)}</span>`;
       r.hint(hint);
     };

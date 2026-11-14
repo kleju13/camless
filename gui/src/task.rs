@@ -5,15 +5,24 @@
 //! The task runs `camless-gui.exe --start-service`, which starts camless.exe next to
 //! it and exits: a task that ran camless.exe itself would open a console window. Its
 //! user may run, read and delete it, so the app reads it from its file, and turning
-//! it off or uninstalling needs no administrator rights.
+//! it off needs no administrator rights.
+//!
+//! A task hands administrator rights to whatever it starts, so it is only set up for
+//! a camless in Program Files, where the setup puts it and only administrators write.
+//! Setting it up takes a copy of the app with those rights, `camless-gui.exe
+//! --set-up-task`, started through UAC: it writes the task's definition itself, in
+//! its own folder, so no other program of the user's has a hand in what the task runs.
 
 use crate::service::{self, Elevate};
 use anyhow::{anyhow, bail, Context, Result};
+use camless_core::config::is_inside;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Passed by the task: start the service and exit.
 pub const START_SERVICE: &str = "--start-service";
+/// Passed to the copy that runs as administrator: set the task up and exit.
+pub const SET_UP: &str = "--set-up-task";
 
 #[derive(Clone, Debug, Default)]
 pub struct State {
@@ -48,12 +57,15 @@ pub fn spawn(on: bool) -> Result<()> {
 
 /// Whether the task is set up and starts the camless next to this app, not another copy.
 /// On a standard account it would start the service without administrator rights, so
-/// there UAC asks as before.
+/// there UAC asks as before, and so it does for a camless outside Program Files.
 pub fn ready() -> bool {
     if !administrator() {
         return false;
     }
     let (Ok(name), Ok(exe)) = (name(), std::env::current_exe()) else { return false };
+    if !in_program_files(&exe) {
+        return false;
+    }
     let Ok(file) = std::fs::read(system32().join("Tasks").join(name)) else { return false };
     command(&file).is_some_and(|c| c.to_lowercase() == exe.display().to_string().to_lowercase())
 }
@@ -68,18 +80,44 @@ fn set_up() -> Result<()> {
         bail!("this account is not an administrator, so the task could only start the service without administrator rights");
     }
     let exe = std::env::current_exe()?;
-    let xml = definition(&user_sid()?, &exe);
-    let file = std::env::temp_dir().join(format!("camless-task-{}.xml", std::process::id()));
-    // schtasks reads UTF-16 with a byte order mark.
-    let bytes: Vec<u8> = [0xFF, 0xFE].into_iter().chain(xml.encode_utf16().flat_map(u16::to_le_bytes)).collect();
-    std::fs::write(&file, bytes).context("writing the task for schtasks")?;
-    let created = elevated(&format!("/Create /TN \"{}\" /XML \"{}\" /F", name()?, file.display()));
-    let _ = std::fs::remove_file(&file);
-    created?;
+    if !in_program_files(&exe) {
+        bail!("{NOT_INSTALLED}");
+    }
+    match service::run_elevated(&exe, SET_UP, true) {
+        Ok(Some(0)) => {}
+        Ok(_) => bail!("camless could not set the task up"),
+        Err(Elevate::Declined) => bail!("Windows did not give administrator rights, so nothing changed"),
+        Err(Elevate::Failed(e)) => return Err(e),
+    }
     if !ready() {
         bail!("Windows set the task up, but camless cannot read it, so it keeps asking");
     }
     Ok(())
+}
+
+/// Why the task is refused for a camless outside Program Files.
+const NOT_INSTALLED: &str = "this camless is not in Program Files, so other programs could replace it and get administrator rights through the task; install it with camless-setup.exe";
+
+/// `--set-up-task`, with administrator rights: writes the task for this user and this
+/// exe. The setup runs it too, after it moved camless, so the task follows.
+pub fn set_up_elevated() -> Result<()> {
+    if !elevated_now() {
+        bail!("setting the task up needs administrator rights");
+    }
+    let exe = std::env::current_exe()?;
+    if !in_program_files(&exe) {
+        bail!("{NOT_INSTALLED}");
+    }
+    let xml = definition(&user_sid()?, &exe);
+    // Next to the exe, which only administrators write: a file in the user's temp
+    // folder could be swapped for another task before schtasks reads it.
+    let file = exe.with_file_name(format!("camless-task-{}.xml", std::process::id()));
+    // schtasks reads UTF-16 with a byte order mark.
+    let bytes: Vec<u8> = [0xFF, 0xFE].into_iter().chain(xml.encode_utf16().flat_map(u16::to_le_bytes)).collect();
+    std::fs::write(&file, bytes).context("writing the task for schtasks")?;
+    let created = schtasks(&["/Create", "/TN", &name()?, "/XML", &file.display().to_string(), "/F"]);
+    let _ = std::fs::remove_file(&file);
+    created
 }
 
 fn remove() -> Result<()> {
@@ -94,7 +132,7 @@ fn remove() -> Result<()> {
     }
 }
 
-/// `camless (<user>)`: camless installs for one user, so each has their own task. The
+/// `camless (<user>)`: the task runs as one user, so each has their own. The
 /// uninstaller deletes it by this name.
 fn name() -> Result<String> {
     use windows_sys::Win32::System::WindowsProgramming::GetUserNameW;
@@ -128,6 +166,47 @@ fn administrator() -> bool {
         CloseHandle(token);
         (typed && (kind == TokenElevationTypeLimited || kind == TokenElevationTypeFull)) || (read && elevated.TokenIsElevated != 0)
     }
+}
+
+/// Whether this process has administrator rights now.
+fn elevated_now() -> bool {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let (mut elevated, mut len) = (TOKEN_ELEVATION { TokenIsElevated: 0 }, 0);
+        let read = GetTokenInformation(token, TokenElevation, &mut elevated as *mut _ as *mut c_void, size_of::<TOKEN_ELEVATION>() as u32, &mut len) != 0;
+        CloseHandle(token);
+        read && elevated.TokenIsElevated != 0
+    }
+}
+
+/// Whether `exe` is in Program Files, which takes administrator rights to write.
+/// Windows names the folder in a part of the registry that takes them too; a variable
+/// such as `%ProgramFiles%` is whatever the user's programs set it to.
+fn in_program_files(exe: &Path) -> bool {
+    program_files().is_some_and(|dir| is_inside(exe, &dir))
+}
+
+fn program_files() -> Option<PathBuf> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (key, value) = (wide(r"SOFTWARE\Microsoft\Windows\CurrentVersion"), wide("ProgramFilesDir"));
+    let mut buf = [0u16; 520];
+    let mut len = size_of_val(&buf) as u32;
+    let r = unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len) };
+    if r != ERROR_SUCCESS {
+        return None;
+    }
+    let text = String::from_utf16_lossy(&buf[..(len as usize / 2).min(buf.len())]);
+    let text = text.trim_end_matches('\0');
+    (!text.is_empty()).then(|| PathBuf::from(text))
 }
 
 /// The SID of the user this app runs as, such as `S-1-5-21-…-1001`.
@@ -219,9 +298,18 @@ fn unescape(s: &str) -> String {
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
+/// Windows' System32, as Windows names it: this also runs as administrator, and a
+/// variable such as `%SystemRoot%` is whatever the user's programs set it to.
 fn system32() -> PathBuf {
-    let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-    root.join("System32")
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buf = [0u16; 260];
+    let len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if (1..buf.len()).contains(&len) {
+        PathBuf::from(std::ffi::OsString::from_wide(&buf[..len]))
+    } else {
+        PathBuf::from(r"C:\Windows\System32")
+    }
 }
 
 /// schtasks with this app's rights, without a window.
@@ -240,7 +328,8 @@ fn schtasks(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// schtasks as administrator, through UAC; waits for it.
+/// schtasks as administrator, through UAC; waits for it. Its parameters name the task
+/// only, never a file.
 fn elevated(params: &str) -> Result<()> {
     match service::run_elevated(&system32().join("schtasks.exe"), params, true) {
         Ok(Some(0)) => Ok(()),
@@ -267,6 +356,15 @@ mod tests {
     fn the_task_belongs_to_this_user() {
         assert_eq!(name().unwrap(), format!("camless ({})", std::env::var("USERNAME").unwrap()));
         assert!(user_sid().unwrap().starts_with("S-1-5-"), "{}", user_sid().unwrap());
+    }
+
+    #[test]
+    fn windows_says_where_program_files_is() {
+        // And System32 is not in it.
+        let dir = program_files().expect("ProgramFilesDir");
+        assert!(dir.is_absolute(), "{}", dir.display());
+        assert!(!is_inside(&system32().join("schtasks.exe"), &dir));
+        assert!(system32().is_absolute());
     }
 
     #[test]

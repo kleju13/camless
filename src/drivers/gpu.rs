@@ -173,13 +173,18 @@ mod nvidia {
     /// or crashed has no Drop to give the fans back, and the card keeps a duty NVML
     /// set. The next one gives every fan back to the card first.
     fn marker() -> PathBuf {
+        crate::state::dir().join("taken-gpu-fans")
+    }
+
+    /// Where a camless from before 0.6.0-beta.7 left it.
+    fn old_marker() -> PathBuf {
         camless_core::config::app_config_dir().join("camless").join("taken-gpu-fans")
     }
 
     /// Gives every fan of every card back to its curve after a camless that did not,
     /// whatever the settings say now.
     pub fn hand_back_abandoned() {
-        if TAKEN.load(Ordering::SeqCst) > 0 || !marker().exists() {
+        if TAKEN.load(Ordering::SeqCst) > 0 || !(marker().exists() || old_marker().exists()) {
             return;
         }
         let Ok(api) = Api::open() else { return };
@@ -196,6 +201,7 @@ mod nvidia {
         }
         if all {
             let _ = std::fs::remove_file(marker());
+            let _ = std::fs::remove_file(old_marker());
         }
     }
 
