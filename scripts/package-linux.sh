@@ -19,7 +19,7 @@ if [ -n "$tag" ] && [ "$tag" != "v$version" ]; then
   exit 1
 fi
 
-cargo build --release --workspace --manifest-path "$root/Cargo.toml"
+cargo build --release --workspace --locked --manifest-path "$root/Cargo.toml"
 target=${CARGO_TARGET_DIR:-$root/target}/release
 
 name=camless-linux-x86_64.tar.gz

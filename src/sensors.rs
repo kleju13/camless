@@ -4,7 +4,7 @@
 //! and FanControl already install, and through hwmon and RAPL on Linux; CPU load and
 //! memory from the system. [`os`] holds what differs.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use camless_core::status::{PowerSource, Sensor, Unit};
 use libloading::Library;
 use serde::Serialize;
@@ -17,7 +17,7 @@ mod os;
 #[path = "sensors/windows.rs"]
 mod os;
 #[cfg(windows)]
-pub use os::{cpu_maker, pawnio_module_file, reg_dword, reg_string, PAWNIO_LIB};
+pub use os::{cpu_maker, nvml as nvml_library, pawnio_module_file, reg_dword, reg_string, PAWNIO_LIB};
 pub use os::{cpu_name, NO_CPU_TEMP};
 
 /// Where camless reads the signed PawnIO module from: the config's path, or the
@@ -262,7 +262,7 @@ fn nvml_ok(code: i32, what: &str) -> Result<()> {
 impl Nvml {
     fn open() -> Result<Nvml> {
         unsafe {
-            let lib = Library::new(os::NVML).with_context(|| format!("{} not found", os::NVML))?;
+            let lib = os::nvml()?;
             let init: unsafe extern "C" fn() -> i32 = *lib.get(b"nvmlInit_v2\0")?;
             nvml_ok(init(), "nvmlInit")?;
             let by_index: unsafe extern "C" fn(u32, *mut NvmlDevice) -> i32 =

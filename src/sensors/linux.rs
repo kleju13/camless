@@ -13,6 +13,12 @@ use std::time::Instant;
 /// The library NVIDIA's driver installs.
 pub const NVML: &str = "libnvidia-ml.so.1";
 
+/// By its name, which the dynamic linker finds in the system's library folders; the
+/// service runs as the user here, so there is nobody's rights to borrow.
+pub fn nvml() -> Result<libloading::Library> {
+    unsafe { libloading::Library::new(NVML) }.with_context(|| format!("{NVML} not found"))
+}
+
 pub const NO_CPU_TEMP: &str = "no CPU temperature (no k10temp, zenpower or coretemp sensor)";
 
 const HWMON: &str = "/sys/class/hwmon";

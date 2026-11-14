@@ -110,23 +110,11 @@ mod nvidia {
         speed: u32,
     }
 
-    /// Where the driver puts `nvml.dll`: System32 since 2019, NVSMI before. A full
-    /// path, so no `nvml.dll` beside camless loads instead.
-    fn library() -> Result<Library> {
-        let system = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("System32").join("nvml.dll"));
-        let nvsmi = std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("NVIDIA Corporation").join("NVSMI").join("nvml.dll"));
-        for path in [system, nvsmi].into_iter().flatten().filter(|p| p.exists()) {
-            if let Ok(lib) = unsafe { Library::new(&path) } {
-                return Ok(lib);
-            }
-        }
-        bail!("nvml.dll not found: no NVIDIA driver")
-    }
-
     impl Api {
         fn open() -> Result<Api> {
             unsafe {
-                let lib = library()?;
+                // By its full path, so no `nvml.dll` beside camless loads instead.
+                let lib = crate::sensors::nvml_library()?;
                 let init: unsafe extern "C" fn() -> i32 = *lib.get(b"nvmlInit_v2\0")?;
                 // Every function first, so a missing one returns before NVML starts.
                 let api = Api {
