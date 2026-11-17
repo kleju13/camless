@@ -117,7 +117,7 @@ To add it to Claude Code:
 claude mcp add camless -- "C:\Program Files\camless\camless.exe" mcp
 ```
 
-Until 0.6.0-beta.6 camless was in `%LOCALAPPDATA%\Programs\camless`. An assistant set up with that path needs the new one.
+Until 0.6.0 (0.6.0-beta.6 on the beta channel) camless was in `%LOCALAPPDATA%\Programs\camless`. An assistant set up with that path needs the new one.
 
 On Linux, the command is `~/.local/bin/camless mcp`.
 
@@ -200,7 +200,7 @@ The fonts are in `gui/ui`: Archivo for text, Saira for digits, and one glyph fro
 
 `camless-setup.exe` (Inno Setup, `installer/camless.iss`) installs both exes in `C:\Program Files\camless` and asks Windows for administrator rights to do it. The service runs as administrator, so its program must be where only administrators write: in a folder of yours, any program you run could replace it. Run over an installed camless, the setup closes the app, stops the service through `POST /v1/stop`, replaces both exes and opens the app again, without the setup's rights. The app starts the service.
 
-Until 0.6.0-beta.6 the setup needed no administrator rights and put camless in `%LOCALAPPDATA%\Programs\camless`. The setup moves such a copy: it removes the old exes, uninstaller, shortcuts and entry in Windows' list of apps, takes a PawnIO module along, and writes the task for *Start as administrator without asking* again. It runs nothing from the old folder, and it deletes there with your rights, not its own: the folder is yours, and a link in its place could lead anywhere. It leaves a folder that is a link alone. The app points *Start with Windows* at its new place when it starts. A `camless.toml` that you put beside the old exe stays there with its `profiles`, and camless goes back to the one in `%APPDATA%\camless`: move them there to keep those settings. This happens for the account that answers the UAC prompt. If you install with another account's administrator password, uninstall the old copy yourself in *Settings → Apps*.
+Until 0.6.0 (0.6.0-beta.6 on the beta channel) the setup needed no administrator rights and put camless in `%LOCALAPPDATA%\Programs\camless`. The setup moves such a copy: it removes the old exes, uninstaller, shortcuts and entry in Windows' list of apps, takes a PawnIO module along, and writes the task for *Start as administrator without asking* again. It runs nothing from the old folder, and it deletes there with your rights, not its own: the folder is yours, and a link in its place could lead anywhere. It leaves a folder that is a link alone. The app points *Start with Windows* at its new place when it starts. A `camless.toml` that you put beside the old exe stays there with its `profiles`, and camless goes back to the one in `%APPDATA%\camless`: move them there to keep those settings. This happens for the account that answers the UAC prompt. If you install with another account's administrator password, uninstall the old copy yourself in *Settings → Apps*.
 
 The app asks GitHub for the latest release once each time it starts. *Update* downloads `camless-setup.exe`, checks it against the release's SHA-256, quits the app and runs the setup, so the app and the service always update together. Uninstalling keeps `%APPDATA%\camless` and the history unless you choose to delete them.
 
