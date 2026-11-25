@@ -128,10 +128,25 @@ fn give_back_freed_memory() {
 /// memory (200 MB instead of 430 MB, measured on Xvfb), as Edge does on Windows
 /// with the GPU off. It is set before GTK starts: turned off in a page that runs,
 /// WebKit drew nothing more. A setting the user made stays.
+///
+/// Only on X11. On KDE Plasma's Wayland session with NVIDIA's driver (an RTX 4070
+/// SUPER, camless #89), the window went black between updates, most of the time,
+/// and came back with compositing on (`WEBKIT_DISABLE_COMPOSITING_MODE=0`).
 fn draw_on_the_cpu() {
     const VAR: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
-    if std::env::var_os(VAR).is_none() {
+    let var = |name| std::env::var(name).ok();
+    if std::env::var_os(VAR).is_none() && !on_wayland(var("GDK_BACKEND").as_deref(), var("WAYLAND_DISPLAY").as_deref()) {
         std::env::set_var(VAR, "1");
+    }
+}
+
+/// Whether GTK will open the window on Wayland: the first backend `GDK_BACKEND`
+/// names, else Wayland when a Wayland display is there, as GTK 3 tries it first.
+fn on_wayland(gdk_backend: Option<&str>, wayland_display: Option<&str>) -> bool {
+    match gdk_backend.and_then(|b| b.split(',').map(str::trim).find(|b| !b.is_empty())) {
+        Some("wayland") => true,
+        Some("x11") => false,
+        _ => wayland_display.is_some_and(|d| !d.is_empty()),
     }
 }
 
@@ -289,4 +304,21 @@ fn respond(backend: &Backend, req: Request<Vec<u8>>) -> Response<Cow<'static, [u
         .header("Cache-Control", "no-store")
         .body(body)
         .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::on_wayland;
+
+    #[test]
+    fn wayland_follows_gdk_backend_then_the_display() {
+        assert!(on_wayland(None, Some("wayland-0")));
+        assert!(!on_wayland(None, None));
+        assert!(!on_wayland(None, Some("")));
+        assert!(!on_wayland(Some("x11"), Some("wayland-0")));
+        assert!(!on_wayland(Some("x11,wayland"), Some("wayland-0")));
+        assert!(on_wayland(Some("wayland,x11"), None));
+        assert!(on_wayland(Some("*"), Some("wayland-0")));
+        assert!(!on_wayland(Some("*"), None));
+    }
 }
