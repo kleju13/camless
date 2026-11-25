@@ -153,6 +153,10 @@ pub struct Device {
     /// The web page camless renders on the LCD, and how that goes.
     #[serde(default)]
     pub web: Option<WebState>,
+    /// What the driver saw that a hardware report should carry, such as a reply it
+    /// did not expect. `camless report` prints them; the app does not show them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

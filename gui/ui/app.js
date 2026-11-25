@@ -832,17 +832,22 @@
     { value: 'duo', label: 'RGB Duo', hint: 'LED rings on both sides', leds: 20 },
     { value: 'rgb', label: 'RGB', hint: 'LED ring on the front', leds: 12 },
     { value: 'plain', label: 'without RGB', hint: 'No LEDs', leds: 0 },
+    // Not a fan: a channel can have a strip instead, such as the one in an NZXT case.
+    // 10 LEDs, as the HUE 2 strip of 300 mm and the strip CAM shows in an H510 Elite.
+    { value: 'strip', label: 'LED strip', hint: 'LEDs in a row', leds: 10 },
   ];
   const FAN_FINISH = {
     black: { frame: '#1c1d21', pad: '#2a2c32', well: '#0a0b0d', blade: '#4b4e58', hub: '#26282d' },
     white: { frame: '#dfe0e4', pad: '#f2f3f5', well: '#1d1f24', blade: '#e9ebef', hub: '#cfd1d6' },
   };
 
-  // F360 RGB Core is three F120 RGB Core, F280 RGB two F140 RGB, and so on.
+  // F360 RGB Core is three F120 RGB Core, F280 RGB two F140 RGB, and so on. A channel
+  // with fans counts as fans; one with only strips, underglow or a cable comb as strips.
   function guessFan(lightId) {
     const l = S.lights().find((x) => x.id === lightId);
-    let model = null, size = 120, count = 0;
+    let model = null, size = 120, count = 0, strips = 0;
     for (const a of (l && l.hw && l.hw.accessories) || []) {
+      if (/LED Strip|Underglow|Cable Comb/i.test(a)) { strips++; continue; }
       const m = /^F(\d{3})\s+RGB(?:\s+(Core|Duo))?$/i.exec(a.trim());
       if (!m) continue;
       const mm = +m[1];
@@ -850,22 +855,25 @@
       count += Math.max(1, Math.round(mm / size));
       model = m[2] ? m[2].toLowerCase() : 'rgb';
     }
-    return model ? { model, size, count: clamp(count, 1, 3) } : null;
+    if (model) return { model, size, count: clamp(count, 1, 3) };
+    return strips ? { model: 'strip', count: clamp(strips, 1, 3) } : null;
   }
   const fanSpec = (lightId) => Object.assign({ model: 'rgb', size: 120, color: 'black', count: 1 }, guessFan(lightId), (K.prefs.fans || {})[lightId]);
   const fanModel = (f) => FAN_MODELS.find((m) => m.value === f.model) || FAN_MODELS[2];
-  const fanModelName = (f) => (f.model === 'plain' ? `${f.size} mm fan without RGB` : `F${f.size} ${fanModel(f).label}`);
-  const fanText = (lightId, withColor = true) => { const f = fanSpec(lightId); return `${f.count > 1 ? f.count + ' × ' : ''}${fanModelName(f)}${withColor ? ', ' + f.color : ''}`; };
+  const fanModelName = (f) => (f.model === 'strip' ? 'LED strip' : f.model === 'plain' ? `${f.size} mm fan without RGB` : `F${f.size} ${fanModel(f).label}`);
+  const fanText = (lightId, withColor = true) => { const f = fanSpec(lightId); return `${f.count > 1 ? f.count + ' × ' : ''}${fanModelName(f)}${withColor && f.model !== 'strip' ? ', ' + f.color : ''}`; };
+  const isStrip = (lightId) => fanSpec(lightId).model === 'strip';
 
-  // The light channel a fan's LEDs are on: led2 for fan2, the RGB header for a cooler's fans.
+  // The light channel a fan's LEDs are on: led2 for fan2, the RGB header for a cooler's
+  // fans. Not a channel with a strip: on a Smart Device V2 the case's strip is on led1.
   function lightForFan(fanId) {
     const f = S.fan(fanId);
     if (!f || !f.device || f.pump) return null;
-    const lights = f.device.lights.filter((l) => l.id !== 'ring');
+    const lights = f.device.lights.filter((l) => l.id !== 'ring').map((l) => `${f.dev}/${l.id}`);
     const num = (s) => (/(\d+)$/.exec(s) || [])[1];
     const n = num(fanId.split('/')[1]);
-    if (n) { const l = lights.find((x) => num(x.id) === n); if (l) return `${f.dev}/${l.id}`; }
-    return lights.length === 1 ? `${f.dev}/${lights[0].id}` : null;
+    const id = (n && lights.find((x) => num(x) === n)) || (lights.length === 1 ? lights[0] : null);
+    return id && !isStrip(id) ? id : null;
   }
 
   const dim = (leds, k) => leds.map((c) => [c[0] * k, c[1] * k, c[2] * k]);
@@ -935,6 +943,33 @@
       ctx.fillStyle = P.hub;
       ctx.beginPath(); ctx.arc(0, 0, r * 0.25, 0, TAU); ctx.fill();
     }
+    ctx.restore();
+  }
+
+  // Strips seen from the front, one under another: a dark bar with its LEDs in a row.
+  function drawStrips(ctx, w, hh, strips) {
+    const n = Math.max(1, strips.length);
+    const bw = Math.min(w * 0.86, hh * 1.6), bh = Math.min(bw * 0.09, hh / (n * 2.2));
+    ctx.save();
+    strips.forEach((leds, i) => {
+      const x = (w - bw) / 2, y = hh / 2 + (i - (n - 1) / 2) * bh * 2.2 - bh / 2;
+      ctx.fillStyle = '#1c1d21';
+      D.roundRect(ctx, x, y, bw, bh, bh / 2); ctx.fill();
+      const step = bw / Math.max(1, leds.length), r = Math.min(step * 0.3, bh * 0.32);
+      leds.forEach((c, k) => {
+        const cx = x + step * (k + 0.5), cy = y + bh / 2;
+        if ((c[0] + c[1] + c[2]) / 765 >= 0.02) {
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.translate(cx, cy);
+          ctx.fillStyle = D.glowAt0(c, 0.42, 0, r * 3.4);
+          ctx.beginPath(); ctx.arc(0, 0, r * 3.4, 0, TAU); ctx.fill();
+          ctx.translate(-cx, -cy);
+          ctx.globalCompositeOperation = 'source-over';
+        }
+        ctx.fillStyle = S.color.css(c);
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
+      });
+    });
     ctx.restore();
   }
 
@@ -1620,7 +1655,7 @@
       render(body) {
         const rows = h('<div class="cam-rows cam-box"></div>');
         rows.appendChild(row('Name', 'Shown in camless only.', input({ value: S.lightName(id), placeholder: defaultLightLabel(id), label: 'Channel name', width: '200px', onChange: (v) => S.setLightName(id, v.trim()) })));
-        if (!isRing(id)) rows.appendChild(row('Fans', fanText(id), button('Change', { small: true, onClick: () => { K.closeOverlays(); fanDialog(id); } })));
+        if (!isRing(id)) rows.appendChild(row('Plugged in', fanText(id), button('Change', { small: true, onClick: () => { K.closeOverlays(); fanDialog(id); } })));
         body.appendChild(rows);
       },
       actions: [{ label: 'Done', primary: true }],
@@ -1633,11 +1668,11 @@
     const l = S.lights().find((x) => x.id === lightId);
     const acc = ((l && l.hw && l.hw.accessories) || []).filter((a) => a !== 'simulated');
     modal({
-      title: `Fans on ${lightLabel(lightId)}`,
+      title: `What is on ${lightLabel(lightId)}`,
       wide: true,
       render(body) {
-        body.appendChild(h(`<p class="cam-hint cam-lead">${acc.length ? `The device reports ${esc(listText(acc))}. ` : ''}Pick the fans so the preview and effects match your case.${guess ? '' : ' camless could not tell from the device.'}</p>`));
-        const grid = h('<div class="cam-fanpick" role="radiogroup" aria-label="Fan model"></div>');
+        body.appendChild(h(`<p class="cam-hint cam-lead">${acc.length ? `The device reports ${esc(listText(acc))}. ` : ''}Pick what is plugged in, so the preview and effects match your case.${guess ? '' : ' camless could not tell from the device.'}</p>`));
+        const grid = h('<div class="cam-fanpick" role="radiogroup" aria-label="What is plugged in"></div>');
         const cards = FAN_MODELS.map((m) => {
           const b = h('<button type="button" role="radio"><canvas aria-hidden="true"></canvas><b></b><span></span></button>');
           b.lastElementChild.textContent = m.hint;
@@ -1656,10 +1691,11 @@
         });
         body.appendChild(grid);
         const opts = h('<div class="cam-rows cam-box"></div>');
+        const rSize = row('Size', null, choice({ options: [{ value: 120, label: '120 mm' }, { value: 140, label: '140 mm' }], value: pick.size, label: 'Fan size', onChange: (v) => { pick = Object.assign({}, pick, { size: v }); paint(); } }));
+        const rColor = row('Color', null, choice({ options: [{ value: 'black', label: 'Black' }, { value: 'white', label: 'White' }], value: pick.color, label: 'Fan color', onChange: (v) => { pick = Object.assign({}, pick, { color: v }); } }));
         opts.append(
-          row('How many', null, choice({ options: [1, 2, 3].map((n) => ({ value: n, label: String(n) })), value: pick.count, label: 'How many fans', onChange: (v) => { pick = Object.assign({}, pick, { count: v }); } })),
-          row('Size', null, choice({ options: [{ value: 120, label: '120 mm' }, { value: 140, label: '140 mm' }], value: pick.size, label: 'Fan size', onChange: (v) => { pick = Object.assign({}, pick, { size: v }); paint(); } })),
-          row('Color', null, choice({ options: [{ value: 'black', label: 'Black' }, { value: 'white', label: 'White' }], value: pick.color, label: 'Fan color', onChange: (v) => { pick = Object.assign({}, pick, { color: v }); } })),
+          row('How many', null, choice({ options: [1, 2, 3].map((n) => ({ value: n, label: String(n) })), value: pick.count, label: 'How many', onChange: (v) => { pick = Object.assign({}, pick, { count: v }); } })),
+          rSize, rColor,
         );
         body.appendChild(opts);
         function paint() {
@@ -1667,8 +1703,10 @@
             const sel = c.m.value === pick.model;
             c.b.setAttribute('aria-checked', String(sel));
             c.b.tabIndex = sel ? 0 : -1;
-            c.b.children[1].textContent = c.m.value === 'plain' ? 'Without RGB' : `F${pick.size} ${c.m.label}`;
+            c.b.children[1].textContent = c.m.value === 'strip' ? c.m.label : c.m.value === 'plain' ? 'Without RGB' : `F${pick.size} ${c.m.label}`;
           }
+          // A strip has no size or color to pick.
+          rSize.hidden = rColor.hidden = pick.model === 'strip';
         }
         paint();
         let time = 0, angle = 0;
@@ -1680,7 +1718,8 @@
             if (!D.visible(c.cv)) continue;
             const f = Object.assign({}, pick, { model: c.m.value, count: 1 });
             const leds = fanLeds(lightId, f, time)(0);
-            D.paint(c.cv, [angle, f, leds], (ctx, w, hh) => drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 / 1.12, angle, leds, f));
+            if (f.model === 'strip') D.paint(c.cv, ['strip', leds], (ctx, w, hh) => drawStrips(ctx, w, hh, [leds]));
+            else D.paint(c.cv, [angle, f, leds], (ctx, w, hh) => drawFan(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 / 1.12, angle, leds, f));
           }
         }));
       },
@@ -1727,9 +1766,14 @@
       D.paint(cv, o, (ctx, w, hh) => D.head(ctx, w / 2, hh / 2, Math.min(w, hh) / 2 - 10, o));
       return;
     }
-    const fan = S.fans().find((f) => lightForFan(f.id) === id);
-    const rpm = fan ? rpmOf(fan.id) : 0;
     const f = fanSpec(id);
+    if (f.model === 'strip') {
+      const leds = fanLeds(id, f, time), strips = Array.from({ length: f.count }, (_, i) => leds(i));
+      D.paint(cv, ['strip', strips], (ctx, w, hh) => drawStrips(ctx, w, hh, strips));
+      return;
+    }
+    const fan = S.fans().find((x) => lightForFan(x.id) === id);
+    const rpm = fan ? rpmOf(fan.id) : 0;
     const n = f.count;
     const all = fanLeds(id, f, time);
     const leds = Array.from({ length: n }, (_, i) => all(i));
@@ -2044,7 +2088,7 @@
       track(() => clearTimeout(undoTimer));
       all.title = 'Effect, colors, speed and direction';
       all.classList.add('cam-light-all');
-      const setup = h(`<button type="button" class="cam-iconbtn" aria-label="Name and fans" title="Name and fans">${I.more}</button>`);
+      const setup = h(`<button type="button" class="cam-iconbtn" aria-label="Channel settings" title="Channel settings">${I.more}</button>`);
       setup.addEventListener('click', () => lightSetup(lightState.tab[dev]));
       tabsHost.append(all, setup);
       showTab();
@@ -2076,6 +2120,8 @@
     }
     paintTabs();
     track(S.on('config', (what) => { if (what === 'lighting' || what === 'replace') paintTabs(); }));
+    // A channel set to a strip or to fans changes its name, and whether Copy to all fans counts it.
+    track(K.on('prefs', (k) => { if (k === 'fans') renderDevice(); }));
   }
 
   /* ------------------------------------------------------------ monitoring */

@@ -463,6 +463,9 @@ fn render(f: &Facts) -> String {
                 if let Some(e) = &d.error {
                     let _ = writeln!(s, "  - error: {e}");
                 }
+                for n in &d.notes {
+                    let _ = writeln!(s, "  - note: {n}");
+                }
             }
         }
         _ if !f.found.is_empty() => {
@@ -839,6 +842,7 @@ about the table"
             lights: vec![LightChannel { id: "ring".into(), leds: 24, ..Default::default() }],
             lcd: Some(LcdInfo { width: 640, height: 640, round: true, frames: true }),
             error: Some(r"lost A1B2C3D4E5F6A7B8C9D0E1F2 at \\?\hid#vid_1e71&pid_3012#a1b2c3d4e5f6a7b8c9d0e1f2, C:\Users\Example\x.toml".into()),
+            notes: vec!["accessory report: 21 03 00".into()],
             ..Default::default()
         };
         let status = Status {
@@ -912,6 +916,7 @@ about the table"
         let text = render(&f);
         assert!(!text.to_ascii_lowercase().contains("a1b2c3d4e5f6a7b8c9d0e1f2"));
         assert!(text.contains(r"  - error: lost <hidden> at <device path>, C:\Users\<user>\x.toml"));
+        assert!(text.contains("  - note: accessory report: 21 03 00\n"));
         assert!(text.starts_with(&format!("camless {} · Windows 11 25H2, build 26200.9711 · Example CPU\n", env!("CARGO_PKG_VERSION"))));
         assert!(text.contains("Service 0.3.0: running, as administrator, CPU temperature: yes, GPU readings: no\n"));
         assert!(text.contains("- Kraken Elite (2024) `1e71:3012`: firmware 1.2.0, verified, connected\n"));

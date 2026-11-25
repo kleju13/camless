@@ -127,6 +127,8 @@ pub struct SmartDevice2 {
     hid: HidDevice,
     firmware: Option<String>,
     accessories: Vec<hue2::ChannelAccessories>,
+    /// What `21 03` held, or why it did not come, when it named no accessory.
+    accessory_note: Option<String>,
     last: Option<(Status, Instant)>,
 }
 
@@ -139,12 +141,28 @@ fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
     }
     let firmware = parse_firmware(&hid::request(&hid, &[0x10, 0x01], &[0x11, 0x01])?);
     let lights = channels.lights;
-    let accessories = if lights == 0 {
-        Vec::new()
-    } else {
-        hue2::read_accessories(&hid, lights).unwrap_or_else(|_| vec![Default::default(); lights])
-    };
-    Ok(Box::new(SmartDevice2 { model: found.model, channels, hid, firmware, accessories, last: None }))
+    let (accessories, accessory_note) = if lights == 0 { (Vec::new(), None) } else { accessories(&hid, lights) };
+    Ok(Box::new(SmartDevice2 { model: found.model, channels, hid, firmware, accessories, accessory_note, last: None }))
+}
+
+/// The accessories on each LED channel, and a note for `camless report` when the
+/// device names none. A Smart Device V2 in an H510 Elite (`200f`, firmware 1.13.0)
+/// named none on either channel, with a strip and two fans that CAM showed (camless
+/// #88); the note carries the reply, so the next report shows why.
+fn accessories(hid: &HidDevice, lights: usize) -> (Vec<hue2::ChannelAccessories>, Option<String>) {
+    match hid::request(hid, &[0x20, 0x03], &[0x21, 0x03]) {
+        Ok(msg) => {
+            let found = hue2::parse_accessories(&msg, lights);
+            let note = found.iter().all(|a| a.ids.is_empty()).then(|| accessory_note(&msg));
+            (found, note)
+        }
+        Err(e) => (vec![Default::default(); lights], Some(format!("accessory report: {e:#}"))),
+    }
+}
+
+fn accessory_note(msg: &[u8]) -> String {
+    let bytes: Vec<String> = msg.iter().map(|b| format!("{b:02x}")).collect();
+    format!("accessory report named nothing: {}", bytes.join(" "))
 }
 
 impl Driver for SmartDevice2 {
@@ -172,6 +190,7 @@ impl Driver for SmartDevice2 {
                     },
                 })
                 .collect(),
+            notes: self.accessory_note.iter().cloned().collect(),
             ..Default::default()
         }
     }
@@ -249,6 +268,17 @@ mod tests {
         for pid in [0x2022, 0x2015, 0x201b, 0x2005, 0x200b] {
             assert_eq!(channels(pid), None);
         }
+    }
+
+    #[test]
+    fn a_reply_without_accessories_is_noted_whole() {
+        let mut msg = vec![0u8; 64];
+        msg[..2].copy_from_slice(&[0x21, 0x03]);
+        msg[14] = 2;
+        let note = accessory_note(&msg);
+        assert!(note.starts_with("accessory report named nothing: 21 03 00 00"), "{note}");
+        assert_eq!(note.split(": ").nth(1).unwrap().split(' ').count(), 64);
+        assert!(hue2::parse_accessories(&msg, 2).iter().all(|a| a.ids.is_empty()));
     }
 
     #[test]
