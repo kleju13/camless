@@ -134,19 +134,43 @@ fn give_back_freed_memory() {
 /// and came back with compositing on (`WEBKIT_DISABLE_COMPOSITING_MODE=0`).
 fn draw_on_the_cpu() {
     const VAR: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
-    let var = |name| std::env::var(name).ok();
-    if std::env::var_os(VAR).is_none() && !on_wayland(var("GDK_BACKEND").as_deref(), var("WAYLAND_DISPLAY").as_deref()) {
+    let var = |name| std::env::var(name).ok().filter(|v| !v.is_empty());
+    if std::env::var_os(VAR).is_none() && !on_wayland(var("GDK_BACKEND").as_deref(), |b| available(b, &var)) {
         std::env::set_var(VAR, "1");
     }
 }
 
-/// Whether GTK will open the window on Wayland: the first backend `GDK_BACKEND`
-/// names, else Wayland when a Wayland display is there, as GTK 3 tries it first.
-fn on_wayland(gdk_backend: Option<&str>, wayland_display: Option<&str>) -> bool {
-    match gdk_backend.and_then(|b| b.split(',').map(str::trim).find(|b| !b.is_empty())) {
-        Some("wayland") => true,
-        Some("x11") => false,
-        _ => wayland_display.is_some_and(|d| !d.is_empty()),
+/// Whether GTK will open the window on Wayland. GTK 3 tries the backends
+/// `GDK_BACKEND` lists in order, `*` or none for its own order, Wayland before X11,
+/// and opens the first one that is there.
+fn on_wayland(gdk_backend: Option<&str>, available: impl Fn(&str) -> bool) -> bool {
+    let mut tried = Vec::new();
+    for b in gdk_backend.unwrap_or("*").split(',').map(str::trim) {
+        let order: &[&str] = if b == "*" { &["wayland", "x11"] } else { &[b] };
+        for &b in order {
+            if !tried.contains(&b) && available(b) {
+                return b == "wayland";
+            }
+            tried.push(b);
+        }
+    }
+    false
+}
+
+/// Whether a backend's display is there: Wayland's socket, or an X display named.
+fn available(backend: &str, var: &dyn Fn(&'static str) -> Option<String>) -> bool {
+    match backend {
+        "wayland" => {
+            let name = var("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into());
+            let path = match var("XDG_RUNTIME_DIR") {
+                _ if name.starts_with('/') => PathBuf::from(&name),
+                Some(dir) => PathBuf::from(dir).join(&name),
+                None => return false,
+            };
+            path.exists()
+        }
+        "x11" => var("DISPLAY").is_some(),
+        _ => false,
     }
 }
 
@@ -308,17 +332,44 @@ fn respond(backend: &Backend, req: Request<Vec<u8>>) -> Response<Cow<'static, [u
 
 #[cfg(test)]
 mod tests {
-    use super::on_wayland;
+    use super::{available, on_wayland};
 
     #[test]
-    fn wayland_follows_gdk_backend_then_the_display() {
-        assert!(on_wayland(None, Some("wayland-0")));
-        assert!(!on_wayland(None, None));
-        assert!(!on_wayland(None, Some("")));
-        assert!(!on_wayland(Some("x11"), Some("wayland-0")));
-        assert!(!on_wayland(Some("x11,wayland"), Some("wayland-0")));
-        assert!(on_wayland(Some("wayland,x11"), None));
-        assert!(on_wayland(Some("*"), Some("wayland-0")));
-        assert!(!on_wayland(Some("*"), None));
+    fn wayland_is_the_first_backend_gtk_can_open() {
+        let both = |_: &str| true;
+        let x11 = |b: &str| b == "x11";
+        let wayland = |b: &str| b == "wayland";
+        assert!(on_wayland(None, both));
+        assert!(!on_wayland(None, x11));
+        assert!(on_wayland(Some("*"), both));
+        assert!(!on_wayland(Some("x11"), both));
+        assert!(!on_wayland(Some("x11,wayland"), both));
+        // GTK falls back along the list when a backend's display is not there.
+        assert!(!on_wayland(Some("wayland,x11"), x11));
+        assert!(on_wayland(Some("x11,wayland"), wayland));
+        assert!(!on_wayland(Some("x11"), wayland));
+        assert!(!on_wayland(None, |_| false));
+    }
+
+    #[test]
+    fn the_wayland_socket_is_looked_for_where_clients_look() {
+        let dir = std::env::temp_dir().join(format!("camless-wl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("wayland-0"), b"").unwrap();
+        let runtime = dir.to_string_lossy().into_owned();
+        let env = |display: Option<&str>| {
+            let (runtime, display) = (runtime.clone(), display.map(String::from));
+            move |k: &'static str| match k {
+                "XDG_RUNTIME_DIR" => Some(runtime.clone()),
+                "WAYLAND_DISPLAY" => display.clone(),
+                _ => None,
+            }
+        };
+        assert!(available("wayland", &env(None)));
+        assert!(available("wayland", &env(Some("wayland-0"))));
+        assert!(!available("wayland", &env(Some("wayland-1"))));
+        assert!(available("wayland", &env(Some(dir.join("wayland-0").to_str().unwrap()))));
+        assert!(!available("x11", &env(None)));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
