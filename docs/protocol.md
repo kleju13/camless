@@ -113,7 +113,8 @@ Sources:
 - The same as on the Control Hub:
   - the `67 02` fan report, at the same offsets, for the first three ports. A `67 04` report with voltages and currents comes in between (Linux); camless ignores it.
   - duties `62 01 <mask> d1 d2 d3`. 0 stops a fan in either mode; on a DC fan 1 % is about 9 V (Linux).
-  - the accessory report, `20 03` → `21 03`.
+  - the accessory report, `20 03` → `21 03`. A Smart Device V2 `200f` with firmware 1.13.0, in an H510 Elite, named no accessory on either channel, while CAM showed a strip ("Strip V2", 10 LEDs) on channel 1 and two AER 2 fans on channel 2 (camless #88, 0.6.0). Whether the reply came empty or not at all is not known: from 0.6.1-beta.1 `camless report` adds the reply, or why it did not come, as a note under the device. The app lets the owner set a channel to a strip by hand meanwhile.
+  - The LED channels are not the fan ports. The app pairs `ledN` with `fanN` for names and pictures, as on the Control Hub, but not a channel it knows is a strip.
 - Different:
   - Init: `60 02 01 E8 01 01 E8 01` (a fan report every 0.5 s), then `60 03`, which detects the fans; the device answers it with `61 03` (Linux). The hub takes `66 01` instead of `60 03`. Linux sends `60 03` first and an interval of 1 s (`03`). camless follows liquidctl, whose log in #541 shows these bytes going to a `2011`. The HUE 2 gets neither, as liquidctl sends them only to a fan controller (its #331).
   - Firmware: `10 01` → `11 01`, the version at `[0x11..0x13]`; the hub uses `10 02`. The `2011` in #541 answered 1.7.0.
