@@ -97,8 +97,13 @@ pub(super) fn port(id: &str, prefix: &str, count: usize) -> Option<usize> {
 /// The newest fan report waiting, or the last one if it is under 3 s old, or the next
 /// one; the device sends one every 0.5 s.
 pub(super) fn status(hid: &HidDevice, last: &mut Option<(Status, Instant)>, ports: usize) -> Result<Status> {
-    for msg in hid::pending(hid) {
-        if let Some(s) = parse_status(&msg, ports) {
+    status_from(hid, &hid::pending(hid), last, ports)
+}
+
+/// `status` from reports already read, for a driver that looks at the others too.
+pub(super) fn status_from(hid: &HidDevice, pending: &[Vec<u8>], last: &mut Option<(Status, Instant)>, ports: usize) -> Result<Status> {
+    for msg in pending {
+        if let Some(s) = parse_status(msg, ports) {
             *last = Some((s, Instant::now()));
         }
     }

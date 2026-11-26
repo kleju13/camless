@@ -281,6 +281,12 @@ pub trait Driver {
 
     fn poll(&mut self) -> Result<Reading>;
 
+    /// Whether `describe` says more than when it was last read, such as accessories a
+    /// device named after it opened. Asking clears it.
+    fn changed(&mut self) -> bool {
+        false
+    }
+
     /// Host-driven duties, by fan id.
     fn set_duties(&mut self, duties: &[(&str, u8)]) -> Result<()>;
 

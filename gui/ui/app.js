@@ -848,6 +848,14 @@
     let model = null, size = 120, count = 0, strips = 0;
     for (const a of (l && l.hw && l.hw.accessories) || []) {
       if (/LED Strip|Underglow|Cable Comb/i.test(a)) { strips++; continue; }
+      // AER RGB 2 fans have their LEDs round the frame, as the F RGB do.
+      const aer = /^AER RGB(?: 2)?(?:\s+(\d{3}) mm)?$/i.exec(a.trim());
+      if (aer) {
+        size = +aer[1] === 140 ? 140 : 120;
+        count++;
+        model = model || 'rgb';
+        continue;
+      }
       const m = /^F(\d{3})\s+RGB(?:\s+(Core|Duo))?$/i.exec(a.trim());
       if (!m) continue;
       const mm = +m[1];
@@ -863,6 +871,13 @@
   const fanModelName = (f) => (f.model === 'strip' ? 'LED strip' : f.model === 'plain' ? `${f.size} mm fan without RGB` : `F${f.size} ${fanModel(f).label}`);
   const fanText = (lightId, withColor = true) => { const f = fanSpec(lightId); return `${f.count > 1 ? f.count + ' × ' : ''}${fanModelName(f)}${withColor && f.model !== 'strip' ? ', ' + f.color : ''}`; };
   const isStrip = (lightId) => fanSpec(lightId).model === 'strip';
+  const reported = (lightId) => { const l = S.lights().find((x) => x.id === lightId); return ((l && l.hw && l.hw.accessories) || []).filter((a) => a !== 'simulated'); };
+  // A Smart Device V2 that did not say what is on LED 1. In NZXT's cases that is
+  // usually the case's strip (an H510 Elite in camless #88, an H210i in liquidctl #364),
+  // but not always (an H510 Elite with fans there, liquidctl #338), so camless asks.
+  const likelyStrip = (lightId) => /^smart-device-v2(#\d+)?\/led1$/.test(lightId) && !reported(lightId).length;
+  // Where the Plugged in row's answer comes from.
+  const fanSource = (lightId) => ((K.prefs.fans || {})[lightId] ? ' · set by you' : guessFan(lightId) ? '' : ' · not read from the device');
 
   // The light channel a fan's LEDs are on: led2 for fan2, the RGB header for a cooler's
   // fans. Not a channel with a strip: on a Smart Device V2 the case's strip is on led1.
@@ -1655,7 +1670,7 @@
       render(body) {
         const rows = h('<div class="cam-rows cam-box"></div>');
         rows.appendChild(row('Name', 'Shown in camless only.', input({ value: S.lightName(id), placeholder: defaultLightLabel(id), label: 'Channel name', width: '200px', onChange: (v) => S.setLightName(id, v.trim()) })));
-        if (!isRing(id)) rows.appendChild(row('Plugged in', fanText(id), button('Change', { small: true, onClick: () => { K.closeOverlays(); fanDialog(id); } })));
+        if (!isRing(id)) rows.appendChild(row('Plugged in', fanText(id) + fanSource(id), button('Change', { small: true, onClick: () => { K.closeOverlays(); fanDialog(id); } })));
         body.appendChild(rows);
       },
       actions: [{ label: 'Done', primary: true }],
@@ -1665,17 +1680,36 @@
   function fanDialog(lightId) {
     let pick = fanSpec(lightId);
     const guess = guessFan(lightId);
-    const l = S.lights().find((x) => x.id === lightId);
-    const acc = ((l && l.hw && l.hw.accessories) || []).filter((a) => a !== 'simulated');
+    const acc = reported(lightId);
+    const likely = !guess && likelyStrip(lightId);
+    const mine = (K.prefs.fans || {})[lightId];
+    // A choice made by hand stays over what the device says, until it is dropped here.
+    // Color is not compared: no device reports it.
+    const differs = !!(guess && mine && ['model', 'size', 'count'].some((k) => k in guess && mine[k] !== guess[k]));
     modal({
       title: `What is on ${lightLabel(lightId)}`,
       wide: true,
       render(body) {
-        body.appendChild(h(`<p class="cam-hint cam-lead">${acc.length ? `The device reports ${esc(listText(acc))}. ` : ''}Pick what is plugged in, so the preview and effects match your case.${guess ? '' : ' camless could not tell from the device.'}</p>`));
+        const lead = likely
+          ? 'The device didn’t say what is plugged in here, so camless shows a fan. In NZXT cases this channel usually has the case’s LED strip. If that is what you see, pick LED strip.'
+          : `${acc.length && !differs ? `The device reports ${esc(listText(acc))}. ` : ''}Pick what is plugged in, so the preview and effects match your case.${guess ? '' : ' camless could not tell from the device.'}`;
+        body.appendChild(h(`<p class="cam-hint cam-lead">${lead}</p>`));
+        if (differs) {
+          const p = h('<p class="cam-hint cam-lead cam-fanreport"></p>');
+          p.textContent = `You set this channel by hand. The device reports ${listText(acc)}. `;
+          p.appendChild(button('Use what it reports', { small: true, onClick: () => {
+            const fans = Object.assign({}, K.prefs.fans);
+            delete fans[lightId];
+            K.setPref('fans', fans);
+            K.closeOverlays();
+            toast(`${lightLabel(lightId)}: ${fanText(lightId, false)}.`);
+          } }));
+          body.appendChild(p);
+        }
         const grid = h('<div class="cam-fanpick" role="radiogroup" aria-label="What is plugged in"></div>');
         const cards = FAN_MODELS.map((m) => {
           const b = h('<button type="button" role="radio"><canvas aria-hidden="true"></canvas><b></b><span></span></button>');
-          b.lastElementChild.textContent = m.hint;
+          b.lastElementChild.textContent = likely && m.value === 'strip' ? 'Usual here in NZXT cases' : m.hint;
           b.addEventListener('click', () => { pick = Object.assign({}, pick, { model: m.value }); paint(); });
           grid.appendChild(b);
           return { b, m, cv: b.querySelector('canvas') };
@@ -2096,7 +2130,11 @@
         const k = lightState.tab[dev];
         all.hidden = fanLights.length < 2 || !fanLights.some((l) => l.id === k);
         setup.hidden = k === 'lcd';
-        draw((b) => { if (k === 'lcd') lcdEditor(b, dev); else lightEditor(b, k); });
+        draw((b) => {
+          if (k === 'lcd') { lcdEditor(b, dev); return; }
+          if (likelyStrip(k) && !(K.prefs.fans || {})[k] && !(K.prefs.stripAsked || []).includes(k)) b.appendChild(stripAsk(k));
+          lightEditor(b, k);
+        });
       }
     }
     renderDevice();
@@ -2121,7 +2159,20 @@
     paintTabs();
     track(S.on('config', (what) => { if (what === 'lighting' || what === 'replace') paintTabs(); }));
     // A channel set to a strip or to fans changes its name, and whether Copy to all fans counts it.
-    track(K.on('prefs', (k) => { if (k === 'fans') renderDevice(); }));
+    track(K.on('prefs', (k) => { if (k === 'fans' || k === 'stripAsked') renderDevice(); }));
+    // Accessories a device names after it opened change the tabs, the question and Copy to all fans.
+    const reports = () => JSON.stringify(S.lights().map((l) => [l.id, reported(l.id)]));
+    let reportKey = reports();
+    track(S.on('state', () => { const k = reports(); if (k !== reportKey) { reportKey = k; renderDevice(); } }));
+  }
+
+  // Asks once whether a channel the device said nothing about is the case's strip.
+  function stripAsk(lightId) {
+    const el = h('<div class="cam-panel cam-stripask"><p><b>Is this an LED strip?</b> camless couldn’t read what is plugged in here. In NZXT cases this channel usually has the case’s strip.</p></div>');
+    const no = h(`<button type="button" class="cam-iconbtn" aria-label="Don’t ask again" title="Don’t ask again">${I.close}</button>`);
+    no.addEventListener('click', () => K.setPref('stripAsked', [...new Set([...(K.prefs.stripAsked || []), lightId])]));
+    el.append(button('Change', { small: true, onClick: () => fanDialog(lightId) }), no);
+    return el;
   }
 
   /* ------------------------------------------------------------ monitoring */
