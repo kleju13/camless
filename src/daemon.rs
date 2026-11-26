@@ -545,6 +545,11 @@ impl Daemon {
         match dev.poll() {
             Ok(r) => {
                 s.failures = 0;
+                if dev.changed() {
+                    let mut info = dev.describe();
+                    info.id = s.found.id.clone();
+                    s.info = info;
+                }
                 for f in &mut s.info.fans {
                     let got = r.fans.iter().find(|(id, _)| *id == f.id).map(|(_, x)| *x).unwrap_or_default();
                     (f.rpm, f.duty, f.connected) = (got.rpm, got.duty, got.connected);

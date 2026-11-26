@@ -41,7 +41,7 @@ use anyhow::{bail, Context, Result};
 use camless_core::lighting::Lighting;
 use camless_core::status::{Device, FanChannel, LightChannel, Unit};
 use hidapi::{HidApi, HidDevice};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const fn model(pid: u16, slug: &'static str, name: &'static str) -> Model {
     Model { experimental: true, ..Model::hid(NZXT_VID, pid, slug, name, open) }
@@ -127,8 +127,13 @@ pub struct SmartDevice2 {
     hid: HidDevice,
     firmware: Option<String>,
     accessories: Vec<hue2::ChannelAccessories>,
-    /// What `21 03` held, or why it did not come, when it named no accessory.
-    accessory_note: Option<String>,
+    /// For `camless report`: what `21 03` held when it named no accessory, how it came
+    /// after a try went unanswered, or why it has not come.
+    accessory_notes: Vec<String>,
+    /// Until the accessory report comes.
+    asking: Option<Asking>,
+    /// `describe` has changed since the daemon read it.
+    changed: bool,
     last: Option<(Status, Instant)>,
 }
 
@@ -141,22 +146,204 @@ fn open(api: &HidApi, found: &Found) -> Result<Box<dyn Driver>> {
     }
     let firmware = parse_firmware(&hid::request(&hid, &[0x10, 0x01], &[0x11, 0x01])?);
     let lights = channels.lights;
-    let (accessories, accessory_note) = if lights == 0 { (Vec::new(), None) } else { accessories(&hid, lights) };
-    Ok(Box::new(SmartDevice2 { model: found.model, channels, hid, firmware, accessories, accessory_note, last: None }))
+    let mut dev = SmartDevice2 {
+        model: found.model,
+        channels,
+        hid,
+        firmware,
+        accessories: vec![Default::default(); lights],
+        accessory_notes: Vec::new(),
+        asking: None,
+        changed: false,
+        last: None,
+    };
+    if lights > 0 {
+        dev.ask_at_open();
+    }
+    Ok(Box::new(dev))
 }
 
-/// The accessories on each LED channel, and a note for `camless report` when the
-/// device names none. A Smart Device V2 in an H510 Elite (`200f`, firmware 1.13.0)
-/// named none on either channel, with a strip and two fans that CAM showed (camless
-/// #88); the note carries the reply, so the next report shows why.
-fn accessories(hid: &HidDevice, lights: usize) -> (Vec<hue2::ChannelAccessories>, Option<String>) {
-    match hid::request(hid, &[0x20, 0x03], &[0x21, 0x03]) {
-        Ok(msg) => {
-            let found = hue2::parse_accessories(&msg, lights);
-            let note = found.iter().all(|a| a.ids.is_empty()).then(|| accessory_note(&msg));
-            (found, note)
+/// The accessory request.
+const ASK: [u8; 2] = [0x20, 0x03];
+
+/// How many times `20 03` goes out, and how long each waits for `21 03`. OpenRGB sends
+/// it up to 10 times, 1 s apart.
+const TRIES: u32 = 3;
+const TRY_WAIT: Duration = hid::REPLY_TIMEOUT;
+
+/// Asking for the accessory report until it comes. A Smart Device V2 `200f` with
+/// firmware 1.13.0, in an H510 Elite, left `20 03` unanswered for 3 s when it opened
+/// (camless #88), while a `200f` on 1.12.0, in an H210i, answered it (liquidctl #364).
+/// The first `20 03` goes out right after `60 03` starts fan detection, and these
+/// devices drop what comes in a burst (`hue2::send`), so `poll` asks again and takes a
+/// reply that comes late. What the device sent meanwhile goes into the report's note.
+#[derive(Debug)]
+struct Asking {
+    /// How many times `20 03` went out.
+    tries: u32,
+    /// When the last one went out; `None` once it went unanswered.
+    sent: Option<Instant>,
+    /// Reports since then, by their first two bytes, in the order they first came.
+    seen: Vec<([u8; 2], u32)>,
+    /// A line for each try that went unanswered.
+    log: Vec<String>,
+    gave_up: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum Next {
+    Wait,
+    Ask,
+    GaveUp,
+}
+
+impl Asking {
+    fn new(sent: Instant) -> Self {
+        Asking { tries: 1, sent: Some(sent), seen: Vec::new(), log: Vec::new(), gave_up: false }
+    }
+
+    /// The reply, if `msg` is it. Anything else is counted.
+    fn see(&mut self, msg: &[u8]) -> Option<Vec<u8>> {
+        if msg.starts_with(&[0x21, 0x03]) {
+            return Some(msg.to_vec());
         }
-        Err(e) => (vec![Default::default(); lights], Some(format!("accessory report: {e:#}"))),
+        if let [a, b, ..] = *msg {
+            match self.seen.iter_mut().find(|(k, _)| *k == [a, b]) {
+                Some((_, n)) => *n += 1,
+                None => self.seen.push(([a, b], 1)),
+            }
+        }
+        None
+    }
+
+    /// What to do at `now`: an unanswered try is logged, and the next one is due.
+    fn next(&mut self, now: Instant) -> Next {
+        if self.gave_up {
+            return Next::Wait;
+        }
+        let Some(sent) = self.sent else { return Next::Ask };
+        let waited = now.duration_since(sent);
+        if waited < TRY_WAIT {
+            return Next::Wait;
+        }
+        self.log.push(format!("try {}: no reply in {} ms, saw {}", self.tries, waited.as_millis(), seen_text(&self.seen)));
+        self.seen.clear();
+        self.sent = None;
+        if self.tries < TRIES {
+            Next::Ask
+        } else {
+            self.gave_up = true;
+            Next::GaveUp
+        }
+    }
+
+    fn asked(&mut self, now: Instant) {
+        self.tries += 1;
+        self.sent = Some(now);
+    }
+
+    /// The note while there is no reply.
+    fn note(&self) -> String {
+        let log = self.log.join("; ");
+        if self.gave_up {
+            format!("accessory report: no reply to {} tries; {log}", self.tries)
+        } else {
+            format!("accessory report: asking again; {log}")
+        }
+    }
+
+    /// The note for a reply at `now`, if a try went unanswered before it.
+    fn came(&self, now: Instant) -> Option<String> {
+        if self.log.is_empty() {
+            return None;
+        }
+        let when = match self.sent {
+            _ if self.gave_up => format!("late, after {} tries", self.tries),
+            Some(t) => format!("on try {}, {} ms after it", self.tries, now.duration_since(t).as_millis()),
+            None => format!("after try {}", self.tries),
+        };
+        Some(format!("accessory report came {when}; {}", self.log.join("; ")))
+    }
+}
+
+/// `67 02 ×6, 61 03 ×1`.
+fn seen_text(seen: &[([u8; 2], u32)]) -> String {
+    if seen.is_empty() {
+        return "nothing".into();
+    }
+    seen.iter().map(|([a, b], n)| format!("{a:02x} {b:02x} ×{n}")).collect::<Vec<_>>().join(", ")
+}
+
+impl SmartDevice2 {
+    /// The first `20 03`, waited for here, as liquidctl does in `initialize`.
+    fn ask_at_open(&mut self) {
+        if let Err(e) = hid::write(&self.hid, &ASK) {
+            self.accessory_notes = vec![format!("accessory report: {e:#}")];
+            return;
+        }
+        let mut asking = Asking::new(Instant::now());
+        let end = Instant::now() + TRY_WAIT;
+        let mut buf = [0u8; hid::REPORT_LEN];
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match self.hid.read_timeout(&mut buf, left.as_millis().max(1) as i32) {
+                Ok(n) => {
+                    if let Some(reply) = asking.see(&buf[..n]) {
+                        self.took(&reply, None);
+                        return;
+                    }
+                }
+                Err(e) => {
+                    self.accessory_notes = vec![format!("accessory report: {e:#}")];
+                    return;
+                }
+            }
+        }
+        // The next try goes out from `poll`, once fan detection is done.
+        asking.next(Instant::now());
+        self.accessory_notes = vec![asking.note()];
+        self.asking = Some(asking);
+    }
+
+    /// Looks for the accessory report in what came, and asks again when it is due.
+    fn watch(&mut self, pending: &[Vec<u8>]) {
+        let Some(asking) = self.asking.as_mut() else { return };
+        let now = Instant::now();
+        for msg in pending {
+            if let Some(reply) = asking.see(msg) {
+                let came = asking.came(now);
+                self.took(&reply, came);
+                return;
+            }
+        }
+        match asking.next(now) {
+            Next::Wait => return,
+            // A failed write goes out again at the next poll.
+            Next::Ask => {
+                if hid::write(&self.hid, &ASK).is_ok() {
+                    asking.asked(now);
+                }
+            }
+            Next::GaveUp => {}
+        }
+        let note = asking.note();
+        if self.accessory_notes != [note.as_str()] {
+            self.accessory_notes = vec![note];
+            self.changed = true;
+        }
+    }
+
+    fn took(&mut self, reply: &[u8], came: Option<String>) {
+        self.accessories = hue2::parse_accessories(reply, self.channels.lights);
+        self.accessory_notes = came.into_iter().collect();
+        if self.accessories.iter().all(|a| a.ids.is_empty()) {
+            self.accessory_notes.push(accessory_note(reply));
+        }
+        self.asking = None;
+        self.changed = true;
     }
 }
 
@@ -190,7 +377,7 @@ impl Driver for SmartDevice2 {
                     },
                 })
                 .collect(),
-            notes: self.accessory_note.iter().cloned().collect(),
+            notes: self.accessory_notes.clone(),
             ..Default::default()
         }
     }
@@ -200,11 +387,18 @@ impl Driver for SmartDevice2 {
     }
 
     fn poll(&mut self) -> Result<Reading> {
-        // Without fans there is no fan report, and nothing else to read.
+        // Without fans there is no fan report, and nothing else to read once the
+        // accessories are in.
+        let pending = if self.channels.fans > 0 || self.asking.is_some() { hid::pending(&self.hid) } else { Vec::new() };
+        self.watch(&pending);
         if self.channels.fans == 0 {
             return Ok(Reading::default());
         }
-        Ok(control_hub::reading(&control_hub::status(&self.hid, &mut self.last, self.channels.fans)?))
+        Ok(control_hub::reading(&control_hub::status_from(&self.hid, &pending, &mut self.last, self.channels.fans)?))
+    }
+
+    fn changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
     }
 
     fn set_duties(&mut self, duties: &[(&str, u8)]) -> Result<()> {
@@ -279,6 +473,48 @@ mod tests {
         assert!(note.starts_with("accessory report named nothing: 21 03 00 00"), "{note}");
         assert_eq!(note.split(": ").nth(1).unwrap().split(' ').count(), 64);
         assert!(hue2::parse_accessories(&msg, 2).iter().all(|a| a.ids.is_empty()));
+    }
+
+    #[test]
+    fn accessories_are_asked_for_three_times_and_the_wait_is_noted() {
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let mut a = Asking::new(t0);
+        for msg in [[0x67, 0x02], [0x61, 0x03], [0x67, 0x02]] {
+            assert_eq!(a.see(&msg), None);
+        }
+        assert_eq!(a.next(t0 + s(1)), Next::Wait);
+        // Logged, and the next try waits for the caller.
+        assert_eq!(a.next(t0 + s(3)), Next::Ask);
+        assert_eq!(a.next(t0 + s(4)), Next::Ask);
+        assert_eq!(a.note(), "accessory report: asking again; try 1: no reply in 3000 ms, saw 67 02 ×2, 61 03 ×1");
+        a.asked(t0 + s(4));
+        assert_eq!(a.next(t0 + s(7)), Next::Ask);
+        a.asked(t0 + s(8));
+        assert_eq!(a.next(t0 + s(10)), Next::Wait);
+        assert_eq!(a.next(t0 + s(11)), Next::GaveUp);
+        assert_eq!(a.next(t0 + s(30)), Next::Wait);
+        assert_eq!(
+            a.note(),
+            "accessory report: no reply to 3 tries; try 1: no reply in 3000 ms, saw 67 02 ×2, 61 03 ×1; \
+             try 2: no reply in 3000 ms, saw nothing; try 3: no reply in 3000 ms, saw nothing"
+        );
+        // A reply after that is still taken.
+        let mut reply = vec![0u8; 64];
+        reply[..2].copy_from_slice(&[0x21, 0x03]);
+        assert_eq!(a.see(&reply), Some(reply.clone()));
+        assert!(a.came(t0 + s(31)).unwrap().starts_with("accessory report came late, after 3 tries; try 1:"));
+    }
+
+    #[test]
+    fn a_reply_to_the_second_try_says_so() {
+        let t0 = Instant::now();
+        let mut a = Asking::new(t0);
+        assert_eq!(a.came(t0), None, "a first reply needs no note");
+        a.next(t0 + TRY_WAIT);
+        a.asked(t0 + Duration::from_secs(4));
+        let came = a.came(t0 + Duration::from_millis(4140)).unwrap();
+        assert_eq!(came, "accessory report came on try 2, 140 ms after it; try 1: no reply in 3000 ms, saw nothing");
     }
 
     #[test]

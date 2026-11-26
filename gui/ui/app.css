@@ -254,6 +254,10 @@ body.light { background: #f7f6fa; }
 .cam-light-tabs { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; border-bottom: 1px solid var(--sep); }
 .cam-light-tabs .cam-tabs { flex: 1; min-width: 0; margin: 0 0 -1px; border-bottom: 0; }
 .cam-light-tabs .cam-light-all { flex: none; }
+.cam-stripask { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 10px 10px 10px 16px; }
+.cam-stripask p { flex: 1; min-width: 0; margin: 0; font-size: 13px; line-height: 1.45; color: var(--t2); }
+.cam-stripask b { color: var(--t1); font-weight: 600; }
+.cam-fanreport { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
 .cam-tabs button { all: unset; position: relative; padding: 10px 14px 12px; font-size: 13px; font-weight: 600; color: var(--t3); cursor: pointer; white-space: nowrap; }
 .cam-tabs button:hover { color: var(--t1); }
 .cam-tabs button.muted { opacity: .5; }
