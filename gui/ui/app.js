@@ -1684,7 +1684,8 @@
     const likely = !guess && likelyStrip(lightId);
     const mine = (K.prefs.fans || {})[lightId];
     // A choice made by hand stays over what the device says, until it is dropped here.
-    const differs = !!(guess && mine && mine.model !== guess.model);
+    // Color is not compared: no device reports it.
+    const differs = !!(guess && mine && ['model', 'size', 'count'].some((k) => k in guess && mine[k] !== guess[k]));
     modal({
       title: `What is on ${lightLabel(lightId)}`,
       wide: true,
@@ -2159,6 +2160,10 @@
     track(S.on('config', (what) => { if (what === 'lighting' || what === 'replace') paintTabs(); }));
     // A channel set to a strip or to fans changes its name, and whether Copy to all fans counts it.
     track(K.on('prefs', (k) => { if (k === 'fans' || k === 'stripAsked') renderDevice(); }));
+    // Accessories a device names after it opened change the tabs, the question and Copy to all fans.
+    const reports = () => JSON.stringify(S.lights().map((l) => [l.id, reported(l.id)]));
+    let reportKey = reports();
+    track(S.on('state', () => { const k = reports(); if (k !== reportKey) { reportKey = k; renderDevice(); } }));
   }
 
   // Asks once whether a channel the device said nothing about is the case's strip.
