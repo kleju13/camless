@@ -845,15 +845,17 @@
   // with fans counts as fans; one with only strips, underglow or a cable comb as strips.
   function guessFan(lightId) {
     const l = S.lights().find((x) => x.id === lightId);
-    let model = null, size = 120, count = 0, strips = 0;
+    let model = null, size = 120, count = 0, strips = 0, series = null, other = false;
     for (const a of (l && l.hw && l.hw.accessories) || []) {
       if (/LED Strip|Underglow|Cable Comb/i.test(a)) { strips++; continue; }
-      // AER RGB 2 fans have their LEDs round the frame, as the F RGB do.
-      const aer = /^AER RGB(?: 2)?(?:\s+(\d{3}) mm)?$/i.exec(a.trim());
+      // AER RGB 2 fans have their LEDs round the frame, as the F RGB do, so they are
+      // drawn as those, under their own name.
+      const aer = /^(AER RGB(?: 2)?)(?:\s+(\d{3}) mm)?$/i.exec(a.trim());
       if (aer) {
-        size = +aer[1] === 140 ? 140 : 120;
+        size = +aer[2] === 140 ? 140 : 120;
         count++;
         model = model || 'rgb';
+        series = series || aer[1];
         continue;
       }
       const m = /^F(\d{3})\s+RGB(?:\s+(Core|Duo))?$/i.exec(a.trim());
@@ -862,13 +864,21 @@
       size = mm % 140 === 0 ? 140 : 120;
       count += Math.max(1, Math.round(mm / size));
       model = m[2] ? m[2].toLowerCase() : 'rgb';
+      other = true;
     }
-    if (model) return { model, size, count: clamp(count, 1, 3) };
+    if (model) return Object.assign({ model, size, count: clamp(count, 1, 3) }, series && !other ? { series } : {});
     return strips ? { model: 'strip', count: clamp(strips, 1, 3) } : null;
   }
-  const fanSpec = (lightId) => Object.assign({ model: 'rgb', size: 120, color: 'black', count: 1 }, guessFan(lightId), (K.prefs.fans || {})[lightId]);
+  function fanSpec(lightId) {
+    const guess = guessFan(lightId);
+    const { series, ...f } = Object.assign({ model: 'rgb', size: 120, color: 'black', count: 1 }, guess, (K.prefs.fans || {})[lightId]);
+    // The reported fans' own name, while what is set matches them.
+    return guess && guess.series && f.model === guess.model && f.size === guess.size ? Object.assign(f, { series: guess.series }) : f;
+  }
   const fanModel = (f) => FAN_MODELS.find((m) => m.value === f.model) || FAN_MODELS[2];
-  const fanModelName = (f) => (f.model === 'strip' ? 'LED strip' : f.model === 'plain' ? `${f.size} mm fan without RGB` : `F${f.size} ${fanModel(f).label}`);
+  // One fan's name, as on the box: F140 RGB, AER RGB 2.
+  const fanShortName = (f) => (f.model === 'strip' ? 'LED strip' : f.model === 'plain' ? `${f.size} mm fan without RGB` : f.series || `F${f.size} ${fanModel(f).label}`);
+  const fanModelName = (f) => (f.series ? `${f.series} ${f.size} mm` : fanShortName(f));
   const fanText = (lightId, withColor = true) => { const f = fanSpec(lightId); return `${f.count > 1 ? f.count + ' × ' : ''}${fanModelName(f)}${withColor && f.model !== 'strip' ? ', ' + f.color : ''}`; };
   const isStrip = (lightId) => fanSpec(lightId).model === 'strip';
   const reported = (lightId) => { const l = S.lights().find((x) => x.id === lightId); return ((l && l.hw && l.hw.accessories) || []).filter((a) => a !== 'simulated'); };
@@ -1624,7 +1634,8 @@
   const PALETTE = ['ffffff', 'bf4cbf', '3232de', '21d373', 'ff8a00', 'ff022d', '00c8ff', 'ffd400'];
   const LEAVE = '';
 
-  // The name given in camless, else CAM's: Ring, Channel 1, RGB connector.
+  // The name given in camless, else what is plugged in, else CAM's: Ring, Channel 1,
+  // RGB connector.
   const lightLabel = (id) => S.lightName(id) || defaultLightLabel(id);
   // The fan plugged into a light's port, by the number they share.
   function fanOfLight(id) {
@@ -1637,14 +1648,25 @@
     if (ch === 'rgb') return 'RGB connector';
     const m = /^led(\d+)$/.exec(ch);
     if (m) {
-      // The fan on that port goes by the name it has on Cooling, once it has been given one.
-      const f = fanOfLight(id), named = f && S.fanName(`${id.split('/')[0]}/${f.id}`);
-      return named || `Channel ${m[1]}`;
+      // The fan on that port goes by the name it was given on Cooling.
+      const dev = id.split('/')[0], f = fanOfLight(id), cfg = f && S.fanCfg(`${dev}/${f.id}`);
+      if (cfg && cfg.name) return cfg.name;
+      // Else what is plugged in, as CAM names it: LED strip, AER RGB 2, F140 RGB. Not
+      // when two channels of the device would read the same, or nothing says what it is.
+      const what = pluggedName(id);
+      const same = what && S.lights().some((l) => l.dev === dev && l.id !== id && pluggedName(l.id) === what);
+      return what && !same ? what : `Channel ${m[1]}`;
     }
     const l = S.lights().find((x) => x.id === id);
     return (l && l.hw && l.hw.name) || ch;
   }
   const isRing = (id) => id.split('/')[1] === 'ring';
+  // What a channel's tab can be named after: a reported or chosen strip or RGB fan.
+  function pluggedName(id) {
+    if (!guessFan(id) && !(K.prefs.fans || {})[id]) return null;
+    const f = fanSpec(id);
+    return f.model === 'plain' ? null : fanShortName(f);
+  }
 
   /* The colors a channel had before an effect with fewer, or none, took them, so an
      effect that takes more gets them back: Fixed red, then Spectrum Wave, then Fixed
@@ -1737,7 +1759,8 @@
             const sel = c.m.value === pick.model;
             c.b.setAttribute('aria-checked', String(sel));
             c.b.tabIndex = sel ? 0 : -1;
-            c.b.children[1].textContent = c.m.value === 'strip' ? c.m.label : c.m.value === 'plain' ? 'Without RGB' : `F${pick.size} ${c.m.label}`;
+            c.b.children[1].textContent = c.m.value === 'strip' ? c.m.label : c.m.value === 'plain' ? 'Without RGB'
+              : c.m.value === 'rgb' && guess && guess.series && pick.size === guess.size ? guess.series : `F${pick.size} ${c.m.label}`;
           }
           // A strip has no size or color to pick.
           rSize.hidden = rColor.hidden = pick.model === 'strip';
@@ -1757,7 +1780,7 @@
           }
         }));
       },
-      actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, onClick: () => { K.setPref('fans', Object.assign({}, K.prefs.fans, { [lightId]: pick })); toast(`${lightLabel(lightId)}: ${fanText(lightId, false)}.`); } }],
+      actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, onClick: () => { const { series, ...mine } = pick; K.setPref('fans', Object.assign({}, K.prefs.fans, { [lightId]: mine })); toast(`${lightLabel(lightId)}: ${fanText(lightId, false)}.`); } }],
     });
   }
 
