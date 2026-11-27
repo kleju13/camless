@@ -59,3 +59,17 @@ name = "HUE 2 Ambient"
 firmware = ["2.6.0"]
 checked = ["lighting"]
 source = "https://github.com/kleju13/camless/issues/68"
+
+[[device]]
+usb = "1e71:2010"
+name = "RGB & Fan Controller"
+firmware = ["1.13.0"]
+checked = ["fans", "lighting"]
+source = "https://github.com/kleju13/camless/issues/95"
+
+[[device]]
+usb = "1e71:200f"
+name = "Smart Device V2 (the one in the H510 Elite)"
+firmware = ["1.13.0"]
+checked = ["lighting"]
+source = "https://github.com/kleju13/camless/issues/88, on camless 0.6.1-beta.1 and beta.2"
