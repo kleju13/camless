@@ -86,6 +86,7 @@ name = "Top"                  # shown in camless only
 mode = "tai-chi"
 colors = ["3232de", "ffffff"] # hex RGB
 speed = "normal"              # slowest | slower | normal | faster | fastest
+brightness = 100              # 0 to 100 %; the rainbow effects stay at full
 
 [[lcd]]
 device = "kraken-elite-v2"

@@ -117,10 +117,16 @@ impl Effect {
     pub fn has_speed(self) -> bool {
         self != Effect::Candle
     }
+
+    /// Whether camless sends the colors, and so can dim them. The rainbows make their
+    /// own colors on the device, and no source has a brightness command for them.
+    pub fn takes_colors(self) -> bool {
+        self.color_range().1 > 0
+    }
 }
 
 /// One lighting channel in the config.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Light {
     /// `<device>/<light>`, e.g. `kraken-elite-v2/ring` or `control-hub/led1`.
@@ -139,6 +145,34 @@ pub struct Light {
     pub speed: Speed,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub backward: bool,
+    /// 0 to 100 %. camless scales the colors it sends, as no Hue 2 command for
+    /// brightness is known. Effects that make their own colors stay at full.
+    #[serde(default = "full", skip_serializing_if = "is_full")]
+    pub brightness: u8,
+}
+
+impl Default for Light {
+    fn default() -> Light {
+        Light {
+            channel: String::new(),
+            name: String::new(),
+            mode: String::new(),
+            colors: Vec::new(),
+            speed: Speed::default(),
+            backward: false,
+            brightness: FULL,
+        }
+    }
+}
+
+const FULL: u8 = 100;
+
+fn full() -> u8 {
+    FULL
+}
+
+fn is_full(v: &u8) -> bool {
+    *v == FULL
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
@@ -159,8 +193,12 @@ impl Light {
         !self.mode.is_empty()
     }
 
+    /// The setting for a driver, its colors already at the channel's brightness.
     pub fn to_lighting(&self) -> Result<Lighting> {
-        let colors = self.colors.iter().map(|c| parse_color(c)).collect::<Result<Vec<_>>>()?;
+        if self.brightness > FULL {
+            bail!("brightness is 0 to 100");
+        }
+        let colors = self.colors.iter().map(|c| parse_color(c).map(|c| dim(c, self.brightness))).collect::<Result<Vec<_>>>()?;
         Ok(match self.mode.as_str() {
             "off" => Lighting::Off,
             "fixed" => Lighting::Fixed(*colors.first().context("fixed needs one color")?),
@@ -175,6 +213,12 @@ impl Light {
             }
         })
     }
+}
+
+/// `c` at `percent` of its brightness, rounded to the nearest step.
+pub fn dim(c: Rgb, percent: u8) -> Rgb {
+    let p = u32::from(percent.min(FULL));
+    c.map(|v| ((u32::from(v) * p + 50) / 100) as u8)
 }
 
 pub fn parse_color(s: &str) -> Result<Rgb> {
@@ -209,6 +253,43 @@ mod tests {
         let l = Light { colors: vec!["ff0000".into(), "00ff00".into(), "0000ff".into()], ..l };
         let Lighting::Effect { colors, .. } = l.to_lighting().unwrap() else { panic!() };
         assert_eq!(colors.len(), 2);
+    }
+
+    #[test]
+    fn brightness_scales_the_colors_sent() {
+        assert_eq!(dim([0xff, 0x80, 0x01], 100), [0xff, 0x80, 0x01]);
+        assert_eq!(dim([0xff, 0x80, 0x01], 50), [0x80, 0x40, 0x01]);
+        assert_eq!(dim([0xff, 0xff, 0xff], 0), [0, 0, 0]);
+        assert_eq!(dim([200, 100, 10], 40), [80, 40, 4]);
+        let l = Light { channel: "x/led1".into(), mode: "fixed".into(), colors: vec!["ff8000".into()], brightness: 40, ..Default::default() };
+        assert_eq!(l.to_lighting().unwrap(), Lighting::Fixed([0x66, 0x33, 0x00]));
+        let l = Light { mode: "breathing".into(), colors: vec!["ffffff".into(), "0000ff".into()], brightness: 20, ..l };
+        let Lighting::Effect { colors, .. } = l.to_lighting().unwrap() else { panic!() };
+        assert_eq!(colors, vec![[0x33, 0x33, 0x33], [0x00, 0x00, 0x33]]);
+        let l = Light { brightness: 101, ..l };
+        assert!(l.to_lighting().is_err());
+    }
+
+    #[test]
+    fn brightness_defaults_to_full_and_is_left_out_at_full() {
+        assert_eq!(Light::default().brightness, 100);
+        let l: Light = toml::from_str("channel = \"x/led1\"\nmode = \"off\"\n").unwrap();
+        assert_eq!(l.brightness, 100);
+        assert!(!toml::to_string(&l).unwrap().contains("brightness"));
+        let l = Light { brightness: 35, ..l };
+        let text = toml::to_string(&l).unwrap();
+        assert!(text.contains("brightness = 35"));
+        assert_eq!(toml::from_str::<Light>(&text).unwrap(), l);
+    }
+
+    #[test]
+    fn only_effects_with_colors_take_brightness() {
+        assert!(Effect::Breathing.takes_colors());
+        assert!(Effect::Candle.takes_colors());
+        assert!(Effect::WaterCooler.takes_colors());
+        for e in [Effect::SpectrumWave, Effect::RainbowFlow, Effect::SuperRainbow, Effect::RainbowPulse] {
+            assert!(!e.takes_colors());
+        }
     }
 
     #[test]

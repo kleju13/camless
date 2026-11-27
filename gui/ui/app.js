@@ -1849,9 +1849,13 @@
     const speedIx = () => Math.max(0, S.SPEEDS.indexOf(S.lightOf(id).speed || 'normal'));
     const sp = slider({ min: 0, max: 4, step: 1, value: speedIx(), label: 'Speed', format: (i) => SPEED_NAME[S.SPEEDS[i]], onInput: (i) => S.editLight(id, (x) => { x.speed = S.SPEEDS[i]; }) });
     const rSpeed = row('Speed', null, sp);
+    const brightness = () => S.lightOf(id).brightness ?? 100;
+    const br = slider({ min: 0, max: 100, step: 5, value: brightness(), label: 'Brightness', format: (v) => v + '%', onInput: (v) => S.editLight(id, (x) => { x.brightness = v; }) });
+    const brIn = br.querySelector('input');
+    const rBr = row('Brightness', '', br);
     const dir = toggle({ checked: !!S.lightOf(id).backward, label: 'Invert direction', onChange: (v) => S.editLight(id, (x) => { x.backward = v; }) });
     const rDir = row('Reverse direction', null, dir);
-    ctl.append(rEffect, rColors, rSpeed, rDir);
+    ctl.append(rEffect, rColors, rBr, rSpeed, rDir);
     const l = S.lights().find((x) => x.id === id);
     cap1.textContent = ring ? `${(l && l.leds) || 24} LEDs around the screen` : '';
 
@@ -1868,6 +1872,12 @@
       rEffect.hidden = plain;
       rColors.hidden = plain || x.unmanaged || E.colors[1] === 0;
       rSpeed.hidden = plain || x.unmanaged || !E.speed;
+      // The rainbows make their own colors on the device, and no known command dims them.
+      const dims = S.takesBrightness(k);
+      rBr.hidden = plain || x.unmanaged || k === 'off';
+      brIn.disabled = !dims;
+      rBr.hint(dims ? '' : 'This effect makes its own colors on the device, so it runs at full brightness. camless cannot dim it yet.');
+      br.set(brightness());
       rDir.hidden = plain || x.unmanaged || !E.dir;
       sp.set(speedIx());
       dir.set(!!x.backward);
@@ -2101,9 +2111,9 @@
       tabsHost.appendChild(K.tabStrip(tabs, lightState.tab[dev], (k) => { lightState.tab[dev] = k; showTab(); }, { sub: true, label: `${devName(dev)} channels` }));
       paintDots();
       const fanLights = S.lights().filter((l) => l.dev === dev && fanOfLight(l.id));
-      // Copies effect, colors, speed and direction; for a moment after, the same button takes it back.
+      // Copies effect, colors, brightness, speed and direction; for a moment after, the same button takes it back.
       let undo = null, undoTimer = 0;
-      const looks = (x) => ({ mode: x.mode, colors: (x.colors || []).slice(), speed: x.speed, backward: x.backward });
+      const looks = (x) => ({ mode: x.mode, colors: (x.colors || []).slice(), brightness: x.brightness, speed: x.speed, backward: x.backward });
       const allLabel = () => { all.textContent = undo ? `Copied to ${undo.length} fans. Undo` : 'Copy to all fans'; };
       const all = button('Copy to all fans', { small: true, onClick: () => {
         clearTimeout(undoTimer);
@@ -2120,7 +2130,7 @@
         undoTimer = setTimeout(() => { undo = null; allLabel(); }, 8000);
       } });
       track(() => clearTimeout(undoTimer));
-      all.title = 'Effect, colors, speed and direction';
+      all.title = 'Effect, colors, brightness, speed and direction';
       all.classList.add('cam-light-all');
       const setup = h(`<button type="button" class="cam-iconbtn" aria-label="Channel settings" title="Channel settings">${I.more}</button>`);
       setup.addEventListener('click', () => lightSetup(lightState.tab[dev]));

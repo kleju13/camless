@@ -258,12 +258,16 @@ fn simplify(curve: &[(f32, u8)]) -> Vec<(f32, u8)> {
     out
 }
 
+/// CAM's colors as CAM shows them, and its brightness slider as the channel's
+/// brightness, so the slider in camless starts where CAM's was.
 fn light_from_cam(channel: &str, mode: &Value, brightness: f64) -> Option<Light> {
     let scale = |c: &Value| -> Option<String> {
-        let ch = |k: &str| ((c[k].as_f64().unwrap_or(0.0) * brightness).round() as u32).min(255);
+        let ch = |k: &str| (c[k].as_f64().unwrap_or(0.0).round() as u32).min(255);
         Some(format!("{:02x}{:02x}{:02x}", ch("r"), ch("g"), ch("b")))
     };
-    let light = |mode: &str, colors: Vec<String>| Light { channel: channel.into(), mode: mode.into(), colors, ..Default::default() };
+    let brightness = (brightness * 100.0).round().clamp(0.0, 100.0) as u8;
+    let light =
+        |mode: &str, colors: Vec<String>| Light { channel: channel.into(), mode: mode.into(), colors, brightness, ..Default::default() };
     let effect = mode["effect"].as_str()?;
     if effect == "Fixed" {
         let c = if mode["color"].is_object() { &mode["color"] } else { &mode["colors"][0] };
@@ -342,6 +346,11 @@ mod tests {
     fn fixed_uses_single_color_and_brightness() {
         let m = json!({"color": {"r": 170, "g": 0, "b": 255}, "colors": [{"r": 255, "g": 255, "b": 255}],
             "isSingleColor": true, "effect": "Fixed"});
-        assert_eq!(light_from_cam("control-hub/led1", &m, 0.5).unwrap().colors, vec!["550080"]);
+        let l = light_from_cam("control-hub/led1", &m, 0.5).unwrap();
+        assert_eq!(l.colors, vec!["aa00ff"]);
+        assert_eq!(l.brightness, 50);
+        // What the device gets is CAM's color at CAM's brightness, as before.
+        assert_eq!(l.to_lighting().unwrap(), crate::lighting::Lighting::Fixed([0x55, 0x00, 0x80]));
+        assert_eq!(light_from_cam("control-hub/led1", &m, 1.0).unwrap().brightness, 100);
     }
 }

@@ -512,6 +512,8 @@
   };
   const SPEEDS = ['slowest', 'slower', 'normal', 'faster', 'fastest'];
   const SPEED_MULT = { slowest: 0.35, slower: 0.6, normal: 1, faster: 1.6, fastest: 2.4 };
+  // Whether the service can dim a mode: only one whose colors it sends (Effect::takes_colors).
+  const takesBrightness = (mode) => EFFECTS[effectKey(mode)].colors[1] > 0;
   // Accepts CAM's PascalCase names too, as the daemon does.
   function effectKey(mode) {
     const k = String(mode || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
@@ -546,6 +548,7 @@
       fn(l);
       if (!l.backward) delete l.backward;
       if (!l.speed || l.speed === 'normal') delete l.speed;
+      if (l.brightness == null || l.brightness === 100) delete l.brightness;
     }, Object.assign({ what: 'lighting' }, o));
   }
   // camless stops setting the channel; a name it was given stays.
@@ -591,6 +594,9 @@
     const dir = light && light.backward ? -1 : 1;
     const k = Math.max(1, cols.length);
     const pick = (i) => cols[((i % k) + k) % k] || c0;
+    // The service sends the colors at the channel's brightness. The rainbows make
+    // their own colors on the device, so they stay at full there and here.
+    const dim = takesBrightness(mode) ? clamp((light.brightness ?? 100) / 100, 0, 1) : 1;
     for (let i = 0; i < n; i++) {
       let c;
       const u = i / n;
@@ -615,7 +621,7 @@
         case 'water-cooler': { const seg = n / 3, d = (((-i + s * 7) % seg) + seg) % seg; c = mix(scale(c0, 0.55), c1, Math.exp(-d * 0.9)); break; }
         default: c = c0;
       }
-      out[i] = c;
+      out[i] = dim === 1 ? c : scale(c, dim);
     }
     return out;
   }
@@ -624,8 +630,9 @@
     if (!light || light.unmanaged) return 'Not set by camless';
     const k = effectKey(light.mode);
     if (k === 'off') return 'Off';
-    if (k === 'fixed') return `Fixed #${(light.colors || [])[0] || ''}`;
-    return EFFECTS[k].label + (light.speed && light.speed !== 'normal' ? `, ${light.speed}` : '');
+    const dim = takesBrightness(k) && light.brightness != null && light.brightness !== 100 ? `, ${light.brightness}% brightness` : '';
+    if (k === 'fixed') return `Fixed #${(light.colors || [])[0] || ''}${dim}`;
+    return EFFECTS[k].label + (light.speed && light.speed !== 'normal' ? `, ${light.speed}` : '') + dim;
   }
 
   /* ------------------------------------------------------------------- LCD */
@@ -730,7 +737,7 @@
     devices, device, devOf,
     curves, curve, fans, fan, fanCfg, fanName, fanValue, curveValue, users, defaultSensor, preset,
     ensureFan, tidyFans, setPreset, setSource, setCurveSensor, fork, useCurve, renameCurve, newCurve, deleteCurve, uniqueCurveName, carryMemo,
-    EFFECTS, SPEEDS, effectKey, lights, lightCfg, lightOf, lightName, editLight, leaveLight, setLightName, renderLight, describeLight,
+    EFFECTS, SPEEDS, effectKey, takesBrightness, lights, lightCfg, lightOf, lightName, editLight, leaveLight, setLightName, renderLight, describeLight,
     color: { hexToRgb, mix, scale, hsl, css },
     screens, lcdOf, editLcd,
     cfg,
