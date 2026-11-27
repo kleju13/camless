@@ -596,9 +596,10 @@ impl Daemon {
                 Err(e) => notes.push(format!("light {}: {e:#}", l.channel)),
             }
         }
-        let lcd_config = self.cfg.lcds.iter().find(|c| c.device == id);
+        // The screen dims with every light, so the global brightness goes into its own.
+        let lcd_config = self.cfg.lcds.iter().find(|c| c.device == id).map(|c| c.at(self.cfg.light_brightness));
         let frames = s.info.lcd.as_ref().is_some_and(|l| l.frames);
-        if let Some(c) = lcd_config.filter(|c| s.lcd_sent.as_ref() != Some(*c)) {
+        if let Some(c) = lcd_config.as_ref().filter(|c| s.lcd_sent.as_ref() != Some(*c)) {
             match dev.lcd() {
                 None => notes.push(format!("lcd {id}: this device has no screen")),
                 Some(lcd) => {
@@ -616,7 +617,12 @@ impl Daemon {
                     match shown {
                         Ok(()) => s.lcd_sent = Some(c.clone()),
                         // A screen that refuses a mode is not worth losing fan control over.
-                        Err(e) => notes.push(format!("lcd {id}: {e:#}")),
+                        // The settings may have gone through, so the next apply sends them
+                        // whatever it compares against.
+                        Err(e) => {
+                            s.lcd_sent = None;
+                            notes.push(format!("lcd {id}: {e:#}"));
+                        }
                     }
                 }
             }

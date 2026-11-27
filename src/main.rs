@@ -272,7 +272,7 @@ fn check(path: &Path) -> Result<()> {
         }
     }
     for l in &cfg.lcds {
-        println!("lcd {}: {:?} at {} %, {}°", l.device, l.mode, l.brightness, l.orientation);
+        println!("lcd {}: {:?} at {} %, {}°", l.device, l.mode, l.at(cfg.light_brightness).brightness, l.orientation);
     }
     Ok(())
 }
