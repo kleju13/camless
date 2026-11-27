@@ -267,6 +267,12 @@ Sources:
 - Names follow liquidctl's `Hue2Accessory`. LED counts known from CAM captures: `0x19` 8, `0x1d` (F360 RGB Core) 24, `0x1e` (Kraken Elite ring) 24, `0x1f` 24. CAM sends 24 for channels it does not tell apart.
 - The LED count goes into byte 7 of `26 06` and the effect footer, as CAM sends it.
 
+**Lighting brightness** (every driver)
+- No source camless follows has a brightness command for lights. liquidctl's `smart_device.py` and `kraken3.py` send only mode, speed, direction and colors; their only brightness is the Kraken's LCD (`30 02`). The Linux `nzxt-smart2` driver does no lighting. CAM has a brightness slider per channel, and its profile stores it as `brightness` from 0 to 1 beside the colors it shows.
+- So camless dims on the host: `Light::to_lighting` scales each color by the channel's `brightness` before any driver sees it, the same way for every device. `camless import-cam` takes CAM's slider as that setting and keeps CAM's colors as CAM shows them. Earlier versions multiplied the colors on import instead, which sends the same bytes.
+- The rainbows (spectrum wave, rainbow flow, super rainbow, rainbow pulse) take no colors: the device makes them. camless cannot dim them, and the app greys the slider out for them. Open question: whether CAM's slider dims these effects, and with which bytes. If it does, a capture of CAM with `tools/capture/` while the slider moves on a rainbow, on a Smart Device V2 or a Kraken, shows where the brightness goes. Until then camless sends them at full, as before.
+- Not run on hardware yet. Asked for in [#88](https://github.com/kleju13/camless/issues/88), for a Smart Device V2's strip and AER RGB 2 fans.
+
 **What did not work**
 
 What was tried on the Kraken Elite V2 and the Control Hub and failed, so the next device does not repeat it. Nothing of the other brands' hubs has run on hardware yet.
