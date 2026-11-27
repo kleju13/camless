@@ -1012,8 +1012,10 @@
     const liquid = S.value(`${dev}.liquid`), d = S.device(dev);
     // A screen without streamed pictures keeps its own display, whatever the config says.
     const own = !d || !d.lcd ? { mode: 'liquid', brightness: 100 } : d.lcd.frames === false ? { ...S.lcdOf(dev), mode: 'liquid' } : S.lcdOf(dev);
-    // The service dims the screen with every light, by the global brightness.
-    const lcd = { ...own, brightness: Math.round(((own.brightness ?? 100) * S.allBrightness()) / 100) };
+    // The service dims a screen it sets with every light, by the global brightness. One
+    // without an entry in the config it leaves alone.
+    const managed = ((S.config && S.config.lcd) || []).some((l) => l.device === dev);
+    const lcd = managed ? { ...own, brightness: Math.round(((own.brightness ?? 100) * S.allBrightness()) / 100) } : own;
     return Object.assign({
       leds: ringOf(dev, time), liquid, lcd,
       sensors: { cpu: S.value('cpu.temp'), gpu: S.value('gpu.temp'), liquid },

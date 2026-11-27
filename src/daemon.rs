@@ -617,7 +617,12 @@ impl Daemon {
                     match shown {
                         Ok(()) => s.lcd_sent = Some(c.clone()),
                         // A screen that refuses a mode is not worth losing fan control over.
-                        Err(e) => notes.push(format!("lcd {id}: {e:#}")),
+                        // The settings may have gone through, so the next apply sends them
+                        // whatever it compares against.
+                        Err(e) => {
+                            s.lcd_sent = None;
+                            notes.push(format!("lcd {id}: {e:#}"));
+                        }
                     }
                 }
             }
