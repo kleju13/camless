@@ -26,7 +26,7 @@ pub struct Config {
     /// and for every host-driven fan when camless stops.
     #[serde(default = "default_failsafe_duty")]
     pub failsafe_duty: u8,
-    /// Brightness of every light, 0 to 100 %, on top of each channel's own. A service
+    /// Brightness of every light and LCD, 0 to 100 %, on top of each one's own. A service
     /// setting, so switching profiles keeps it.
     #[serde(default = "hundred", skip_serializing_if = "is_hundred")]
     pub light_brightness: u8,
@@ -398,6 +398,15 @@ fn is_zero_u8(v: &u8) -> bool {
 
 fn hundred() -> u8 {
     100
+}
+
+impl Lcd {
+    /// This screen with `light_brightness`, the brightness of every light, folded into
+    /// its own: 50 % of 80 % is 40 %.
+    pub fn at(&self, all: u8) -> Lcd {
+        let b = (u32::from(self.brightness.min(100)) * u32::from(all.min(100)) + 50) / 100;
+        Lcd { brightness: b as u8, ..self.clone() }
+    }
 }
 
 fn is_hundred(v: &u8) -> bool {
@@ -843,6 +852,14 @@ mod tests {
         assert_eq!(c.light_brightness, 40);
         assert!(c.to_toml().unwrap().contains("light_brightness = 40"));
         assert!(Config::parse("light_brightness = 101\n").is_err());
+    }
+
+    #[test]
+    fn the_screen_dims_with_every_light() {
+        let c = Config::parse("light_brightness = 50\n[[lcd]]\ndevice = \"kraken\"\nbrightness = 80\n").unwrap();
+        assert_eq!(c.lcds[0].at(c.light_brightness).brightness, 40);
+        assert_eq!(c.lcds[0].at(100), c.lcds[0]);
+        assert_eq!(c.lcds[0].at(0).brightness, 0);
     }
 
     #[test]

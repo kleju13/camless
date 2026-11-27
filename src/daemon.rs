@@ -596,9 +596,10 @@ impl Daemon {
                 Err(e) => notes.push(format!("light {}: {e:#}", l.channel)),
             }
         }
-        let lcd_config = self.cfg.lcds.iter().find(|c| c.device == id);
+        // The screen dims with every light, so the global brightness goes into its own.
+        let lcd_config = self.cfg.lcds.iter().find(|c| c.device == id).map(|c| c.at(self.cfg.light_brightness));
         let frames = s.info.lcd.as_ref().is_some_and(|l| l.frames);
-        if let Some(c) = lcd_config.filter(|c| s.lcd_sent.as_ref() != Some(*c)) {
+        if let Some(c) = lcd_config.as_ref().filter(|c| s.lcd_sent.as_ref() != Some(*c)) {
             match dev.lcd() {
                 None => notes.push(format!("lcd {id}: this device has no screen")),
                 Some(lcd) => {

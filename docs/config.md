@@ -28,7 +28,7 @@ Curves work as in FanControl:
 ```toml
 interval_ms = 1000
 failsafe_duty = 70            # fans whose sensor has no reading, and host-driven fans when camless stops
-light_brightness = 100        # every light at once, 0 to 100 %, on top of each channel's brightness
+light_brightness = 100        # every light and LCD at once, 0 to 100 %, on top of each one's brightness
 updates = "beta"              # the app offers betas too; "stable", the default, offers releases only
 
 [[curve]]

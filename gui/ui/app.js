@@ -1011,7 +1011,9 @@
   function headOpts(dev, time, o = {}) {
     const liquid = S.value(`${dev}.liquid`), d = S.device(dev);
     // A screen without streamed pictures keeps its own display, whatever the config says.
-    const lcd = !d || !d.lcd ? { mode: 'liquid', brightness: 100 } : d.lcd.frames === false ? { ...S.lcdOf(dev), mode: 'liquid' } : S.lcdOf(dev);
+    const own = !d || !d.lcd ? { mode: 'liquid', brightness: 100 } : d.lcd.frames === false ? { ...S.lcdOf(dev), mode: 'liquid' } : S.lcdOf(dev);
+    // The service dims the screen with every light, by the global brightness.
+    const lcd = { ...own, brightness: Math.round(((own.brightness ?? 100) * S.allBrightness()) / 100) };
     return Object.assign({
       leds: ringOf(dev, time), liquid, lcd,
       sensors: { cpu: S.value('cpu.temp'), gpu: S.value('gpu.temp'), liquid },
@@ -2096,10 +2098,10 @@
     }
   }
 
-  // CAM's global brightness: every light at once, on top of each channel's own.
+  // CAM's global brightness: every light and screen at once, on top of each one's own.
   function allBrightnessControl() {
     const wrap = h('<div class="cam-allbright"><span class="cam-small">Global brightness</span></div>');
-    wrap.title = 'Every light at once, on top of each channel’s brightness. Rainbow effects stay at full.';
+    wrap.title = 'Every light and screen at once, on top of each one’s own brightness. Rainbow effects stay at full.';
     const sl = slider({ min: 0, max: 100, step: 5, value: S.allBrightness(), label: 'Global brightness', format: (v) => v + '%', onInput: (v) => S.setAllBrightness(v) });
     wrap.appendChild(sl);
     track(S.on('config', () => { if (+sl.querySelector('input').value !== S.allBrightness()) sl.set(S.allBrightness()); }));
