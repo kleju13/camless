@@ -266,7 +266,7 @@ fn check(path: &Path) -> Result<()> {
     for l in &cfg.lights {
         let name = if l.name.is_empty() { String::new() } else { format!(" ({})", l.name) };
         if l.managed() {
-            println!("light {}{name}: {:?}", l.channel, l.to_lighting()?);
+            println!("light {}{name}: {:?}", l.channel, l.at(cfg.light_brightness).to_lighting()?);
         } else {
             println!("light {}{name}: left as it is", l.channel);
         }

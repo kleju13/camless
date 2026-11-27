@@ -26,6 +26,10 @@ pub struct Config {
     /// and for every host-driven fan when camless stops.
     #[serde(default = "default_failsafe_duty")]
     pub failsafe_duty: u8,
+    /// Brightness of every light, 0 to 100 %, on top of each channel's own. A service
+    /// setting, so switching profiles keeps it.
+    #[serde(default = "hundred", skip_serializing_if = "is_hundred")]
+    pub light_brightness: u8,
     /// The profile with the curves, fans, lights and LCDs, in `profiles/<name>.toml`.
     /// Without one they are in this file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +62,7 @@ impl Default for Config {
         Config {
             interval_ms: default_interval_ms(),
             failsafe_duty: default_failsafe_duty(),
+            light_brightness: hundred(),
             profile: None,
             pawnio_module: None,
             updates: Updates::Stable,
@@ -558,6 +563,9 @@ impl Config {
         if self.failsafe_duty > 100 {
             bail!("failsafe_duty must be 0 to 100");
         }
+        if self.light_brightness > 100 {
+            bail!("light_brightness must be 0 to 100");
+        }
         if let Some(name) = &self.profile {
             check_profile_name(name)?;
         }
@@ -825,6 +833,17 @@ pub fn curve_order(curves: &[CurveSpec]) -> Result<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_brightness_of_every_light_is_full_unless_set() {
+        let c = Config::parse("").unwrap();
+        assert_eq!(c.light_brightness, 100);
+        assert!(!c.to_toml().unwrap().contains("light_brightness"));
+        let c = Config::parse("light_brightness = 40\n").unwrap();
+        assert_eq!(c.light_brightness, 40);
+        assert!(c.to_toml().unwrap().contains("light_brightness = 40"));
+        assert!(Config::parse("light_brightness = 101\n").is_err());
+    }
 
     #[test]
     fn a_path_is_inside_a_folder_the_way_windows_compares() {
