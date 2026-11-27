@@ -718,6 +718,8 @@ body.light { background: #f7f6fa; }
 .cam-empty { padding: 28px 24px; color: var(--t3); font-size: 13px; text-align: center; }
 .cam-profile { display: flex; align-items: center; gap: 10px; }
 .cam-profile .cam-select { width: 190px; }
+.cam-allbright { display: flex; align-items: center; gap: 10px; }
+.cam-allbright .cam-slider { width: 190px; }
 .cam-h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--t3); }
 .cam-idle { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 20px; }
 .cam-lead { margin: 0 0 12px; }

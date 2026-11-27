@@ -193,6 +193,13 @@ impl Light {
         !self.mode.is_empty()
     }
 
+    /// This channel with the brightness of every light, `light_brightness` in the
+    /// config, folded into its own: 50 % of 80 % is 40 %.
+    pub fn at(&self, all: u8) -> Light {
+        let b = (u32::from(self.brightness.min(FULL)) * u32::from(all.min(FULL)) + 50) / 100;
+        Light { brightness: b as u8, ..self.clone() }
+    }
+
     /// The setting for a driver, its colors already at the channel's brightness.
     pub fn to_lighting(&self) -> Result<Lighting> {
         if self.brightness > FULL {
@@ -280,6 +287,17 @@ mod tests {
         let text = toml::to_string(&l).unwrap();
         assert!(text.contains("brightness = 35"));
         assert_eq!(toml::from_str::<Light>(&text).unwrap(), l);
+    }
+
+    #[test]
+    fn the_brightness_of_every_light_scales_each_channels() {
+        let l = Light { channel: "x/led1".into(), mode: "fixed".into(), colors: vec!["ff8000".into()], ..Default::default() };
+        assert_eq!(l.at(100), l);
+        assert_eq!(l.at(40).brightness, 40);
+        assert_eq!(Light { brightness: 50, ..l.clone() }.at(80).brightness, 40);
+        assert_eq!(Light { brightness: 33, ..l.clone() }.at(50).brightness, 17);
+        assert_eq!(l.at(0).to_lighting().unwrap(), Lighting::Fixed([0, 0, 0]));
+        assert_eq!(l.at(40).to_lighting().unwrap(), Lighting::Fixed([0x66, 0x33, 0x00]));
     }
 
     #[test]

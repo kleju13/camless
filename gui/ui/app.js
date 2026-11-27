@@ -2096,8 +2096,18 @@
     }
   }
 
+  // CAM's global brightness: every light at once, on top of each channel's own.
+  function allBrightnessControl() {
+    const wrap = h('<div class="cam-allbright"><span class="cam-small">Global brightness</span></div>');
+    wrap.title = 'Every light at once, on top of each channel’s brightness. Rainbow effects stay at full.';
+    const sl = slider({ min: 0, max: 100, step: 5, value: S.allBrightness(), label: 'Global brightness', format: (v) => v + '%', onInput: (v) => S.setAllBrightness(v) });
+    wrap.appendChild(sl);
+    track(S.on('config', () => { if (+sl.querySelector('input').value !== S.allBrightness()) sl.set(S.allBrightness()); }));
+    return wrap;
+  }
+
   function lighting(host) {
-    const head = K.pageHead(host, 'Lighting', S.config ? profileControls() : null);
+    const head = K.pageHead(host, 'Lighting', S.config ? [allBrightnessControl(), profileControls()] : null);
     if (!S.config) { emptyState(host, 'Lighting can be changed again once the config file loads.'); return; }
     const devs = [...new Set(S.lights().map((l) => l.dev).concat(S.screens().map((s) => s.id)))];
     if (!devs.length) { emptyState(host, S.status ? 'camless found no device with lighting or a screen.' : 'Lighting shows up here once the camless service runs.'); return; }

@@ -579,8 +579,9 @@ impl Daemon {
         let Some(dev) = s.dev.as_mut() else { return };
         for l in self.cfg.lights.iter().filter(|l| l.managed()) {
             let Some(light) = local(&s.found.id, &l.channel) else { continue };
-            // A new name alone changes nothing on the device.
-            let sent = Light { name: String::new(), ..l.clone() };
+            // A new name alone changes nothing on the device. The brightness of every
+            // light goes into the channel's, so a change to it sends the light again.
+            let sent = Light { name: String::new(), ..l.at(self.cfg.light_brightness) };
             if s.lights_sent.get(light) == Some(&sent) {
                 continue;
             }
@@ -588,7 +589,7 @@ impl Daemon {
                 notes.push(format!("light {}: this device has no {light:?}", l.channel));
                 continue;
             }
-            match l.to_lighting().and_then(|lighting| dev.set_lighting(light, &lighting)) {
+            match sent.to_lighting().and_then(|lighting| dev.set_lighting(light, &lighting)) {
                 Ok(()) => {
                     s.lights_sent.insert(light.to_string(), sent);
                 }

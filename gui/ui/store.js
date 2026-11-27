@@ -511,6 +511,12 @@
     'water-cooler': { label: 'Water Cooler', colors: [2, 2], speed: true },
   };
   const SPEEDS = ['slowest', 'slower', 'normal', 'faster', 'fastest'];
+  // The brightness of every light, on top of each channel's: a service setting, so
+  // profiles keep it.
+  const allBrightness = () => (st.config && st.config.light_brightness != null ? st.config.light_brightness : 100);
+  function setAllBrightness(v) {
+    edit((c) => { if (v === 100) delete c.light_brightness; else c.light_brightness = v; }, { what: 'lighting' });
+  }
   const SPEED_MULT = { slowest: 0.35, slower: 0.6, normal: 1, faster: 1.6, fastest: 2.4 };
   // Whether the service can dim a mode: only one whose colors it sends (Effect::takes_colors).
   const takesBrightness = (mode) => EFFECTS[effectKey(mode)].colors[1] > 0;
@@ -594,9 +600,10 @@
     const dir = light && light.backward ? -1 : 1;
     const k = Math.max(1, cols.length);
     const pick = (i) => cols[((i % k) + k) % k] || c0;
-    // The service sends the colors at the channel's brightness. The rainbows make
-    // their own colors on the device, so they stay at full there and here.
-    const dim = takesBrightness(mode) ? clamp((light.brightness ?? 100) / 100, 0, 1) : 1;
+    // The service sends the colors at the channel's brightness, times that of every
+    // light. The rainbows make their own colors on the device, so they stay at full
+    // there and here.
+    const dim = takesBrightness(mode) ? clamp(((light.brightness ?? 100) / 100) * (allBrightness() / 100), 0, 1) : 1;
     for (let i = 0; i < n; i++) {
       let c;
       const u = i / n;
@@ -737,7 +744,7 @@
     devices, device, devOf,
     curves, curve, fans, fan, fanCfg, fanName, fanValue, curveValue, users, defaultSensor, preset,
     ensureFan, tidyFans, setPreset, setSource, setCurveSensor, fork, useCurve, renameCurve, newCurve, deleteCurve, uniqueCurveName, carryMemo,
-    EFFECTS, SPEEDS, effectKey, takesBrightness, lights, lightCfg, lightOf, lightName, editLight, leaveLight, setLightName, renderLight, describeLight,
+    EFFECTS, SPEEDS, effectKey, takesBrightness, allBrightness, setAllBrightness, lights, lightCfg, lightOf, lightName, editLight, leaveLight, setLightName, renderLight, describeLight,
     color: { hexToRgb, mix, scale, hsl, css },
     screens, lcdOf, editLcd,
     cfg,
